@@ -22,10 +22,10 @@ namespace InventoryKamera.ui.main
         {
             InitializeComponent();
 
-            var version = Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
+            var version = AppInfo.Version;
 
-            Logger.Info("Inventory Kamera Version {0} (preview)", version);
-            versionLabel.Text = version + " (preview)";
+            Logger.Info("Inventory Kamera Version {0}", version);
+            versionLabel.Text = version;
 
             Logger.Info("MainForm initialization complete");
         }

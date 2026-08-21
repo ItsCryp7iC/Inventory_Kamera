@@ -60,13 +60,13 @@ namespace InventoryKamera
 
             Language_ComboBox.SelectedItem = "ENG";
 
-            var version = Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
+            var version = AppInfo.Version;
 #if DEBUG
-            version = Assembly.GetExecutingAssembly().GetName().Version.ToString(4);
+            version += $" ({Assembly.GetExecutingAssembly().GetName().Version})";
 #endif
-            Logger.Info("Inventory Kamera version {0} (preview)", version);
+            Logger.Info("Inventory Kamera version {0}", version);
 
-            Text = $"Inventory Kamera V{version} (preview)";
+            Text = $"Inventory Kamera V{version}";
 
             UserInterface.Init(
                 CharacterName_PictureBox,
