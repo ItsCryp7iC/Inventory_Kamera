@@ -37,7 +37,7 @@ namespace InventoryKamera
 
         private readonly string NewVersion = "version.txt";
 
-        private const string commitsAPIURL = "https://gitlab.com/api/v4/projects/53216109/repository/commits";
+        private const string commitsAPIURL = "https://gitlab.com/api/v4/projects/83871005/repository/commits";
         private const string repoBaseURL = "https://gitlab.com/Dimbreath/AnimeGameData2/-/raw/main/";
         private const string TextMapEnURL = repoBaseURL + "TextMap/TextMapEN.json";
         private const string TextMapMediumEnURL = repoBaseURL + "TextMap/TextMap_MediumEN.json";
@@ -453,14 +453,14 @@ namespace InventoryKamera
 
                                 foreach (var element in playerElements)
                                 {
-                                    var elementSkill = skills.FirstOrDefault(entry => entry["skillIcon"].ToString().Contains($"Player{element.Key}") && !entry.ContainsKey("costElemType"));
-                                    
+                                    var elementSkill = skills.FirstOrDefault(entry => entry.Value<string>("skillIcon")?.Contains($"Player{element.Key}") == true && !entry.ContainsKey("costElemType"));
+
 
                                     if (elementSkill == null) continue;
 
                                     skill = Mappings[elementSkill["nameTextMapHash"].ToString()].ToString();
 
-                                    const3Description = talents.Where(entry => entry["openConfig"].ToString().Contains($"Player_{element.Key}")).ElementAt(2)["descTextMapHash"].ToString();
+                                    const3Description = talents.Where(entry => entry.Value<string>("openConfig")?.Contains($"Player_{element.Key}") == true).ElementAt(2)["descTextMapHash"].ToString();
                                     const3Description = Mappings[const3Description].ToString();
 
                                     if (const3Description.Contains(skill))
@@ -476,7 +476,16 @@ namespace InventoryKamera
                             }
                             else // Any other character that isn't traveler
                             {
-                                skill = skills.First(entry => entry["skillIcon"].ToString().Contains($"Skill_S_{name}"))["nameTextMapHash"].ToString();
+
+                                var characterSkill = skills.FirstOrDefault(entry => entry.Value<string>("skillIcon")?.Contains($"Skill_S_{name}") == true);
+
+                                if (characterSkill == null)
+                                {
+                                    Logger.Debug("Skipping {0} - no skill data available", name);
+                                    return;
+                                }
+
+                                skill = characterSkill["nameTextMapHash"].ToString();
                                 skill = Mappings[skill].ToString();
 
                                 value.Add("ConstellationName", new JArray
@@ -487,7 +496,7 @@ namespace InventoryKamera
                                 var constellationOrder = new JArray();
 
                                 // The skill/burst name is always mentioned in the constellation's description so we'll check for it
-                                const3Description = talents.Where(entry => entry["icon"].ToString().Contains(name)).ElementAt(2)["descTextMapHash"].ToString();
+                                const3Description = talents.Where(entry => entry.Value<string>("icon")?.Contains(name) == true).ElementAt(2)["descTextMapHash"].ToString();
                                 const3Description = Mappings[const3Description].ToString();
 
                                 if (const3Description.Contains(auto))
@@ -503,7 +512,7 @@ namespace InventoryKamera
                                 }
 
                                 // The skill/burst name is always mentioned in the constellation's description so we'll check for it
-                                const5Description = talents.Where(entry => entry["icon"].ToString().Contains(name)).ElementAt(4)["descTextMapHash"].ToString();
+                                const5Description = talents.Where(entry => entry.Value<string>("icon")?.Contains(name) == true).ElementAt(4)["descTextMapHash"].ToString();
                                 const5Description = Mappings[const5Description].ToString();
 
                                 if (const5Description.Contains(auto))
