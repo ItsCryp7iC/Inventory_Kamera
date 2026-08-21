@@ -254,7 +254,9 @@ namespace InventoryKamera
                 using (var nameBitmap = GetItemNameBitmap(card))
                 {
                     SaveDebugScreenshot(nameBitmap, "SelectedArtifactDetailsName");
-                    setName = ScanArtifactSet(nameBitmap);
+                    // Ad-hoc dev read: take the raw best-guess set name and ignore any deferred
+                    // correction -- there's no catalogued record here to patch after the fact.
+                    setName = ScanArtifactSetDeferred(nameBitmap).setName;
                 }
 
                 string gearSlot;
@@ -449,7 +451,7 @@ namespace InventoryKamera
             return "Artifacts";
         }
 
-        public async Task<Artifact> CatalogueFromBitmapsAsync(List<Bitmap> bm, int id)
+        public async Task<(Artifact artifact, PendingNameCorrection pending)> CatalogueFromBitmapsAsync(List<Bitmap> bm, int id)
 		{
 			// Init Variables
 			string gearSlot = null;
@@ -461,6 +463,7 @@ namespace InventoryKamera
             int rarity = 0;
 			int level = 0;
 			bool _lock = false;
+			PendingNameCorrection pendingSet = null;
 
 			if (bm.Count >= 6)
 			{
@@ -486,7 +489,7 @@ namespace InventoryKamera
 				var taskLevel = Task.Run(() => level = ScanArtifactLevel(bm[a_level]));
 				var taskSubs  = Task.Run(() => (subStats, unactivatedSubStats) = ScanArtifactSubStats(bm[a_subStats]));
 				var taskEquip = Task.Run(() => equippedCharacter = ScanArtifactEquippedCharacter(bm[a_equippedCharacter]));
-				var taskName = Task.Run(() => setName = ScanArtifactSet(bm[a_name]));
+				var taskName = Task.Run(() => (setName, pendingSet) = ScanArtifactSetDeferred(bm[a_name]));
 
 				tasks.Add(taskGear);
 				tasks.Add(taskMain);
@@ -500,7 +503,7 @@ namespace InventoryKamera
 
 				await Task.WhenAll(tasks.ToArray());
 			}
-			return new Artifact(setName, rarity, level, gearSlot, mainStat, subStats, unactivatedSubStats, equippedCharacter, id, _lock);
+			return (new Artifact(setName, rarity, level, gearSlot, mainStat, subStats, unactivatedSubStats, equippedCharacter, id, _lock), pendingSet);
 		}
 
 		private int GetRarity(Bitmap bm)
@@ -740,7 +743,7 @@ namespace InventoryKamera
 			return null;
 		}
 
-		private string ScanArtifactSet(Bitmap itemName)
+		private (string setName, PendingNameCorrection pending) ScanArtifactSetDeferred(Bitmap itemName)
         {
             GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref itemName);
             Bitmap grayscale = imagePreprocessor.ConvertToGrayscale(itemName);
@@ -764,20 +767,21 @@ namespace InventoryKamera
                     // No fuzzy-match hit at all (setName null) is always worth a correction regardless
                     // of OCR confidence -- Tesseract can be very confident about text that still
                     // doesn't resemble any known artifact set.
+                    PendingNameCorrection pending = null;
                     if (string.IsNullOrWhiteSpace(setName) || confidencePercent < scanSettings.OcrConfidenceThreshold)
                     {
-                        Logger.Debug("Artifact set name below confidence threshold or no fuzzy match -- requesting inline correction");
-                        string corrected = progressReporter.RequestCorrection(grayscale, text, confidencePercent, "Artifact set name");
-                        if (!string.IsNullOrWhiteSpace(corrected))
+                        Logger.Debug("Artifact set name below confidence threshold or no fuzzy match -- deferring inline correction to end of scan");
+                        pending = new PendingNameCorrection(text, confidencePercent, "Artifact set name", corrected =>
                         {
+                            if (string.IsNullOrWhiteSpace(corrected)) return null;
                             string normalized = Regex.Replace(corrected.ToLower(), @"[\W]", string.Empty);
-                            setName = GenshinProcesor.FindClosestArtifactSetFromArtifactName(normalized) ?? corrected;
-                        }
+                            return GenshinProcesor.FindClosestArtifactSetFromArtifactName(normalized) ?? corrected;
+                        });
                     }
 
 					grayscale.Dispose();
 
-					return setName;
+					return (setName, pending);
                 }
             }
         }

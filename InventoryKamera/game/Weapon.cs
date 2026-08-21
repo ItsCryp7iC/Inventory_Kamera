@@ -86,6 +86,13 @@ namespace InventoryKamera
 			Rarity = _rarity;
 		}
 
+		/// <summary>
+		/// Overwrites the weapon name after construction. Used only by the deferred OCR-correction
+		/// flush (GameScanner) to apply a name the user corrected after the scan finished; mirrors the
+		/// constructor's blank-to-empty-string normalization so validity checks behave identically.
+		/// </summary>
+		internal void UpdateName(string name) => Name = string.IsNullOrWhiteSpace(name) ? "" : name;
+
 		public bool IsValid()
 		{
 			return HasValidWeaponName() && HasValidLevel() && HasValidEquippedCharacter() && HasValidRefinementLevel() && HasValidRarity();

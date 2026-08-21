@@ -320,6 +320,13 @@ namespace InventoryKamera
 			// Wait for Image Processors to finish
 			AwaitProcessors();
 
+			// Every weapon/artifact is now catalogued (from raw best-guess names). Show the batched
+			// low-confidence name corrections the scan deferred, and let each patch its record --
+			// after the workers have drained (so the callbacks' inventory mutations run single-threaded)
+			// and before the assignment passes below (so a correction that rescues an equipped item is
+			// assigned to its character).
+			progressReporter.FlushDeferredCorrections();
+
 			if (scanSettings.ScanCharacters)
 			{
 				// Assign Artifacts to Characters
@@ -380,7 +387,7 @@ namespace InventoryKamera
 							progressReporter.SetGearPictureBox(imageCollection.Bitmaps.Last());
 
 							// Scan as weapon
-							Weapon weapon = await weaponScraper.CatalogueFromBitmapsAsync(imageCollection.Bitmaps, imageCollection.Id);
+							var (weapon, pendingWeaponName) = await weaponScraper.CatalogueFromBitmapsAsync(imageCollection.Bitmaps, imageCollection.Id);
 							progressReporter.SetGear(imageCollection.Bitmaps.Last(), weapon);
 
 							string weaponPath = $"./logging/weapons/weapon{weapon.Id}/";
@@ -435,6 +442,34 @@ namespace InventoryKamera
 								Task.Run(() => LogObject(weapon, weaponPath + "weapon.json"));
                             }
 
+                            // A low-confidence weapon name isn't corrected inline anymore -- it's queued
+                            // and shown after the whole scan finishes (see FlushDeferredCorrections). The
+                            // record above was built and catalogued from the raw best-guess; the callback
+                            // patches its name once the user answers, and rescues it into the inventory if
+                            // the correction turns a previously-invalid name valid. wasAdded mirrors the
+                            // add decision made just above so the rescue path never double-adds.
+                            if (pendingWeaponName != null)
+                            {
+                                bool wasAdded = weapon.IsValid();
+                                progressReporter.EnqueueCorrection(
+                                    imageCollection.Bitmaps[0], pendingWeaponName.RecognizedText,
+                                    pendingWeaponName.ConfidencePercent, pendingWeaponName.FieldLabel,
+                                    corrected =>
+                                    {
+                                        string resolved = pendingWeaponName.Resolve(corrected);
+                                        if (resolved == null) return;
+                                        weapon.UpdateName(resolved);
+                                        Logger.Info("Weapon scan #{0}: name corrected post-scan to \"{1}\".", weapon.Id, weapon.Name);
+                                        if (!wasAdded && weapon.IsValid())
+                                        {
+                                            progressReporter.IncrementWeaponCount();
+                                            Inventory.Add(weapon);
+                                            if (!string.IsNullOrWhiteSpace(weapon.EquippedCharacter))
+                                                equippedWeapons.Add(weapon);
+                                        }
+                                    });
+                            }
+
                             // Dispose of everything
                             imageCollection.Bitmaps.ForEach(b => b.Dispose());
 							break;
@@ -449,7 +484,7 @@ namespace InventoryKamera
 
 							progressReporter.SetGearPictureBox(imageCollection.Bitmaps.Last());
 							// Scan as artifact
-							Artifact artifact = await artifactScraper.CatalogueFromBitmapsAsync(imageCollection.Bitmaps, imageCollection.Id);
+							var (artifact, pendingArtifactSet) = await artifactScraper.CatalogueFromBitmapsAsync(imageCollection.Bitmaps, imageCollection.Id);
 							progressReporter.SetGear(imageCollection.Bitmaps.Last(), artifact);
 
 							string artifactPath = $"./logging/artifacts/artifact{artifact.Id}/";
@@ -510,6 +545,34 @@ namespace InventoryKamera
                                 imageCollection.Bitmaps.Last().Save(artifactPath + "card.png");
 
 								Task.Run(()=>LogObject(artifact, artifactPath + "artifact.json"));
+							}
+
+							// A low-confidence artifact set name is queued for correction after the whole
+							// scan finishes (see FlushDeferredCorrections) rather than corrected inline.
+							// The record above was catalogued from the raw best-guess; the callback patches
+							// its set name once the user answers, and rescues it into the inventory when the
+							// correction turns a previously-invalid (unmatched) set valid. wasAdded mirrors
+							// the add decision just above so the rescue path never double-adds.
+							if (pendingArtifactSet != null)
+							{
+								bool wasAdded = artifact.IsValid();
+								progressReporter.EnqueueCorrection(
+									imageCollection.Bitmaps[0], pendingArtifactSet.RecognizedText,
+									pendingArtifactSet.ConfidencePercent, pendingArtifactSet.FieldLabel,
+									corrected =>
+									{
+										string resolved = pendingArtifactSet.Resolve(corrected);
+										if (resolved == null) return;
+										artifact.UpdateSetName(resolved);
+										Logger.Info("Artifact scan #{0}: set name corrected post-scan to \"{1}\".", artifact.Id, artifact.SetName);
+										if (!wasAdded && artifact.IsValid())
+										{
+											progressReporter.IncrementArtifactCount();
+											Inventory.Add(artifact);
+											if (!string.IsNullOrWhiteSpace(artifact.EquippedCharacter))
+												equippedArtifacts.Add(artifact);
+										}
+									});
 							}
 
 							// Dispose of everything

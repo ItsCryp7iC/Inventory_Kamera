@@ -50,6 +50,29 @@ namespace InventoryKamera
         string RequestCorrection(Bitmap image, string recognizedText, float confidencePercent, string fieldLabel);
 
         /// <summary>
+        /// Queues a low-confidence identifying-name OCR result (weapon name / artifact set name) for
+        /// correction <em>after the whole scan finishes</em> instead of interrupting it mid-scan like
+        /// <see cref="RequestCorrection"/> does. Returns immediately without blocking; the record is
+        /// left with its raw best-guess for the duration of the scan. <paramref name="image"/> is
+        /// cloned internally (the caller keeps ownership of the original), so the caller may dispose it
+        /// as usual right after queuing. When the scan ends, <see cref="FlushDeferredCorrections"/>
+        /// shows the dialog and calls <paramref name="apply"/> with the user's (possibly unchanged)
+        /// text so it can patch the already-built record. If nothing is subscribed (headless/test),
+        /// the request is dropped and <paramref name="apply"/> is never called -- the best-guess the
+        /// record already carries stands, matching <see cref="RequestCorrection"/>'s degrade behavior.
+        /// </summary>
+        void EnqueueCorrection(Bitmap image, string recognizedText, float confidencePercent, string fieldLabel, System.Action<string> apply);
+
+        /// <summary>
+        /// Shows every correction queued via <see cref="EnqueueCorrection"/> during the scan, one modal
+        /// dialog after another, then invokes each apply callback. Must be called on the scan thread
+        /// once all image-processor workers have drained (so the apply callbacks' inventory mutations
+        /// don't race the workers) and before per-character assignment runs (so a name correction that
+        /// rescues an equipped item still gets assigned). No-op if nothing was queued.
+        /// </summary>
+        void FlushDeferredCorrections();
+
+        /// <summary>
         /// Blocks the calling thread while any inline correction requested via
         /// <see cref="RequestCorrection"/> is awaiting user input. Scan loops that queue capture work
         /// onto background workers instead of processing it inline (<c>ArtifactScraper</c>/

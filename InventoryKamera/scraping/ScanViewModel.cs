@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Threading;
@@ -404,15 +405,14 @@ namespace InventoryKamera
         /// </summary>
         public event Action<OcrCorrectionEventArgs> CorrectionRequested;
 
-        // Weapon/artifact recognition runs on background worker threads pulled from a channel that
-        // the main click/scroll loop feeds and moves on from immediately (see ArtifactScraper/
-        // WeaponScraper's QueueScan) -- so blocking a worker thread inside RequestCorrection does
-        // NOT, by itself, stop the click loop from continuing to drive the game while a correction
-        // dialog sits open. correctionsPending/correctionGate close a separate gate the click loops
-        // check between items (IScanProgressReporter.WaitIfCorrectionPending), so the game genuinely
-        // pauses for as long as any correction is outstanding -- a count, not a single flag, since
-        // multiple low-confidence recognitions can be in flight on different workers at once and the
-        // gate must stay closed until every one of them resolves, not just the first.
+        // The remaining inline RequestCorrection caller is the inventory item-count read, which runs
+        // on the main scan (click/scroll) thread and so blocks that loop directly while its dialog is
+        // open -- the gate below is redundant for it, but is kept because it's cheap, still correctly
+        // scoped, and lets any future worker-thread inline correction reuse it. (Weapon-name and
+        // artifact-set-name corrections, which DO run on background workers, no longer block at all:
+        // they're deferred and shown in a batch after the scan via EnqueueCorrection/
+        // FlushDeferredCorrections, so they never need the gate.) correctionsPending is a count, not a
+        // flag, so the gate stays closed until every outstanding inline correction resolves.
         private int correctionsPending;
         private readonly ManualResetEventSlim correctionGate = new ManualResetEventSlim(true);
 
@@ -438,6 +438,80 @@ namespace InventoryKamera
             {
                 clone.Dispose();
                 if (Interlocked.Decrement(ref correctionsPending) == 0) correctionGate.Set();
+            }
+        }
+
+        // Deferred corrections (weapon name / artifact set name) collected during the scan and shown
+        // in a batch once it's done (see IScanProgressReporter.EnqueueCorrection). Unlike
+        // RequestCorrection, these never block the scan -- the record keeps its raw best-guess until
+        // FlushDeferredCorrections patches it at the end. Multiple background workers enqueue
+        // concurrently, so the list is lock-guarded.
+        private sealed class DeferredCorrection
+        {
+            public Bitmap Image;             // clone owned here; disposed after its dialog closes
+            public string RecognizedText;
+            public float ConfidencePercent;
+            public string FieldLabel;
+            public Action<string> Apply;
+        }
+
+        private readonly List<DeferredCorrection> deferredCorrections = new List<DeferredCorrection>();
+        private readonly object deferredLock = new object();
+
+        public void EnqueueCorrection(Bitmap image, string recognizedText, float confidencePercent, string fieldLabel, Action<string> apply)
+        {
+            // No subscriber (headless run, unit test): drop it and leave the record's best-guess as-is,
+            // exactly as if no correction UI existed -- and, crucially, do NOT invoke apply here, which
+            // would run its inventory mutation on a background worker thread and race the other workers.
+            if (CorrectionRequested == null) return;
+
+            var clone = CloneBitmap(image);
+            lock (deferredLock)
+            {
+                deferredCorrections.Add(new DeferredCorrection
+                {
+                    Image = clone,
+                    RecognizedText = recognizedText,
+                    ConfidencePercent = confidencePercent,
+                    FieldLabel = fieldLabel,
+                    Apply = apply,
+                });
+            }
+        }
+
+        public void FlushDeferredCorrections()
+        {
+            List<DeferredCorrection> pending;
+            lock (deferredLock)
+            {
+                if (deferredCorrections.Count == 0) return;
+                pending = new List<DeferredCorrection>(deferredCorrections);
+                deferredCorrections.Clear();
+            }
+
+            Logger.Info("Showing {0} deferred OCR correction(s) after scan completion.", pending.Count);
+            foreach (var d in pending)
+            {
+                try
+                {
+                    string resolved = d.RecognizedText;
+                    if (CorrectionRequested != null)
+                    {
+                        var args = new OcrCorrectionEventArgs(d.Image, d.RecognizedText, d.ConfidencePercent, d.FieldLabel);
+                        CorrectionRequested.Invoke(args);
+                        resolved = args.ResolvedText ?? d.RecognizedText;
+                    }
+                    d.Apply?.Invoke(resolved);
+                }
+                catch (Exception ex)
+                {
+                    // One bad correction shouldn't abort the rest of the batch.
+                    Logger.Error(ex, "Deferred OCR correction for \"{0}\" failed to apply.", d.FieldLabel);
+                }
+                finally
+                {
+                    d.Image.Dispose();
+                }
             }
         }
 

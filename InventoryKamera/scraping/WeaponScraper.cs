@@ -324,7 +324,7 @@ namespace InventoryKamera
                     height: (int)(card.Height * 0.0389)));
         }
 
-        public async Task<Weapon> CatalogueFromBitmapsAsync(List<Bitmap> bm, int id)
+        public async Task<(Weapon weapon, PendingNameCorrection pending)> CatalogueFromBitmapsAsync(List<Bitmap> bm, int id)
 		{
 			// Init Variables
 			string name = null;
@@ -334,6 +334,7 @@ namespace InventoryKamera
 			bool locked = false;
 			string equippedCharacter = null;
 			int rarity = 0;
+			PendingNameCorrection pendingName = null;
 
 			if (bm.Count >= 4)
 			{
@@ -356,7 +357,7 @@ namespace InventoryKamera
 
 				var taskName = Task.Run(() =>
 				{
-					name = ScanWeaponNameWithCorrection(bm[w_name]);
+					(name, pendingName) = ScanWeaponNameDeferred(bm[w_name]);
 				});
 				var taskLevel = Task.Run(() => level = ScanLevel(bm[w_level], ref ascended));
 				var taskRefinement = Task.Run(() => refinementLevel = ScanRefinement(bm[w_refinement]));
@@ -373,7 +374,7 @@ namespace InventoryKamera
 
 				await Task.WhenAll(tasks.ToArray());
 			}
-			return new Weapon(name, level, ascended, refinementLevel, locked, equippedCharacter, id, rarity);
+			return (new Weapon(name, level, ascended, refinementLevel, locked, equippedCharacter, id, rarity), pendingName);
 		}
 
         public bool IsEnhancementMaterial(Bitmap nameBitmap)
@@ -398,12 +399,15 @@ namespace InventoryKamera
         }
 
         /// <summary>
-        /// Weapon name recognition, gated on inline correction (Phase 3 §3.3) since a misread name
-        /// silently corrupts export data -- unlike <see cref="ScanEnchancementOreName"/> (fed dozens
-        /// of times per scan by enhancement fodder), this runs once per weapon actually being
-        /// cataloged, so a correction popup here is rare enough not to be disruptive.
+        /// Weapon name recognition (Phase 3 §3.3) since a misread name silently corrupts export data --
+        /// unlike <see cref="ScanEnchancementOreName"/> (fed dozens of times per scan by enhancement
+        /// fodder), this runs once per weapon actually being cataloged. Returns the raw best-guess name
+        /// immediately; if it's below the confidence threshold, it also returns a
+        /// <see cref="PendingNameCorrection"/> so the correction dialog can be deferred to the end of
+        /// the scan instead of interrupting the click/scroll loop mid-scan. Returns a null pending when
+        /// the recognition is confident enough to need no correction.
         /// </summary>
-        private string ScanWeaponNameWithCorrection(Bitmap nameBitmap)
+        private (string name, PendingNameCorrection pending) ScanWeaponNameDeferred(Bitmap nameBitmap)
         {
             var (rawName, confidencePercent) = ScanItemNameWithConfidence(nameBitmap);
             string name = ScanWeaponName(rawName);
@@ -411,16 +415,17 @@ namespace InventoryKamera
             Logger.Debug("Weapon name OCR: rawText=\"{0}\" matchedName=\"{1}\" confidence={2:0.0}% threshold={3}%", rawName, name, confidencePercent, scanSettings.OcrConfidenceThreshold);
             if (string.IsNullOrWhiteSpace(name) || confidencePercent < scanSettings.OcrConfidenceThreshold)
             {
-                Logger.Debug("Weapon name below confidence threshold -- requesting inline correction");
-                string corrected = progressReporter.RequestCorrection(nameBitmap, rawName, confidencePercent, "Weapon name");
-                if (!string.IsNullOrWhiteSpace(corrected) && corrected != rawName)
+                Logger.Debug("Weapon name below confidence threshold -- deferring inline correction to end of scan");
+                var pending = new PendingNameCorrection(rawName, confidencePercent, "Weapon name", corrected =>
                 {
+                    if (string.IsNullOrWhiteSpace(corrected) || corrected == rawName) return null;
                     string normalized = Regex.Replace(corrected.ToLower(), @"[\W]", string.Empty);
-                    name = ScanWeaponName(normalized) ?? corrected;
-                }
+                    return ScanWeaponName(normalized) ?? corrected;
+                });
+                return (name, pending);
             }
 
-            return name;
+            return (name, null);
         }
 
         public int ScanLevel(Bitmap bm, ref bool ascended)

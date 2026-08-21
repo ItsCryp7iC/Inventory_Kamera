@@ -67,6 +67,13 @@ namespace InventoryKamera
 			Id = _id;
 		}
 
+		/// <summary>
+		/// Overwrites the artifact set name after construction. Used only by the deferred OCR-correction
+		/// flush (GameScanner) to apply a set the user corrected after the scan finished; mirrors the
+		/// constructor's blank-to-empty-string normalization so validity checks behave identically.
+		/// </summary>
+		internal void UpdateSetName(string setName) => SetName = string.IsNullOrWhiteSpace(setName) ? "" : setName;
+
 		public bool IsValid()
 		{
 			return HasValidLevel() && HasValidRarity() && HasValidSlot() && HasValidSetName() && HasValidMainStat() && HasValidSubStats() && HasValidEquippedCharacter();
