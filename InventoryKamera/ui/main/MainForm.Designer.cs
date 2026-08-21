@@ -686,7 +686,7 @@ namespace InventoryKamera
             // 
             AdvancedSettingsMenuItem.Name = "AdvancedSettingsMenuItem";
             AdvancedSettingsMenuItem.Size = new System.Drawing.Size(290, 34);
-            AdvancedSettingsMenuItem.Text = "Advanced Settings...";
+            AdvancedSettingsMenuItem.Text = "Settings...";
             AdvancedSettingsMenuItem.Click += AdvancedSettingsMenuItem_Click;
             // 
             // DarkModeMenuItem

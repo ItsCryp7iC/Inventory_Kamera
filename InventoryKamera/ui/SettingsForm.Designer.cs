@@ -298,7 +298,7 @@ namespace InventoryKamera.ui
             MinimizeBox = false;
             Name = "SettingsForm";
             StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
-            Text = "Advanced Settings";
+            Text = "Settings";
             CharacterNamesGroupBox.ResumeLayout(false);
             CharacterNamesGroupBox.PerformLayout();
             OutputGroupBox.ResumeLayout(false);
