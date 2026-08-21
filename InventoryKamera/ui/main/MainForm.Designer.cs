@@ -72,17 +72,10 @@ namespace InventoryKamera
             fileToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             Quit_MenuItem = new System.Windows.Forms.ToolStripMenuItem();
             keysToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
-            inventoryToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
-            inventoryToolStripTextBox = new System.Windows.Forms.ToolStripTextBox();
-            characterScreenToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
-            characterToolStripTextBox = new System.Windows.Forms.ToolStripTextBox();
-            characterSlot1KeyToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
-            slot1StripTextBox = new System.Windows.Forms.ToolStripTextBox();
             DatabaseUpdateMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             toolStripMenuItem1 = new System.Windows.Forms.ToolStripMenuItem();
             updateExecutablesToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             AdvancedSettingsMenuItem = new System.Windows.Forms.ToolStripMenuItem();
-            DarkModeMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             DebugMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             TestControllerCharacterScanMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             CoordinatePickerMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -578,7 +571,7 @@ namespace InventoryKamera
             // menuStrip1
             // 
             menuStrip1.ImageScalingSize = new System.Drawing.Size(20, 20);
-            menuStrip1.Items.AddRange(new System.Windows.Forms.ToolStripItem[] { fileToolStripMenuItem, keysToolStripMenuItem, DebugMenuItem, TestControllerMashBackMenuItem });
+            menuStrip1.Items.AddRange(new System.Windows.Forms.ToolStripItem[] { fileToolStripMenuItem, keysToolStripMenuItem, TestControllerMashBackMenuItem });
             menuStrip1.Location = new System.Drawing.Point(0, 0);
             menuStrip1.Name = "menuStrip1";
             menuStrip1.Padding = new System.Windows.Forms.Padding(12, 4, 0, 4);
@@ -588,7 +581,7 @@ namespace InventoryKamera
             // 
             // fileToolStripMenuItem
             // 
-            fileToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { Quit_MenuItem });
+            fileToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { toolStripMenuItem1, Quit_MenuItem });
             fileToolStripMenuItem.Name = "fileToolStripMenuItem";
             fileToolStripMenuItem.Size = new System.Drawing.Size(54, 29);
             fileToolStripMenuItem.Text = "File";
@@ -602,65 +595,11 @@ namespace InventoryKamera
             // 
             // keysToolStripMenuItem
             // 
-            keysToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { inventoryToolStripMenuItem, characterScreenToolStripMenuItem, characterSlot1KeyToolStripMenuItem, DatabaseUpdateMenuItem, toolStripMenuItem1, updateExecutablesToolStripMenuItem, AdvancedSettingsMenuItem, DarkModeMenuItem });
+            keysToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { DatabaseUpdateMenuItem, updateExecutablesToolStripMenuItem, AdvancedSettingsMenuItem });
             keysToolStripMenuItem.Name = "keysToolStripMenuItem";
             keysToolStripMenuItem.Size = new System.Drawing.Size(92, 29);
             keysToolStripMenuItem.Text = "Options";
-            // 
-            // inventoryToolStripMenuItem
-            // 
-            inventoryToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { inventoryToolStripTextBox });
-            inventoryToolStripMenuItem.Name = "inventoryToolStripMenuItem";
-            inventoryToolStripMenuItem.Size = new System.Drawing.Size(290, 34);
-            inventoryToolStripMenuItem.Text = "Inventory Key";
-            // 
-            // inventoryToolStripTextBox
-            // 
-            inventoryToolStripTextBox.CharacterCasing = System.Windows.Forms.CharacterCasing.Upper;
-            inventoryToolStripTextBox.MaxLength = 2;
-            inventoryToolStripTextBox.Name = "inventoryToolStripTextBox";
-            inventoryToolStripTextBox.Size = new System.Drawing.Size(90, 31);
-            inventoryToolStripTextBox.Tag = "InventoryKey";
-            inventoryToolStripTextBox.Text = "B";
-            inventoryToolStripTextBox.ToolTipText = "Key to open inventory";
-            inventoryToolStripTextBox.KeyDown += OptionsMenuItem_KeyDown;
-            // 
-            // characterScreenToolStripMenuItem
-            // 
-            characterScreenToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { characterToolStripTextBox });
-            characterScreenToolStripMenuItem.Name = "characterScreenToolStripMenuItem";
-            characterScreenToolStripMenuItem.Size = new System.Drawing.Size(290, 34);
-            characterScreenToolStripMenuItem.Text = "Character Screen Key";
-            // 
-            // characterToolStripTextBox
-            // 
-            characterToolStripTextBox.CharacterCasing = System.Windows.Forms.CharacterCasing.Upper;
-            characterToolStripTextBox.MaxLength = 2;
-            characterToolStripTextBox.Name = "characterToolStripTextBox";
-            characterToolStripTextBox.Size = new System.Drawing.Size(90, 31);
-            characterToolStripTextBox.Tag = "CharacterKey";
-            characterToolStripTextBox.Text = "C";
-            characterToolStripTextBox.ToolTipText = "Key to open character screen";
-            characterToolStripTextBox.KeyDown += OptionsMenuItem_KeyDown;
-            // 
-            // characterSlot1KeyToolStripMenuItem
-            // 
-            characterSlot1KeyToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { slot1StripTextBox });
-            characterSlot1KeyToolStripMenuItem.Name = "characterSlot1KeyToolStripMenuItem";
-            characterSlot1KeyToolStripMenuItem.Size = new System.Drawing.Size(290, 34);
-            characterSlot1KeyToolStripMenuItem.Text = "Character Slot 1 Key";
-            // 
-            // slot1StripTextBox
-            // 
-            slot1StripTextBox.CharacterCasing = System.Windows.Forms.CharacterCasing.Upper;
-            slot1StripTextBox.MaxLength = 10;
-            slot1StripTextBox.Name = "slot1StripTextBox";
-            slot1StripTextBox.Size = new System.Drawing.Size(90, 31);
-            slot1StripTextBox.Tag = "slot1Key";
-            slot1StripTextBox.Text = "1";
-            slot1StripTextBox.ToolTipText = "Key to Select First Character";
-            slot1StripTextBox.KeyDown += OptionsMenuItem_KeyDown;
-            // 
+            //
             // DatabaseUpdateMenuItem
             // 
             DatabaseUpdateMenuItem.Name = "DatabaseUpdateMenuItem";
@@ -688,15 +627,7 @@ namespace InventoryKamera
             AdvancedSettingsMenuItem.Size = new System.Drawing.Size(290, 34);
             AdvancedSettingsMenuItem.Text = "Settings...";
             AdvancedSettingsMenuItem.Click += AdvancedSettingsMenuItem_Click;
-            // 
-            // DarkModeMenuItem
-            // 
-            DarkModeMenuItem.CheckOnClick = true;
-            DarkModeMenuItem.Name = "DarkModeMenuItem";
-            DarkModeMenuItem.Size = new System.Drawing.Size(290, 34);
-            DarkModeMenuItem.Text = "Dark Mode";
-            DarkModeMenuItem.Click += DarkModeMenuItem_Click;
-            // 
+            //
             // DebugMenuItem
             // 
             DebugMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { TestControllerCharacterScanMenuItem, CoordinatePickerMenuItem });
@@ -720,9 +651,11 @@ namespace InventoryKamera
             // 
             // TestControllerMashBackMenuItem
             // 
+            TestControllerMashBackMenuItem.AutoToolTip = true;
             TestControllerMashBackMenuItem.Name = "TestControllerMashBackMenuItem";
             TestControllerMashBackMenuItem.Size = new System.Drawing.Size(126, 29);
-            TestControllerMashBackMenuItem.Text = "Panic Button";
+            TestControllerMashBackMenuItem.Text = "Emergency Exit";
+            TestControllerMashBackMenuItem.ToolTipText = "If a scan gets stuck in a game menu, click to mash B and back out to free-roam.";
             TestControllerMashBackMenuItem.Click += TestControllerMashBackMenuItem_Click;
             // 
             // label2
@@ -1175,11 +1108,7 @@ namespace InventoryKamera
 		private System.Windows.Forms.MenuStrip menuStrip1;
 		private System.Windows.Forms.ToolStripMenuItem fileToolStripMenuItem;
 		private System.Windows.Forms.ToolStripMenuItem keysToolStripMenuItem;
-		private System.Windows.Forms.ToolStripMenuItem inventoryToolStripMenuItem;
 		private System.Windows.Forms.ToolStripMenuItem Quit_MenuItem;
-		private System.Windows.Forms.ToolStripTextBox inventoryToolStripTextBox;
-		private System.Windows.Forms.ToolStripMenuItem characterScreenToolStripMenuItem;
-		private System.Windows.Forms.ToolStripTextBox characterToolStripTextBox;
 		private System.Windows.Forms.PictureBox GearPictureBox;
 		private System.Windows.Forms.CheckBox Materials_CheckBox;
 		private System.Windows.Forms.ToolStripMenuItem DatabaseUpdateMenuItem;
@@ -1200,8 +1129,6 @@ namespace InventoryKamera
         private System.Windows.Forms.ToolTip equipWeaponToolTip;
         private System.Windows.Forms.ToolTip equipArtifactsToolTip;
         private System.Windows.Forms.ToolStripMenuItem updateExecutablesToolStripMenuItem;
-        private System.Windows.Forms.ToolStripMenuItem characterSlot1KeyToolStripMenuItem;
-        private System.Windows.Forms.ToolStripTextBox slot1StripTextBox;
         private System.Windows.Forms.Label SortByObtained;
         private System.Windows.Forms.NumericUpDown SortByObtainedControl;
         private System.Windows.Forms.Label label5;
@@ -1212,7 +1139,6 @@ namespace InventoryKamera
         private System.Windows.Forms.CheckBox ScanAllArtifactPages_CheckBox;
         private System.Windows.Forms.CheckBox ScanAllCharacters_CheckBox;
         private System.Windows.Forms.ToolStripMenuItem AdvancedSettingsMenuItem;
-        private System.Windows.Forms.ToolStripMenuItem DarkModeMenuItem;
         private System.Windows.Forms.ToolStripMenuItem DebugMenuItem;
         private System.Windows.Forms.ToolStripMenuItem TestControllerMashBackMenuItem;
         private System.Windows.Forms.ToolStripMenuItem TestControllerCharacterScanMenuItem;

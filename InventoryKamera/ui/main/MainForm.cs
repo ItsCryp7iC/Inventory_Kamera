@@ -87,13 +87,13 @@ namespace InventoryKamera
             UiTheme.RoundCorners(StartScan_Button, 8);
             UiTheme.RoundCorners(ManualExportButton, 6);
             UiTheme.RoundCorners(button1, 6);
-            DarkModeMenuItem.Checked = Properties.Settings.Default.DarkMode;
             UiTheme.ApplyTheme(this);
 
             // Phase 3 §6c's controller-navigation debug tools (MODERNIZATION_PLAN.md §6c) are not
-            // meant for end users -- only shown in Debug builds.
-#if !DEBUG
-            menuStrip1.Items.Remove(DebugMenuItem);
+            // meant for end users. DebugMenuItem is defined in the designer but left out of the
+            // always-on menu bar; only Debug builds insert it (after the Options menu).
+#if DEBUG
+            menuStrip1.Items.Insert(2, DebugMenuItem);
 #endif
         }
 
@@ -346,7 +346,7 @@ namespace InventoryKamera
                 Properties.Settings.Default.Save();
             }
 
-            UpdateKeyTextBoxes();
+            SyncNavigationKeysFromSettings();
 
             ProgramStatus_Label.Text = "";
             if (string.IsNullOrWhiteSpace(Properties.Settings.Default.OutputPath))
@@ -384,29 +384,13 @@ namespace InventoryKamera
             }
         }
 
-        private void UpdateKeyTextBoxes()
+        // Pushes the persisted key bindings into the live Navigation keys at startup. The bindings are
+        // edited (and displayed) in the Settings dialog now; MainForm only needs Navigation kept in sync.
+        private void SyncNavigationKeysFromSettings()
         {
             Navigation.inventoryKey = (VirtualKeyCode)Properties.Settings.Default.InventoryKey;
             Navigation.characterKey = (VirtualKeyCode)Properties.Settings.Default.CharacterKey;
             Navigation.slotOneKey = (VirtualKeyCode)Properties.Settings.Default.Slot1Key;
-
-            inventoryToolStripTextBox.Text = new KeysConverter().ConvertToString((Keys)Navigation.inventoryKey);
-            characterToolStripTextBox.Text = new KeysConverter().ConvertToString((Keys)Navigation.characterKey);
-            slot1StripTextBox.Text = new KeysConverter().ConvertToString((Keys)Navigation.slotOneKey);
-
-            // Make sure text boxes show key glyph and not "OEM..."
-            if (inventoryToolStripTextBox.Text.ToUpper().Contains("OEM"))
-            {
-                inventoryToolStripTextBox.Text = KeyCodeToUnicode((Keys)Navigation.inventoryKey);
-            }
-            if (characterToolStripTextBox.Text.ToUpper().Contains("OEM"))
-            {
-                characterToolStripTextBox.Text = KeyCodeToUnicode((Keys)Navigation.characterKey);
-            }
-            if (slot1StripTextBox.Text.ToUpper().Contains("OEM"))
-            {
-                slot1StripTextBox.Text = KeyCodeToUnicode((Keys)Navigation.slotOneKey);
-            }
         }
 
         // Phase 3 §3.2 pre-flight validation. Runs synchronously on the UI thread, before any scan
@@ -690,63 +674,6 @@ namespace InventoryKamera
             Application.Exit();
         }
 
-        private void OptionsMenuItem_KeyDown(object sender, KeyEventArgs e)
-        {
-            e.Handled = true;
-            e.SuppressKeyPress = true;
-
-            // Virtual keys for 0-9, A-Z
-            bool vk = e.KeyCode >= Keys.D0 && e.KeyCode <= Keys.Z;
-            // Numpad keys and function keys (internally accepts up to F24)
-            bool np = e.KeyCode >= Keys.NumPad0 && e.KeyCode <= Keys.F24;
-            // OEM keys (Keys that vary depending on keyboard layout)
-            bool oem = e.KeyCode >= Keys.Oem1 && e.KeyCode <= Keys.Oem7;
-            // Arrow keys, spacebar, INS, DEL, HOME, END, PAGEUP, PAGEDOWN
-            bool misc = e.KeyCode == Keys.Space || (e.KeyCode >= Keys.Left && e.KeyCode <= Keys.Down) || (e.KeyCode >= Keys.Prior && e.KeyCode <= Keys.Home) || e.KeyCode == Keys.Insert || e.KeyCode == Keys.Delete || e.KeyCode == Keys.Back;
-
-            // Validate that key is an acceptable Genshin keybind.
-            if (!vk && !np && !oem && !misc)
-            {
-                Logger.Debug("Invalid {key} key pressed", e.KeyCode);
-                return;
-            }
-            ToolStripTextBox s = (ToolStripTextBox)sender;
-
-            // Needed to differentiate between NUMPAD numbers and numbers at top of keyboard
-            s.Text = np || e.KeyCode == Keys.Back ? new KeysConverter().ConvertToString(e.KeyCode) : KeyCodeToUnicode(e.KeyData);
-
-            // Spacebar or upper navigation keys (INSERT-PAGEDOWN keys) make textbox empty
-            if (string.IsNullOrWhiteSpace(s.Text) || string.IsNullOrEmpty(s.Text))
-            {
-                s.Text = new KeysConverter().ConvertToString(e.KeyCode);
-            }
-
-
-            switch (s.Tag)
-            {
-                case "InventoryKey":
-                    Navigation.inventoryKey = (VirtualKeyCode)e.KeyCode;
-                    Logger.Debug("Inv key set to: {key}", Navigation.inventoryKey);
-                    Properties.Settings.Default.InventoryKey = e.KeyValue;
-                    break;
-
-                case "CharacterKey":
-                    Navigation.characterKey = (VirtualKeyCode)e.KeyCode;
-                    Logger.Debug("Char key set to: {key}", Navigation.characterKey);
-                    Properties.Settings.Default.CharacterKey = e.KeyValue;
-                    break;
-
-                case "slot1Key":
-                    Navigation.slotOneKey = (VirtualKeyCode)e.KeyCode;
-                    Logger.Debug("Slot 1 key set to: {key}", Navigation.slotOneKey);
-                    Properties.Settings.Default.Slot1Key = e.KeyValue;
-                    break;
-
-                default:
-                    break;
-            }
-        }
-
         private void DatabaseUpdateMenuItem_Click(object sender, EventArgs e)
         {
             var status = databaseManager.UpdateGameData();
@@ -784,43 +711,6 @@ namespace InventoryKamera
             }
         }
 
-        #region Unicode Helper Functions
-
-        // Needed to display OEM keys as glyphs from keyboard. Should work for other languages
-        // and keyboard layouts but only tested with QWERTY layout.
-        private string KeyCodeToUnicode(Keys key)
-        {
-            byte[] keyboardState = new byte[255];
-            bool keyboardStateStatus = GetKeyboardState(keyboardState);
-
-            if (!keyboardStateStatus)
-            {
-                return "";
-            }
-            uint virtualKeyCode = (uint)key;
-            uint scanCode = MapVirtualKey(virtualKeyCode, 0);
-            IntPtr inputLocaleIdentifier = GetKeyboardLayout(0);
-
-            StringBuilder result = new StringBuilder();
-            ToUnicodeEx(virtualKeyCode, scanCode, keyboardState, result, 5, 0, inputLocaleIdentifier);
-
-            return result.ToString();
-        }
-
-        [DllImport("user32.dll")]
-        private static extern bool GetKeyboardState(byte[] lpKeyState);
-
-        [DllImport("user32.dll")]
-        private static extern uint MapVirtualKey(uint uCode, uint uMapType);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetKeyboardLayout(uint idThread);
-
-        [DllImport("user32.dll")]
-        private static extern int ToUnicodeEx(uint wVirtKey, uint wScanCode, byte[] lpKeyState, [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pwszBuff, int cchBuff, uint wFlags, IntPtr dwhkl);
-
-        #endregion Unicode Helper Functions
-
         private void ExportFolderMenuItem_Click(object sender, EventArgs e)
         {
             if (Directory.Exists(Properties.Settings.Default.OutputPath) || Directory.CreateDirectory(Properties.Settings.Default.OutputPath).Exists)
@@ -836,16 +726,12 @@ namespace InventoryKamera
         private void AdvancedSettingsMenuItem_Click(object sender, EventArgs e)
         {
             new ui.SettingsForm().ShowDialog(this);
-        }
 
-        private void DarkModeMenuItem_Click(object sender, EventArgs e)
-        {
-            Properties.Settings.Default.DarkMode = DarkModeMenuItem.Checked;
-            Properties.Settings.Default.Save();
+            // The Settings dialog can change key bindings and dark mode; re-sync Navigation and
+            // re-theme MainForm now that it's closed. ProgramStatus_Label's color is semantic
+            // (green/red), not part of the base palette, so re-render it against the new background.
+            SyncNavigationKeysFromSettings();
             UiTheme.ApplyTheme(this);
-            // ProgramStatus_Label's color is semantic (green/red), not part of the base palette --
-            // re-render it against the new background instead of leaving whatever ApplyTheme left it
-            // at (which is the themed default text color, wrong for an in-progress/error status).
             OnProgramStatusChanged();
         }
 

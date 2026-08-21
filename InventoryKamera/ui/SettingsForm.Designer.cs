@@ -40,8 +40,17 @@ namespace InventoryKamera.ui
             OcrConfidenceThreshold_Label = new System.Windows.Forms.Label();
             OcrConfidenceThreshold_NumericUpDown = new System.Windows.Forms.NumericUpDown();
             CloseButton = new System.Windows.Forms.Button();
+            KeyBindingsGroupBox = new FlatGroupBox();
+            inventoryKeyLabel = new System.Windows.Forms.Label();
+            inventoryKeyTextBox = new System.Windows.Forms.TextBox();
+            characterKeyLabel = new System.Windows.Forms.Label();
+            characterKeyTextBox = new System.Windows.Forms.TextBox();
+            slot1KeyLabel = new System.Windows.Forms.Label();
+            slot1KeyTextBox = new System.Windows.Forms.TextBox();
+            DarkModeCheckBox = new System.Windows.Forms.CheckBox();
             screenshotsToolTip = new System.Windows.Forms.ToolTip(components);
             CharacterNamesGroupBox.SuspendLayout();
+            KeyBindingsGroupBox.SuspendLayout();
             OutputGroupBox.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)ScannerDelay_TrackBar).BeginInit();
             ((System.ComponentModel.ISupportInitialize)OcrConfidenceThreshold_NumericUpDown).BeginInit();
@@ -275,7 +284,7 @@ namespace InventoryKamera.ui
             //
             CloseButton.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(222, 216, 205);
             CloseButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
-            CloseButton.Location = new System.Drawing.Point(494, 237);
+            CloseButton.Location = new System.Drawing.Point(494, 372);
             CloseButton.Name = "CloseButton";
             CloseButton.Size = new System.Drawing.Size(75, 25);
             CloseButton.TabIndex = 2;
@@ -283,13 +292,101 @@ namespace InventoryKamera.ui
             CloseButton.UseVisualStyleBackColor = true;
             CloseButton.Click += CloseButton_Click;
             //
+            // KeyBindingsGroupBox
+            //
+            KeyBindingsGroupBox.Controls.Add(inventoryKeyLabel);
+            KeyBindingsGroupBox.Controls.Add(inventoryKeyTextBox);
+            KeyBindingsGroupBox.Controls.Add(characterKeyLabel);
+            KeyBindingsGroupBox.Controls.Add(characterKeyTextBox);
+            KeyBindingsGroupBox.Controls.Add(slot1KeyLabel);
+            KeyBindingsGroupBox.Controls.Add(slot1KeyTextBox);
+            KeyBindingsGroupBox.Location = new System.Drawing.Point(12, 233);
+            KeyBindingsGroupBox.Name = "KeyBindingsGroupBox";
+            KeyBindingsGroupBox.Size = new System.Drawing.Size(268, 125);
+            KeyBindingsGroupBox.TabIndex = 3;
+            KeyBindingsGroupBox.TabStop = false;
+            KeyBindingsGroupBox.Text = "Key Bindings";
+            //
+            // inventoryKeyLabel
+            //
+            inventoryKeyLabel.AutoSize = true;
+            inventoryKeyLabel.Location = new System.Drawing.Point(6, 25);
+            inventoryKeyLabel.Name = "inventoryKeyLabel";
+            inventoryKeyLabel.Size = new System.Drawing.Size(80, 15);
+            inventoryKeyLabel.TabIndex = 0;
+            inventoryKeyLabel.Text = "Inventory Key:";
+            //
+            // inventoryKeyTextBox
+            //
+            inventoryKeyTextBox.CharacterCasing = System.Windows.Forms.CharacterCasing.Upper;
+            inventoryKeyTextBox.Location = new System.Drawing.Point(160, 22);
+            inventoryKeyTextBox.MaxLength = 2;
+            inventoryKeyTextBox.Name = "inventoryKeyTextBox";
+            inventoryKeyTextBox.Size = new System.Drawing.Size(96, 23);
+            inventoryKeyTextBox.TabIndex = 1;
+            inventoryKeyTextBox.Tag = "InventoryKey";
+            inventoryKeyTextBox.KeyDown += KeyBinding_KeyDown;
+            //
+            // characterKeyLabel
+            //
+            characterKeyLabel.AutoSize = true;
+            characterKeyLabel.Location = new System.Drawing.Point(6, 55);
+            characterKeyLabel.Name = "characterKeyLabel";
+            characterKeyLabel.Size = new System.Drawing.Size(129, 15);
+            characterKeyLabel.TabIndex = 2;
+            characterKeyLabel.Text = "Character Screen Key:";
+            //
+            // characterKeyTextBox
+            //
+            characterKeyTextBox.CharacterCasing = System.Windows.Forms.CharacterCasing.Upper;
+            characterKeyTextBox.Location = new System.Drawing.Point(160, 52);
+            characterKeyTextBox.MaxLength = 2;
+            characterKeyTextBox.Name = "characterKeyTextBox";
+            characterKeyTextBox.Size = new System.Drawing.Size(96, 23);
+            characterKeyTextBox.TabIndex = 3;
+            characterKeyTextBox.Tag = "CharacterKey";
+            characterKeyTextBox.KeyDown += KeyBinding_KeyDown;
+            //
+            // slot1KeyLabel
+            //
+            slot1KeyLabel.AutoSize = true;
+            slot1KeyLabel.Location = new System.Drawing.Point(6, 85);
+            slot1KeyLabel.Name = "slot1KeyLabel";
+            slot1KeyLabel.Size = new System.Drawing.Size(118, 15);
+            slot1KeyLabel.TabIndex = 4;
+            slot1KeyLabel.Text = "Character Slot 1 Key:";
+            //
+            // slot1KeyTextBox
+            //
+            slot1KeyTextBox.CharacterCasing = System.Windows.Forms.CharacterCasing.Upper;
+            slot1KeyTextBox.Location = new System.Drawing.Point(160, 82);
+            slot1KeyTextBox.MaxLength = 10;
+            slot1KeyTextBox.Name = "slot1KeyTextBox";
+            slot1KeyTextBox.Size = new System.Drawing.Size(96, 23);
+            slot1KeyTextBox.TabIndex = 5;
+            slot1KeyTextBox.Tag = "slot1Key";
+            slot1KeyTextBox.KeyDown += KeyBinding_KeyDown;
+            //
+            // DarkModeCheckBox
+            //
+            DarkModeCheckBox.AutoSize = true;
+            DarkModeCheckBox.Location = new System.Drawing.Point(292, 242);
+            DarkModeCheckBox.Name = "DarkModeCheckBox";
+            DarkModeCheckBox.Size = new System.Drawing.Size(87, 19);
+            DarkModeCheckBox.TabIndex = 4;
+            DarkModeCheckBox.Text = "Dark Mode";
+            DarkModeCheckBox.UseVisualStyleBackColor = true;
+            DarkModeCheckBox.CheckedChanged += DarkModeCheckBox_CheckedChanged;
+            //
             // SettingsForm
             //
             AutoScaleDimensions = new System.Drawing.SizeF(96F, 96F);
             AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
             BackColor = System.Drawing.Color.FromArgb(245, 244, 237);
             Font = new System.Drawing.Font("Segoe UI", 9F);
-            ClientSize = new System.Drawing.Size(581, 274);
+            ClientSize = new System.Drawing.Size(581, 408);
+            Controls.Add(DarkModeCheckBox);
+            Controls.Add(KeyBindingsGroupBox);
             Controls.Add(CloseButton);
             Controls.Add(OutputGroupBox);
             Controls.Add(CharacterNamesGroupBox);
@@ -301,6 +398,8 @@ namespace InventoryKamera.ui
             Text = "Settings";
             CharacterNamesGroupBox.ResumeLayout(false);
             CharacterNamesGroupBox.PerformLayout();
+            KeyBindingsGroupBox.ResumeLayout(false);
+            KeyBindingsGroupBox.PerformLayout();
             OutputGroupBox.ResumeLayout(false);
             OutputGroupBox.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)ScannerDelay_TrackBar).EndInit();
@@ -310,6 +409,14 @@ namespace InventoryKamera.ui
 
         #endregion
 
+        private FlatGroupBox KeyBindingsGroupBox;
+        private System.Windows.Forms.Label inventoryKeyLabel;
+        private System.Windows.Forms.TextBox inventoryKeyTextBox;
+        private System.Windows.Forms.Label characterKeyLabel;
+        private System.Windows.Forms.TextBox characterKeyTextBox;
+        private System.Windows.Forms.Label slot1KeyLabel;
+        private System.Windows.Forms.TextBox slot1KeyTextBox;
+        private System.Windows.Forms.CheckBox DarkModeCheckBox;
         private FlatGroupBox CharacterNamesGroupBox;
         private System.Windows.Forms.Label label1;
         private System.Windows.Forms.TextBox travelerNameTextBox;
