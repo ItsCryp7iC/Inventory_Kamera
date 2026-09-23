@@ -376,3 +376,5 @@ FodyWeavers.xsd
 # their contained bin/ and obj/ stay ignored via the earlier build-output rules.
 !tests/
 !tests/InventoryKamera.Tests/
+
+inventorylists/
