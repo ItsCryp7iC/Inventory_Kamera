@@ -396,7 +396,7 @@ namespace InventoryKamera
 		/// </summary>
 		/// <returns>The tab actually active once this method returns, to hand into the next
 		/// controller-driven phase (see <see cref="InventoryScraper.SwitchToTab"/>).</returns>
-		internal string ScanMaterials(GameController controller, ref Inventory inventory, string knownCurrentTab = null)
+		internal string ScanMaterials(GameNavigator navigator, ref Inventory inventory, string knownCurrentTab = null)
 		{
 			StopScanning = false;
 
@@ -404,7 +404,7 @@ namespace InventoryKamera
 				? "Character Development Items"
 				: "Materials";
 
-			string currentTab = SwitchToTab(controller, targetTab, knownCurrentTab);
+			string currentTab = SwitchToTab(navigator, targetTab, knownCurrentTab);
 
 			// Full-window reference shot of the grid before scanning starts -- useful alongside the
 			// per-item quantity crops for judging whether GetQuantityRegion's fixed
@@ -499,7 +499,7 @@ namespace InventoryKamera
 					}
 				}
 
-				controller.MoveStep(GameController.MenuDirection.Right,
+				navigator.MoveStep(GameNavigator.MenuDirection.Right,
 					holdMs: ScaledControllerDelay(80), settleMs: ScaledControllerDelay(100));
 
 				column++;

@@ -1,5 +1,4 @@
 ﻿using InventoryKamera.game;
-using Nefarius.ViGEm.Client.Targets.Xbox360;
 using NLog;
 using System;
 using System.Collections.Generic;
@@ -303,7 +302,7 @@ namespace InventoryKamera
         /// down twice (Inventory is at grid position [0,2]), confirm with B (Genshin's confirm button
         /// -- swapped from standard Xbox convention, A is back/cancel).
         /// </summary>
-        internal void EnterInventory(GameController controller)
+        internal void EnterInventory(GameNavigator navigator)
         {
             // The mouse-based scan's Navigation.InventoryScreen() started every phase with a real
             // Escape press to guarantee a known baseline (unpaused, no menu open) before doing
@@ -322,13 +321,13 @@ namespace InventoryKamera
             // Doubled again (2026-07-05) after a live tab-detection miss right after this sequence
             // ("Weapons" misread as "eepons |") -- the menu navigation itself was too fast and
             // occasionally not fully settled before the next step read the screen.
-            controller.EnterControllerMode();
+            navigator.EnterControllerMode();
             Thread.Sleep(ScaledControllerDelay(2000));
-            controller.OpenMenu();
+            navigator.OpenMenu();
             Thread.Sleep(ScaledControllerDelay(2000));
-            controller.Move(GameController.MenuDirection.Down, 2, holdMs: ScaledControllerDelay(300), settleMs: ScaledControllerDelay(300));
+            navigator.Move(GameNavigator.MenuDirection.Down, 2, holdMs: ScaledControllerDelay(300), settleMs: ScaledControllerDelay(300));
             Thread.Sleep(ScaledControllerDelay(600));
-            controller.TapButton(Xbox360Button.B, holdMs: ScaledControllerDelay(300));
+            navigator.TapConfirm(holdMs: ScaledControllerDelay(300));
             // Per user (2026-07-04): confirming into Inventory plays a screen-transition animation
             // that outlasts the plain-scaled wait -- unlike input-registration timing, an animation's
             // real duration doesn't shrink just because Fast wants quicker input pacing. Floored flat
@@ -342,7 +341,7 @@ namespace InventoryKamera
         /// Captures the tab-name label (top-left of the inventory screen), OCRs it, and fuzzy-matches
         /// it against <see cref="ControllerInventoryTabNames"/>. Returns the matched index (-1 if no
         /// confident match). Must be called while already inside Inventory (see
-        /// <see cref="EnterInventory"/>) and before the owning <c>GameController</c> is
+        /// <see cref="EnterInventory"/>) and before the owning <c>GameNavigator</c> is
         /// disposed -- disposal mashes back out of the menu as a safety net.
         /// </summary>
         internal int DetectCurrentTabIndex(out string rawText)
@@ -397,7 +396,7 @@ namespace InventoryKamera
         /// <returns>The tab actually active after this call (<paramref name="targetTab"/> on success,
         /// or the original tab if detection failed and the switch was skipped) -- pass this into the
         /// next phase's <paramref name="knownCurrentTab"/> to keep the chain going without OCR.</returns>
-        internal string SwitchToTab(GameController controller, string targetTab, string knownCurrentTab = null)
+        internal string SwitchToTab(GameNavigator navigator, string targetTab, string knownCurrentTab = null)
         {
             int currentIndex;
             string rawText = null;
@@ -471,7 +470,7 @@ namespace InventoryKamera
             int backwardSteps = tabCount - forwardSteps;
             bool goForward = forwardSteps <= backwardSteps;
             int steps = Math.Min(forwardSteps, backwardSteps);
-            Xbox360Button shoulderButton = goForward ? Xbox360Button.RightShoulder : Xbox360Button.LeftShoulder;
+            string shoulderButton = goForward ? "RightShoulder" : "LeftShoulder";
 
             Logger.Info("Tab switch: scanned in on \"{0}\" (raw=\"{1}\"), target \"{2}\" -- {3} {4} ({5}) presses.",
                 currentTabName, rawText, targetTab, steps, shoulderButton, goForward ? "forward/right" : "backward/left");
@@ -481,7 +480,10 @@ namespace InventoryKamera
             // scaled by ScaledControllerDelay, just a higher starting point.
             for (int i = 0; i < steps; i++)
             {
-                controller.TapButton(shoulderButton, holdMs: ScaledControllerDelay(200));
+                if (goForward)
+                    navigator.TapNextTab(holdMs: ScaledControllerDelay(200));
+                else
+                    navigator.TapPreviousTab(holdMs: ScaledControllerDelay(200));
                 Thread.Sleep(ScaledControllerDelay(800));
             }
             Thread.Sleep(ScaledControllerDelay(1000));

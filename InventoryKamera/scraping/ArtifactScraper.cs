@@ -1,5 +1,4 @@
 ﻿using InventoryKamera.game;
-using Nefarius.ViGEm.Client.Targets.Xbox360;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -36,7 +35,7 @@ namespace InventoryKamera
         /// control, B confirms (the established confirm button everywhere else in this codebase --
         /// not independently confirmed for this specific control), left stick Down returns to the grid.
         /// </summary>
-        private void SetSortByObtained(GameController controller)
+        private void SetSortByObtained(GameNavigator navigator)
         {
             using (var x = Navigation.CaptureRegion(
                 x: (int)(0.6563 * Navigation.GetWidth()),
@@ -59,10 +58,10 @@ namespace InventoryKamera
                 if (SortByObtained > 0 ^ sortObtained)
                 {
                     Logger.Info("Sort-by-obtained: toggling (currently {0}, want {1}).", sortObtained, SortByObtained > 0);
-                    controller.MoveStep(GameController.MenuDirection.Up, holdMs: ScaledControllerDelay(100), settleMs: ScaledControllerDelay(200));
-                    controller.TapButton(Xbox360Button.B, holdMs: ScaledControllerDelay(100));
+                    navigator.MoveStep(GameNavigator.MenuDirection.Up, holdMs: ScaledControllerDelay(100), settleMs: ScaledControllerDelay(200));
+                    navigator.TapConfirm(holdMs: ScaledControllerDelay(100));
                     Thread.Sleep(ScaledControllerDelay(500));
-                    controller.MoveStep(GameController.MenuDirection.Down, holdMs: ScaledControllerDelay(100), settleMs: ScaledControllerDelay(200));
+                    navigator.MoveStep(GameNavigator.MenuDirection.Down, holdMs: ScaledControllerDelay(100), settleMs: ScaledControllerDelay(200));
                 }
                 else
                 {
@@ -80,7 +79,7 @@ namespace InventoryKamera
         /// A, not Back (established convention throughout this codebase: "A backs out, B confirms,
         /// everywhere").
         /// </summary>
-        private void ClearFilters(GameController controller)
+        private void ClearFilters(GameNavigator navigator)
         {
             using (var x = Navigation.CaptureRegion(
                 x: (int)(0.0740 * Navigation.GetWidth()),
@@ -99,15 +98,15 @@ namespace InventoryKamera
                     using (var before = Navigation.CaptureWindow()) SaveDebugScreenshot(before, "artifacts/filters/reset_0_before");
 
                     // Per user (2026-07-04): base timing set explicitly to 100/200/100/500/100/200.
-                    controller.TapButton(Xbox360Button.Left, holdMs: ScaledControllerDelay(100));
+                    navigator.TapDPadLeft(holdMs: ScaledControllerDelay(100));
                     Thread.Sleep(ScaledControllerDelay(200));
                     using (var afterLeft = Navigation.CaptureWindow()) SaveDebugScreenshot(afterLeft, "artifacts/filters/reset_1_afterleft");
 
-                    controller.TapButton(Xbox360Button.LeftThumb, holdMs: ScaledControllerDelay(100));
+                    navigator.TapLeftStick(holdMs: ScaledControllerDelay(100));
                     Thread.Sleep(ScaledControllerDelay(500));
                     using (var afterLS = Navigation.CaptureWindow()) SaveDebugScreenshot(afterLS, "artifacts/filters/reset_2_afterls");
 
-                    controller.TapButton(Xbox360Button.A, holdMs: ScaledControllerDelay(100));
+                    navigator.TapBack(holdMs: ScaledControllerDelay(100));
                     Thread.Sleep(ScaledControllerDelay(200));
                     using (var afterBack = Navigation.CaptureWindow()) SaveDebugScreenshot(afterBack, "artifacts/filters/reset_3_afterback");
                 }
@@ -375,7 +374,7 @@ namespace InventoryKamera
         /// <summary>
         /// Controller-driven artifact scan (Phase 3 §6c) -- real replacement for <see cref="ScanArtifacts"/>'s
         /// mouse click/scroll loop, wired into <c>InventoryKamera.GatherData</c>. Takes an
-        /// already-connected <paramref name="controller"/> that's already inside Inventory (per user,
+        /// already-connected <paramref name="navigator"/> that's already inside Inventory (per user,
         /// 2026-07-04: switching between Weapons/Artifacts tabs shouldn't back all the way out to the
         /// unpaused game state and re-enter -- see <c>WeaponScraper.ScanWeapons</c>'s doc
         /// comment for the full reasoning; <c>GatherData</c> now owns the single controller/entry
@@ -393,13 +392,13 @@ namespace InventoryKamera
         /// <param name="knownCurrentTab">See <see cref="InventoryScraper.SwitchToTab"/> --
         /// pass the previous controller-driven phase's returned tab (e.g. "Weapons") to skip
         /// re-detecting via OCR.</param>
-        public string ScanArtifacts(GameController controller, int count = 0, string knownCurrentTab = null)
+        public string ScanArtifacts(GameNavigator navigator, int count = 0, string knownCurrentTab = null)
         {
             StopScanning = false;
 
-            string currentTab = SwitchToTab(controller, "Artifacts", knownCurrentTab);
-            SetSortByObtained(controller);
-            ClearFilters(controller);
+            string currentTab = SwitchToTab(navigator, "Artifacts", knownCurrentTab);
+            SetSortByObtained(navigator);
+            ClearFilters(navigator);
 
             int artifactCount = count == 0 ? ScanItemCount() : count;
 
@@ -437,7 +436,7 @@ namespace InventoryKamera
                 // check switched from OCR to a pixel sample, the removed OCR time turned out to
                 // have been accidentally giving Genshin's selection-change animation enough room
                 // to finish, and items started getting skipped without it.
-                controller.MoveStep(GameController.MenuDirection.Right,
+                navigator.MoveStep(GameNavigator.MenuDirection.Right,
                     holdMs: ScaledControllerDelay(100), settleMs: ScaledControllerDelay(150));
             }
 

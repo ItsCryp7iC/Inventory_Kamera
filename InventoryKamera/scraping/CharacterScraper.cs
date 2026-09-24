@@ -1,5 +1,4 @@
 ﻿using InventoryKamera.game;
-using Nefarius.ViGEm.Client.Targets.Xbox360;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -126,20 +125,20 @@ namespace InventoryKamera
 		/// <paramref name="Characters"/> is scanned up to <see cref="NumOfCharToScan"/> entries (0 =
 		/// whole roster).
 		/// </summary>
-		public void ScanCharacters(GameController controller, ref List<Character> Characters)
+		public void ScanCharacters(GameNavigator navigator, ref List<Character> Characters)
 		{
 			int maxToScan = NumOfCharToScan;
 			if (maxToScan != 0) progressReporter.SetCharacter_Max(maxToScan);
 			progressReporter.ResetCharacterDisplay();
 
-			EnterCharacterMenu(controller);
+			EnterCharacterMenu(navigator);
 
 			// Per user (2026-07-05): the Character menu always opens on the Attributes sub-tab
 			// regardless of what was open last time, so no reset-to-known-position step is needed
 			// here. Also per user: unlike the pause-menu tab bar, this sub-tab control is
 			// unbounded/circular (Up from Attributes wraps around to Profile, the last sub-tab, not
 			// clamped) -- the clamped-control "over-shoot is harmless" idiom used elsewhere
-			// (GameController.MashBack, an earlier version of this method) does NOT apply here and
+			// (GameNavigator.MashBack, an earlier version of this method) does NOT apply here and
 			// would actively misnavigate.
 			// --- Phase 1: Attributes (name, element, level) for the whole roster ---
 			string firstName = null;
@@ -244,7 +243,7 @@ namespace InventoryKamera
 						screenshot.Save($"./logging/characters/unrecognized_{unrecognizedCount}.png");
 				}
 
-				controller.TapButton(Xbox360Button.RightShoulder, InventoryScraper.ScaledControllerDelay(80));
+				navigator.TapNextTab(InventoryScraper.ScaledControllerDelay(80));
 				Thread.Sleep(InventoryScraper.ScaledControllerDelay(100));
 				gapSinceLastRecorded++;
 
@@ -284,7 +283,7 @@ namespace InventoryKamera
 			// Per user (2026-07-05): the full sub-tab order is Attributes, Weapons, Artifacts,
 			// Constellations, Talents, Profile -- Constellations is 3 stops down from Attributes, not
 			// 1 (Weapons and Artifacts sit between them).
-			controller.Move(GameController.MenuDirection.Down, 3,
+			navigator.Move(GameNavigator.MenuDirection.Down, 3,
 				holdMs: InventoryScraper.ScaledControllerDelay(150), settleMs: InventoryScraper.ScaledControllerDelay(150));
 
 			void ScanConstellation(Character character)
@@ -297,8 +296,8 @@ namespace InventoryKamera
 				// Per user (2026-07-05): greedy (C6-first, read backward) mode only for 4-star
 				// characters so far -- see IsFourStarCharacter/ScanConstellationsGreedy.
 				character.Constellation = IsFourStarCharacter(character)
-					? ScanConstellationsGreedy(controller, character)
-					: ScanConstellations(controller, character);
+					? ScanConstellationsGreedy(navigator, character)
+					: ScanConstellations(navigator, character);
 				Logger.Info("{0} Constellation: {1}", character.NameGOOD, character.Constellation);
 			}
 
@@ -308,9 +307,9 @@ namespace InventoryKamera
 			// characters past the last one scanned, so reading backward from there reaches the same
 			// characters a rewind-then-forward pass would, for far fewer shoulder taps.
 			if (endedAtFirstCharacter)
-				ScanRosterForward(controller, characterList, gapsBeforeEach, gapAfterLast, ScanConstellation);
+				ScanRosterForward(navigator, characterList, gapsBeforeEach, gapAfterLast, ScanConstellation);
 			else
-				ScanRosterBackward(controller, characterList, gapsBeforeEach, gapAfterLast, ScanConstellation);
+				ScanRosterBackward(navigator, characterList, gapsBeforeEach, gapAfterLast, ScanConstellation);
 
 			if (GameScanner.CancelRequested)
 			{
@@ -325,10 +324,10 @@ namespace InventoryKamera
 			// character (a full lap for the forward read, or the natural endpoint of the backward
 			// read), so this phase can always read forward. No trailing gap needed (null) since this
 			// is the last phase -- nothing follows that needs the cursor back at the start.
-			controller.Move(GameController.MenuDirection.Down, 1,
+			navigator.Move(GameNavigator.MenuDirection.Down, 1,
 				holdMs: InventoryScraper.ScaledControllerDelay(150), settleMs: InventoryScraper.ScaledControllerDelay(150));
 
-			ScanRosterForward(controller, characterList, gapsBeforeEach, null, character =>
+			ScanRosterForward(navigator, characterList, gapsBeforeEach, null, character =>
 			{
 				// Same identity check as the constellation pass: confirm the cursor is on this
 				// character before reading talents, so a drifted cursor doesn't record a manequin's or
@@ -350,11 +349,14 @@ namespace InventoryKamera
 		/// (never a single multi-position jump), matching how <see cref="ScanCharacters"/>'s
 		/// Phase 1 measured each gap the same way.
 		/// </summary>
-		private void AdvanceRoster(GameController controller, Xbox360Button button, int taps)
+		private void AdvanceRoster(GameNavigator navigator, bool forward, int taps)
 		{
 			for (int t = 0; t < taps; t++)
 			{
-				controller.TapButton(button, InventoryScraper.ScaledControllerDelay(80));
+				if (forward)
+					navigator.TapNextTab(InventoryScraper.ScaledControllerDelay(80));
+				else
+					navigator.TapPreviousTab(InventoryScraper.ScaledControllerDelay(80));
 				Thread.Sleep(InventoryScraper.ScaledControllerDelay(100));
 			}
 		}
@@ -369,7 +371,7 @@ namespace InventoryKamera
 		/// name="gapAfterLast"/> if given (used when the following phase also needs the cursor back
 		/// at the start), or not at all if null (the last phase needs no such trailing move).
 		/// </summary>
-		private void ScanRosterForward(GameController controller, List<Character> characters, List<int> gapsBeforeEach, int? gapAfterLast, Action<Character> scanCharacter)
+		private void ScanRosterForward(GameNavigator navigator, List<Character> characters, List<int> gapsBeforeEach, int? gapAfterLast, Action<Character> scanCharacter)
 		{
 			int count = characters.Count;
 			for (int i = 0; i < count; i++)
@@ -385,7 +387,7 @@ namespace InventoryKamera
 				}
 
 				int? gap = i < count - 1 ? gapsBeforeEach[i + 1] : gapAfterLast;
-				if (gap.HasValue) AdvanceRoster(controller, Xbox360Button.RightShoulder, gap.Value);
+				if (gap.HasValue) AdvanceRoster(navigator, forward: true, taps: gap.Value);
 			}
 		}
 
@@ -399,13 +401,13 @@ namespace InventoryKamera
 		/// reading backward from Phase 1's stopping point reaches the same characters a
 		/// rewind-to-start-then-forward pass would, without the wasted rewind taps.
 		/// </summary>
-		private void ScanRosterBackward(GameController controller, List<Character> characters, List<int> gapsBeforeEach, int gapAfterLast, Action<Character> scanCharacter)
+		private void ScanRosterBackward(GameNavigator navigator, List<Character> characters, List<int> gapsBeforeEach, int gapAfterLast, Action<Character> scanCharacter)
 		{
 			int count = characters.Count;
 			for (int i = count - 1; i >= 0; i--)
 			{
 				int gap = i == count - 1 ? gapAfterLast : gapsBeforeEach[i + 1];
-				AdvanceRoster(controller, Xbox360Button.LeftShoulder, gap);
+				AdvanceRoster(navigator, forward: false, taps: gap);
 				scanCharacter(characters[i]);
 
 				// Per user (2026-07-05): a cancel request during Phase 2/3 previously went
@@ -433,28 +435,28 @@ namespace InventoryKamera
 		/// settle wait) before this runs when an inventory phase preceded it. The leading Escape +
 		/// MashBack below are a belt-and-suspenders reset on top of that.
 		/// </summary>
-		private void EnterCharacterMenu(GameController controller)
+		private void EnterCharacterMenu(GameNavigator navigator)
 		{
 			Navigation.sim.Keyboard.KeyPress(Navigation.escapeKey);
 			Navigation.SystemWait(Navigation.Speed.UI);
 
-			// Safety net (same idiom as GameController.ExitControllerMode): the previous
+			// Safety net (same idiom as GameNavigator.ExitControllerMode): the previous
 			// controller-driven phase's teardown already backs out of any nested menu, but
 			// EnterControllerMode()'s A-press below assumes a clean free-roam state to avoid
 			// triggering an unwanted in-game action instead of a scheme-switch nudge. Over-pressing
 			// A here is harmless once already at the root (per MashBack's own doc comment).
-			controller.MashBack();
+			navigator.MashBack();
 
-			controller.EnterControllerMode();
+			navigator.EnterControllerMode();
 			Thread.Sleep(InventoryScraper.ScaledControllerDelay(2000));
-			controller.OpenMenu();
+			navigator.OpenMenu();
 			Thread.Sleep(InventoryScraper.ScaledControllerDelay(2000));
-			controller.Move(GameController.MenuDirection.Right, 2,
+			navigator.Move(GameNavigator.MenuDirection.Right, 2,
 				holdMs: InventoryScraper.ScaledControllerDelay(300), settleMs: InventoryScraper.ScaledControllerDelay(300));
-			controller.Move(GameController.MenuDirection.Down, 1,
+			navigator.Move(GameNavigator.MenuDirection.Down, 1,
 				holdMs: InventoryScraper.ScaledControllerDelay(300), settleMs: InventoryScraper.ScaledControllerDelay(300));
 			Thread.Sleep(InventoryScraper.ScaledControllerDelay(600));
-			controller.TapButton(Xbox360Button.B, holdMs: InventoryScraper.ScaledControllerDelay(300));
+			navigator.TapConfirm(holdMs: InventoryScraper.ScaledControllerDelay(300));
 			Thread.Sleep(Math.Max(3000, InventoryScraper.ScaledControllerDelay(2000)));
 		}
 
@@ -838,7 +840,7 @@ namespace InventoryKamera
 		/// white-background color sample. Exits via cancel (A) once done or once a locked
 		/// constellation is found. Region measured (2026-07-05) with <c>ui/CoordinatePickerForm.cs</c>.
 		/// </summary>
-		private int ScanConstellations(GameController controller, Character character)
+		private int ScanConstellations(GameNavigator navigator, Character character)
 		{
 			Rectangle activatedRegion = new RECT(
 				Left:   (int)( 0.1574 * Navigation.GetWidth() ),
@@ -848,7 +850,7 @@ namespace InventoryKamera
 
 			int constellation;
 
-			controller.TapButton(Xbox360Button.B, InventoryScraper.ScaledControllerDelay(300));
+			navigator.TapConfirm(InventoryScraper.ScaledControllerDelay(300));
 			Thread.Sleep(InventoryScraper.ScaledControllerDelay(600)); // set to 600 per user (2026-07-05)
 
 			Bitmap constellationShot = null;
@@ -857,9 +859,9 @@ namespace InventoryKamera
 				if (constellation > 0)
 				{
 					// Per user (2026-07-05): settleMs already sleeps after the stick releases
-					// (GameController.MoveStep), so a separate Thread.Sleep on top of it was a
+					// (GameNavigator.MoveStep), so a separate Thread.Sleep on top of it was a
 					// redundant double-wait -- folded into settleMs directly instead.
-					controller.MoveStep(GameController.MenuDirection.Down,
+					navigator.MoveStep(GameNavigator.MenuDirection.Down,
 						holdMs: InventoryScraper.ScaledControllerDelay(100), settleMs: InventoryScraper.ScaledControllerDelay(400));
 				}
 
@@ -879,7 +881,7 @@ namespace InventoryKamera
 				if (!activated) break;
 			}
 
-			controller.TapButton(Xbox360Button.A, InventoryScraper.ScaledControllerDelay(300));
+			navigator.TapBack(InventoryScraper.ScaledControllerDelay(300));
 			Thread.Sleep(InventoryScraper.ScaledControllerDelay(250)); // lowered from 400 per user (2026-07-05)
 
 			progressReporter.SetCharacter_Constellation(constellationShot, constellation);
@@ -937,7 +939,7 @@ namespace InventoryKamera
 		/// constellation list specifically (confirmed only for the Character screen's own sub-tab row
 		/// so far).
 		/// </summary>
-		private int ScanConstellationsGreedy(GameController controller, Character character)
+		private int ScanConstellationsGreedy(GameNavigator navigator, Character character)
 		{
 			Rectangle activatedRegion = new RECT(
 				Left:   (int)( 0.1574 * Navigation.GetWidth() ),
@@ -945,10 +947,10 @@ namespace InventoryKamera
 				Right:  (int)( 0.2241 * Navigation.GetWidth() ),
 				Bottom: (int)( 0.8777 * Navigation.GetHeight() ));
 
-			controller.TapButton(Xbox360Button.B, InventoryScraper.ScaledControllerDelay(300));
+			navigator.TapConfirm(InventoryScraper.ScaledControllerDelay(300));
 			Thread.Sleep(InventoryScraper.ScaledControllerDelay(600));
 
-			controller.MoveStep(GameController.MenuDirection.Up,
+			navigator.MoveStep(GameNavigator.MenuDirection.Up,
 				holdMs: InventoryScraper.ScaledControllerDelay(100), settleMs: InventoryScraper.ScaledControllerDelay(400));
 
 			Bitmap constellationShot = null;
@@ -975,12 +977,12 @@ namespace InventoryKamera
 
 				if (node > 0)
 				{
-					controller.MoveStep(GameController.MenuDirection.Up,
+					navigator.MoveStep(GameNavigator.MenuDirection.Up,
 						holdMs: InventoryScraper.ScaledControllerDelay(100), settleMs: InventoryScraper.ScaledControllerDelay(400));
 				}
 			}
 
-			controller.TapButton(Xbox360Button.A, InventoryScraper.ScaledControllerDelay(300));
+			navigator.TapBack(InventoryScraper.ScaledControllerDelay(300));
 			Thread.Sleep(InventoryScraper.ScaledControllerDelay(250));
 
 			progressReporter.SetCharacter_Constellation(constellationShot, constellation);

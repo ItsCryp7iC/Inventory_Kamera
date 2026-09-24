@@ -1,5 +1,4 @@
 ﻿using InventoryKamera.game;
-using Nefarius.ViGEm.Client.Targets.Xbox360;
 using NLog;
 using System;
 using System.Collections.Generic;
@@ -171,7 +170,7 @@ namespace InventoryKamera
         /// <returns>True if the sort mode is confirmed to already match or was successfully changed to
         /// <paramref name="targetMode"/>; false if detection failed and no sort selection was made, in
         /// which case callers must not assume the weapon grid is sorted.</returns>
-        private bool SetSortMode(GameController controller, string targetMode)
+        private bool SetSortMode(GameNavigator navigator, string targetMode)
         {
             string currentMode = DetectCurrentSortMode();
             if (currentMode == targetMode)
@@ -188,15 +187,15 @@ namespace InventoryKamera
                 return false;
             }
 
-            controller.TapButton(Xbox360Button.Down, holdMs: ScaledControllerDelay(80));
+            navigator.TapDPadDown(holdMs: ScaledControllerDelay(80));
             Thread.Sleep(ScaledControllerDelay(300));
 
             int steps = Math.Abs(targetIndex - currentIndex);
-            var direction = targetIndex > currentIndex ? GameController.MenuDirection.Down : GameController.MenuDirection.Up;
-            controller.Move(direction, steps);
+            var direction = targetIndex > currentIndex ? GameNavigator.MenuDirection.Down : GameNavigator.MenuDirection.Up;
+            navigator.Move(direction, steps);
             Thread.Sleep(ScaledControllerDelay(100));
 
-            controller.TapButton(Xbox360Button.B, holdMs: ScaledControllerDelay(80));
+            navigator.TapConfirm(holdMs: ScaledControllerDelay(80));
             Thread.Sleep(ScaledControllerDelay(300));
 
             Logger.Info("Controller weapon sort: {0} -> {1} ({2} steps {3})", currentMode, targetMode, steps, direction);
@@ -206,9 +205,9 @@ namespace InventoryKamera
         /// <summary>
         /// Controller-driven weapon scan (Phase 3 §6c) -- real replacement for <see cref="ScanWeapons"/>'s
         /// mouse click/scroll loop, wired into <c>InventoryKamera.GatherData</c>. Takes an
-        /// already-connected <paramref name="controller"/> that's already inside Inventory (per user,
+        /// already-connected <paramref name="navigator"/> that's already inside Inventory (per user,
         /// 2026-07-04: switching between Weapons/Artifacts tabs shouldn't back all the way out to the
-        /// unpaused game state and re-enter -- <c>GatherData</c> now owns one <see cref="GameController"/>
+        /// unpaused game state and re-enter -- <c>GatherData</c> now owns one <see cref="GameNavigator"/>
         /// and one <see cref="InventoryScraper.EnterInventory"/> call spanning every
         /// controller-driven scan phase, with each phase just switching tabs via
         /// <see cref="InventoryScraper.SwitchToTab"/> instead of a full exit/re-entry).
@@ -227,12 +226,12 @@ namespace InventoryKamera
         /// whatever <paramref name="knownCurrentTab"/> was if tab detection failed and switching had
         /// to be skipped) -- pass this into the next controller-driven phase's own call so it can skip
         /// re-detecting via OCR (see <see cref="InventoryScraper.SwitchToTab"/>).</returns>
-        public string ScanWeapons(GameController controller, int count = 0, string knownCurrentTab = null)
+        public string ScanWeapons(GameNavigator navigator, int count = 0, string knownCurrentTab = null)
         {
             StopScanning = false;
 
-            string currentTab = SwitchToTab(controller, "Weapons", knownCurrentTab);
-            sortModeConfirmed = SetSortMode(controller, SortByLevel ? "Level" : "Quality");
+            string currentTab = SwitchToTab(navigator, "Weapons", knownCurrentTab);
+            sortModeConfirmed = SetSortMode(navigator, SortByLevel ? "Level" : "Quality");
             if (!sortModeConfirmed)
             {
                 Logger.Error("Weapon sort mode could not be confirmed -- early-stop-on-threshold is disabled, so the full weapon grid will be scanned. See ./logging/weapons/sortmode/ for the captured sort-mode region.");
@@ -269,7 +268,7 @@ namespace InventoryKamera
                 // lock-icon check's benefit) and reverted -- measured as the direct cause of a
                 // significant scan slowdown, so MoveStep's own settle is relied on alone. If lock
                 // status proves unreliable live, that's the first place to look again.
-                controller.MoveStep(GameController.MenuDirection.Right,
+                navigator.MoveStep(GameNavigator.MenuDirection.Right,
                     holdMs: ScaledControllerDelay(80), settleMs: ScaledControllerDelay(100));
             }
 

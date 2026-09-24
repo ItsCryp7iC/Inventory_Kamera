@@ -164,20 +164,20 @@ namespace InventoryKamera
 			{
 				// Phase 3 §6c: a SINGLE controller connection spans every controller-driven scan phase
 				// -- the inventory group (Weapons/Artifacts/Character Development Items/Materials) AND
-				// Characters. Previously the character phase opened its own second GameController after
+				// Characters. Previously the character phase opened its own second navigator after
 				// the inventory one had been disposed; disconnecting and reconnecting the virtual
 				// controller mid-scan let Genshin drop back to keyboard/mouse (or surface its
 				// "controller disconnected" prompt) in the gap, making the inventory->character handoff
 				// flaky (per user, 2026-07-07). Now there is one connect for the whole scan: between the
 				// two phase groups we just back out to the unpaused free-roam state (MashBack) and let
 				// the next phase re-open the pause menu, never disconnecting until the scan is fully done.
-				// Only when this `using` block ends does GameController.Dispose() back out of every menu
+				// Only when this `using` block ends does GameNavigator.Dispose() back out of every menu
 				// and switch Genshin back to keyboard/mouse.
-				using (var controller = new GameController())
+				using (var navigator = GameInputFactory.CreateNavigator())
 				{
-					if (!controller.IsAvailable)
+					if (!navigator.IsAvailable)
 					{
-						progressReporter.AddError($"Controller scan unavailable: {controller.FailureReason}");
+						progressReporter.AddError($"Controller scan unavailable: {navigator.FailureReason}");
 					}
 					else
 					{
@@ -185,7 +185,7 @@ namespace InventoryKamera
 						{
 							try
 							{
-								weaponScraper.EnterInventory(controller);
+								weaponScraper.EnterInventory(navigator);
 							}
 							catch (FormatException ex) { progressReporter.AddError(ex.Message); }
 							catch (Exception ex)
@@ -204,7 +204,7 @@ namespace InventoryKamera
 								Logger.Info("Scanning weapons...");
 								try
 								{
-									currentTab = weaponScraper.ScanWeapons(controller, knownCurrentTab: currentTab);
+									currentTab = weaponScraper.ScanWeapons(navigator, knownCurrentTab: currentTab);
 								}
 								catch (FormatException ex) { progressReporter.AddError(ex.Message); }
 								catch (Exception ex)
@@ -219,7 +219,7 @@ namespace InventoryKamera
 								Logger.Info("Scanning artifacts...");
 								try
 								{
-									currentTab = artifactScraper.ScanArtifacts(controller, knownCurrentTab: currentTab);
+									currentTab = artifactScraper.ScanArtifacts(navigator, knownCurrentTab: currentTab);
 								}
 								catch (FormatException ex) { progressReporter.AddError(ex.Message); }
 								catch (Exception ex)
@@ -235,7 +235,7 @@ namespace InventoryKamera
 								try
 								{
 									materialScraper.SetInventoryPage(InventoryPage.CharacterDevelopmentItems);
-									currentTab = materialScraper.ScanMaterials(controller, ref Inventory, knownCurrentTab: currentTab);
+									currentTab = materialScraper.ScanMaterials(navigator, ref Inventory, knownCurrentTab: currentTab);
 								}
 								catch (FormatException ex) { progressReporter.AddError(ex.Message); }
 								catch (Exception ex)
@@ -251,7 +251,7 @@ namespace InventoryKamera
 								try
 								{
 									materialScraper.SetInventoryPage(InventoryPage.Materials);
-									currentTab = materialScraper.ScanMaterials(controller, ref Inventory, knownCurrentTab: currentTab);
+									currentTab = materialScraper.ScanMaterials(navigator, ref Inventory, knownCurrentTab: currentTab);
 								}
 								catch (FormatException ex) { progressReporter.AddError(ex.Message); }
 								catch (Exception ex)
@@ -279,14 +279,14 @@ namespace InventoryKamera
 								// tab-bar start (see EnterCharacterMenu), which only holds from free-roam.
 								// This replaces the old between-phase controller disconnect/reconnect.
 								Logger.Info("Backing out of inventory to free-roam before character scan...");
-								controller.MashBack();
+								navigator.MashBack();
 								Thread.Sleep(Math.Max(4000, InventoryScraper.ScaledControllerDelay(3000)));
 							}
 
 							Logger.Info("Scanning characters...");
 							try
 							{
-								characterScraper.ScanCharacters(controller, ref Characters);
+								characterScraper.ScanCharacters(navigator, ref Characters);
 							}
 							catch (Exception ex)
 							{
@@ -308,7 +308,7 @@ namespace InventoryKamera
 			{
 				// Final safety net: guarantee the game is back in the free-roam/main-menu state once
 				// every controller-driven scan phase above is done, regardless of whatever
-				// GameController.Dispose()'s MashBack (A-press) safety net left behind -- mirrors the
+				// GameNavigator.Dispose()'s MashBack (A-press) safety net left behind -- mirrors the
 				// old mouse-mode MainMenuScreen()'s double-Escape finisher that every scan used to end
 				// with before the controller migration (Phase 3 §6c) dropped it.
 				Navigation.sim.Keyboard.KeyPress(Navigation.escapeKey);
@@ -337,7 +337,7 @@ namespace InventoryKamera
 			}
 
 			// Character Development Items and Materials are now scanned via controller above,
-			// in the same GameController session as Weapons/Artifacts (Phase 3 §6c, 2026-07-05).
+			// in the same GameNavigator session as Weapons/Artifacts (Phase 3 §6c, 2026-07-05).
 		}
 
 		private void AwaitProcessors()

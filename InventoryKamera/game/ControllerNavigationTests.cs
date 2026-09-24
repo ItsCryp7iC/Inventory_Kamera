@@ -78,15 +78,15 @@ namespace InventoryKamera.game
                 return;
             }
 
-            using (var controller = new GameController())
+            using (var navigator = GameInputFactory.CreateNavigator())
             {
-                if (!controller.IsAvailable)
+                if (!navigator.IsAvailable)
                 {
-                    MessageBox.Show(controller.FailureReason, "Controller Panic Button", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(navigator.FailureReason, "Controller Panic Button", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                controller.MashBack();
+                navigator.MashBack();
             }
         }
 
@@ -130,11 +130,11 @@ namespace InventoryKamera.game
                 "Controller Character Scan Test", MessageBoxButtons.OK, MessageBoxIcon.Information);
             Thread.Sleep(AltTabSeconds * 1000);
 
-            using (var controller = new GameController())
+            using (var navigator = GameInputFactory.CreateNavigator())
             {
-                if (!controller.IsAvailable)
+                if (!navigator.IsAvailable)
                 {
-                    MessageBox.Show(controller.FailureReason, "Controller Character Scan Test", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(navigator.FailureReason, "Controller Character Scan Test", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
@@ -147,7 +147,7 @@ namespace InventoryKamera.game
 
                 try
                 {
-                    scraper.ScanCharacters(controller, ref characters);
+                    scraper.ScanCharacters(navigator, ref characters);
                     MessageBox.Show($"Scanned {characters.Count} character(s). Check the log for details.",
                         "Controller Character Scan Test", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
