@@ -5,8 +5,8 @@ namespace InventoryKamera
     /// <summary>
     /// Single source of the human-facing application version string, used for the window title and
     /// every log that records the running version. The numeric core comes from
-    /// <see cref="AssemblyVersion"/> (kept numeric because the auto-update check compares it against
-    /// GitHub release tags); the prerelease stage is the one knob below.
+    /// <see cref="AssemblyVersion"/>; the prerelease stage used by the update check is the one knob
+    /// below.
     /// </summary>
     internal static class AppInfo
     {

@@ -14,7 +14,6 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using WindowsInput.Native;
@@ -755,11 +754,23 @@ namespace InventoryKamera
             try
             {
                 var releases = await client.Repository.Release.GetAll("taiwenlee", "Inventory_Kamera");
-                var latest = releases.First();
+                if (!ReleaseVersionSelector.TrySelectFirst(
+                    releases,
+                    release => release.TagName,
+                    tag => Logger.Warn("Could not parse Kamera release tag '{0}'.", tag),
+                    out var latest,
+                    out var latestVersion))
+                {
+                    Logger.Warn("No Kamera releases had a valid version tag.");
+                    return;
+                }
 
+                if (!ReleaseVersion.TryParse(AppInfo.Version, out var currentVersion))
+                {
+                    Logger.Warn("Could not parse the current Kamera version '{0}'.", AppInfo.Version);
+                    return;
+                }
 
-                Version latestVersion = new Version(Regex.Replace(latest.TagName, "[a-zA-Z]", string.Empty));
-                Version currentVersion = Assembly.GetExecutingAssembly().GetName().Version;
                 if (currentVersion.CompareTo(latestVersion) < 0)
                 {
                     var message = $"A new version of Inventory Kamera is available.\n\n" +
