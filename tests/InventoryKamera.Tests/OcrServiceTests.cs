@@ -1,5 +1,7 @@
+using System;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.IO;
 using InventoryKamera;
 using Tesseract;
 using Xunit;
@@ -24,6 +26,25 @@ namespace InventoryKamera.Tests
         private readonly ITestOutputHelper output;
 
         public OcrServiceTests(ITestOutputHelper output) => this.output = output;
+
+        [Fact]
+        public void Constructor_DefaultDataPath_UsesApplicationBaseDirectory()
+        {
+            using var ocr = new OcrService(engineCount: 1);
+
+            Assert.Equal(Path.Combine(AppContext.BaseDirectory, "tessdata"), ocr.TesseractDataPath);
+            Assert.True(Path.IsPathFullyQualified(ocr.TesseractDataPath));
+        }
+
+        [Fact]
+        public void Constructor_ExplicitDataPath_PreservesPath()
+        {
+            var customPath = Path.Combine("custom", "tessdata");
+
+            using var ocr = new OcrService(customPath, engineCount: 1);
+
+            Assert.Equal(customPath, ocr.TesseractDataPath);
+        }
 
         private static Bitmap RenderText(string text, int width = 300, int height = 100, float fontSize = 48)
         {

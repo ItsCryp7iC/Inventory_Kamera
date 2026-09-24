@@ -17,15 +17,20 @@ namespace InventoryKamera
 
         private BlockingCollection<TesseractEngine> engines;
 
-        /// <param name="tesseractDatapath">Directory containing the trained data files.</param>
+        internal string TesseractDataPath => tesseractDatapath;
+
+        /// <param name="tesseractDatapath">
+        /// Directory containing the trained data files. Defaults to the tessdata directory beside
+        /// the application executable.
+        /// </param>
         /// <param name="tesseractLanguage">Trained data file name (without extension).</param>
         /// <param name="engineCount">
         /// Engine pool size. Defaults to roughly one engine per logical processor, clamped so tiny
         /// machines still get a usable pool and huge ones don't load an excessive number of models.
         /// </param>
-        public OcrService(string tesseractDatapath = @".\tessdata", string tesseractLanguage = "genshin_fast_09_04_21", int? engineCount = null)
+        public OcrService(string tesseractDatapath = null, string tesseractLanguage = "genshin_fast_09_04_21", int? engineCount = null)
         {
-            this.tesseractDatapath = tesseractDatapath;
+            this.tesseractDatapath = tesseractDatapath ?? Path.Combine(AppContext.BaseDirectory, "tessdata");
             this.tesseractLanguage = tesseractLanguage;
             this.engineCount = engineCount ?? Math.Max(4, Math.Min(12, Environment.ProcessorCount));
         }
