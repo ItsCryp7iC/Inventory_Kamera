@@ -64,6 +64,7 @@ namespace InventoryKamera
         protected readonly IImagePreprocessor imagePreprocessor;
         protected readonly IScanSettings scanSettings;
         protected readonly IScanProgressReporter progressReporter;
+        protected readonly ScanSession scanSession;
 
         /// <summary>
         /// Shared with every subclass (previously duplicated as a private method on
@@ -85,12 +86,18 @@ namespace InventoryKamera
             bitmap.Save(fullPath);
         }
 
-        public InventoryScraper(IOcrService ocrService, IImagePreprocessor imagePreprocessor, IScanSettings scanSettings, IScanProgressReporter progressReporter)
+        public InventoryScraper(
+            IOcrService ocrService,
+            IImagePreprocessor imagePreprocessor,
+            IScanSettings scanSettings,
+            IScanProgressReporter progressReporter,
+            ScanSession scanSession)
         {
             this.ocrService = ocrService;
             this.imagePreprocessor = imagePreprocessor;
             this.scanSettings = scanSettings;
             this.progressReporter = progressReporter;
+            this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
 
             materialPages = new List<InventoryPage>();
 
@@ -99,6 +106,10 @@ namespace InventoryKamera
             materialPages.Remove(InventoryPage.Artifacts);
         }
 
+        /// <summary>
+        /// Stops only this scraper after a filter/end-of-list condition. It is deliberately separate
+        /// from <see cref="ScanSession"/> cancellation so later scan phases can still run.
+        /// </summary>
         internal bool StopScanning { get; set; }
 
         /// <summary>

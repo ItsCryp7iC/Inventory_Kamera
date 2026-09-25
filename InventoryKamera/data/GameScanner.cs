@@ -9,7 +9,6 @@ using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace InventoryKamera
@@ -17,7 +16,7 @@ namespace InventoryKamera
     public class GameScanner
 	{
 
-		private static NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+		private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
 		[JsonProperty]
 		public List<Character> Characters;
@@ -28,23 +27,12 @@ namespace InventoryKamera
 		private List<Artifact> equippedArtifacts;
 		private List<Weapon> equippedWeapons;
 
-		/// <summary>
-		/// Hand-off from the weapon/artifact scan loops (producers) to the background OCR workers
-		/// (consumers). Producers call <see cref="Channel{T}.Writer"/>.TryWrite; a normal end of work
-		/// is signaled by completing the writer (see <see cref="AwaitProcessors"/>/GatherData), which
-		/// lets ReadAllAsync drain every already-queued item before finishing. An abrupt stop (see
-		/// <see cref="StopImageProcessorWorkers"/>) instead cancels <see cref="workerAbortCts"/>, which
-		/// drops whatever is still queued.
-		/// </summary>
-		public static Channel<OCRImageCollection> workerChannel;
-		private CancellationTokenSource workerAbortCts;
-		private List<Task> imageProcessorTasks;
-
 		private readonly IOcrService ocrService;
 		private readonly IPositionalOcrService positionalOcrService;
 		private readonly IImagePreprocessor imagePreprocessor;
 		private readonly IScanSettings scanSettings;
 		private readonly IScanProgressReporter progressReporter;
+		private readonly ScanSession scanSession;
 
 		private WeaponScraper weaponScraper;
 		private ArtifactScraper artifactScraper;
@@ -52,13 +40,6 @@ namespace InventoryKamera
 		private MaterialScraper materialScraper;
 
 		private readonly int NumWorkers;
-
-		/// <summary>
-		/// Set when the user requests the scan be stopped (e.g. the Stop hotkey). Checked between
-		/// scan phases and within each scraper's per-item loop, since .NET no longer supports
-		/// Thread.Abort for interrupting the scan thread outright.
-		/// </summary>
-		internal static volatile bool CancelRequested;
 
 		public bool HasData
         {
@@ -71,15 +52,13 @@ namespace InventoryKamera
 		/// needs to outlive any single <see cref="GameScanner"/> instance (MainForm recreates one
 		/// per scan) so its subscribers don't have to re-subscribe every time.
 		/// </param>
-		internal GameScanner(IScanProgressReporter progressReporter)
+		internal GameScanner(IScanProgressReporter progressReporter, ScanSession scanSession)
 		{
 			Characters = new List<Character>();
 			Inventory = new Inventory();
 			equippedArtifacts = new List<Artifact>();
 			equippedWeapons = new List<Weapon>();
-			imageProcessorTasks = new List<Task>();
-			workerChannel = Channel.CreateUnbounded<OCRImageCollection>();
-			workerAbortCts = new CancellationTokenSource();
+			this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
 
 			var tesseractOcr = new OcrService();
 			ocrService = tesseractOcr;
@@ -88,10 +67,10 @@ namespace InventoryKamera
 			scanSettings = new ScanSettings();
 			this.progressReporter = progressReporter;
 
-			weaponScraper = new WeaponScraper(ocrService, imagePreprocessor, scanSettings, progressReporter);
-			artifactScraper = new ArtifactScraper(ocrService, imagePreprocessor, scanSettings, progressReporter);
-			characterScraper = new CharacterScraper(ocrService, imagePreprocessor, scanSettings, progressReporter);
-			materialScraper = new MaterialScraper(ocrService, imagePreprocessor, scanSettings, progressReporter);
+			weaponScraper = new WeaponScraper(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
+			artifactScraper = new ArtifactScraper(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
+			characterScraper = new CharacterScraper(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
+			materialScraper = new MaterialScraper(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
 
 			// Base worker count on available CPU (leaving headroom for the UI/navigation thread) so
 			// small machines don't oversubscribe; the scanner-speed setting further caps it down for
@@ -124,27 +103,21 @@ namespace InventoryKamera
 
 		public void StopImageProcessorWorkers()
 		{
-			workerAbortCts.Cancel();
-			AwaitProcessors();
-			workerChannel = Channel.CreateUnbounded<OCRImageCollection>();
-			workerAbortCts = new CancellationTokenSource();
+			scanSession.AbortWorkersAndWait();
 		}
 
 		public void GatherData()
 		{
-			CancelRequested = false;
-
 			ResetLogging();
 
 			GenshinProcesor.ReloadData();
 
 			// Initialize Image Processors
-			for (int i = 0; i < NumWorkers; i++)
-			{
-				imageProcessorTasks.Add(Task.Run(() => ImageProcessorWorkerAsync(workerAbortCts.Token)));
-			}
+			scanSession.StartWorkers(NumWorkers, ImageProcessorWorkerAsync);
 			Logger.Debug("Added {0} workers", NumWorkers);
 
+			try
+			{
 			ocrService.Restart();
 
 
@@ -161,9 +134,7 @@ namespace InventoryKamera
 
 			bool scanInventory = scanSettings.ScanWeapons || scanSettings.ScanArtifacts
 				|| scanSettings.ScanCharDevItems || scanSettings.ScanMaterials;
-			bool workerChannelCompleted = false;
-
-			if ((scanInventory || scanSettings.ScanCharacters) && !CancelRequested)
+			if ((scanInventory || scanSettings.ScanCharacters) && !scanSession.IsCancellationRequested)
 			{
 				// Phase 3 §6c: a SINGLE controller connection spans every controller-driven scan phase
 				// -- the inventory group (Weapons/Artifacts/Character Development Items/Materials) AND
@@ -193,9 +164,9 @@ namespace InventoryKamera
 							new NavigationGameScreenCapture(),
 							inventoryScreenDetector,
 							characterScreenDetector,
-							cancellationRequested: () => CancelRequested);
+							cancellationRequested: () => scanSession.IsCancellationRequested);
 
-						if (scanInventory && !CancelRequested)
+						if (scanInventory && !scanSession.IsCancellationRequested)
 						{
 							bool inventoryEntered = false;
 							try
@@ -220,7 +191,7 @@ namespace InventoryKamera
 							// switch. Threaded through explicitly rather than re-derived.
 							string currentTab = null;
 
-							if (scanSettings.ScanWeapons && !CancelRequested)
+							if (scanSettings.ScanWeapons && !scanSession.IsCancellationRequested)
 							{
 								Logger.Info("Scanning weapons...");
 								try
@@ -235,7 +206,7 @@ namespace InventoryKamera
 								Logger.Info("Done scanning weapons");
 							}
 
-							if (scanSettings.ScanArtifacts && !CancelRequested)
+							if (scanSettings.ScanArtifacts && !scanSession.IsCancellationRequested)
 							{
 								Logger.Info("Scanning artifacts...");
 								try
@@ -250,7 +221,7 @@ namespace InventoryKamera
 								Logger.Info("Done scanning artifacts");
 							}
 
-							if (scanSettings.ScanCharDevItems && !CancelRequested)
+							if (scanSettings.ScanCharDevItems && !scanSession.IsCancellationRequested)
 							{
 								Logger.Info("Scanning character development materials...");
 								try
@@ -266,7 +237,7 @@ namespace InventoryKamera
 								Logger.Info("Done scanning character development materials");
 							}
 
-							if (scanSettings.ScanMaterials && !CancelRequested)
+							if (scanSettings.ScanMaterials && !scanSession.IsCancellationRequested)
 							{
 								Logger.Info("Scanning materials...");
 								try
@@ -287,10 +258,9 @@ namespace InventoryKamera
 						// All inventory items (if any) are queued -- let the image-processor workers
 						// drain and finish while the character phase runs below. Characters don't queue
 						// to this channel, so it's safe to close it now.
-						workerChannel.Writer.Complete();
-						workerChannelCompleted = true;
+						scanSession.CompleteWork();
 
-						if (scanSettings.ScanCharacters && !CancelRequested)
+						if (scanSettings.ScanCharacters && !scanSession.IsCancellationRequested)
 						{
 							if (scanInventory)
 							{
@@ -325,11 +295,6 @@ namespace InventoryKamera
 				}
 			}
 
-			// Guarantee the worker channel is closed on every path (controller unavailable, or no
-			// controller-driven phase enabled at all) so AwaitProcessors below never hangs waiting for
-			// a completion signal that otherwise wouldn't come.
-			if (!workerChannelCompleted) workerChannel.Writer.Complete();
-
 			if (scanSettings.ScanWeapons || scanSettings.ScanArtifacts || scanSettings.ScanCharDevItems ||
 				scanSettings.ScanMaterials || scanSettings.ScanCharacters)
 			{
@@ -342,6 +307,13 @@ namespace InventoryKamera
 				Navigation.SystemWait(Navigation.Speed.UI);
 				Navigation.sim.Keyboard.KeyPress(Navigation.escapeKey);
 				Navigation.SystemWait(Navigation.Speed.UI);
+			}
+			}
+			finally
+			{
+				// Idempotent: inventory scans close the queue before Character scanning so workers can
+				// drain concurrently; every other normal, cancellation, and exception path closes here.
+				scanSession.CompleteWork();
 			}
 
 			// Wait for Image Processors to finish
@@ -369,8 +341,7 @@ namespace InventoryKamera
 
 		private void AwaitProcessors()
 		{
-			Task.WaitAll(imageProcessorTasks.ToArray());
-			imageProcessorTasks.Clear();
+			scanSession.AwaitWorkers();
 		}
 
 		public async Task ImageProcessorWorkerAsync(CancellationToken abortToken)
@@ -378,7 +349,7 @@ namespace InventoryKamera
 			Logger.Debug("Worker task starting");
 			try
 			{
-				await foreach (var imageCollection in workerChannel.Reader.ReadAllAsync(abortToken))
+				await foreach (var imageCollection in scanSession.WorkReader.ReadAllAsync(abortToken))
 				{
 					try
 					{

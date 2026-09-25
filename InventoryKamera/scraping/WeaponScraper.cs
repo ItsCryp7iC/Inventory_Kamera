@@ -19,7 +19,13 @@ namespace InventoryKamera
 		// only trusts the sorted-order early-stop optimization when this is true.
 		private bool sortModeConfirmed;
 
-		public WeaponScraper(IOcrService ocrService, IImagePreprocessor imagePreprocessor, IScanSettings scanSettings, IScanProgressReporter progressReporter) : base(ocrService, imagePreprocessor, scanSettings, progressReporter)
+		public WeaponScraper(
+            IOcrService ocrService,
+            IImagePreprocessor imagePreprocessor,
+            IScanSettings scanSettings,
+            IScanProgressReporter progressReporter,
+            ScanSession scanSession)
+            : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
         {
             inventoryPage = InventoryPage.Weapons;
             SortByLevel = scanSettings.MinimumWeaponLevel > 1;
@@ -81,7 +87,7 @@ namespace InventoryKamera
             }
 
             Logger.Info("Weapon scan #{0}: queued for cataloguing.", id);
-            GameScanner.workerChannel.Writer.TryWrite(new OCRImageCollection(weaponImages, "weapon", id));
+            scanSession.TryQueueWork(new OCRImageCollection(weaponImages, "weapon", id));
         }
 
         // Fixed dropdown order per user (2026-07-04): Level, Quality, Type.
@@ -243,7 +249,7 @@ namespace InventoryKamera
 
             int scanned = 0;
 
-            while (scanned < weaponCount && !GameScanner.CancelRequested && !StopScanning)
+            while (scanned < weaponCount && scanSession.ShouldContinue(StopScanning))
             {
                 progressReporter.WaitIfCorrectionPending();
 
@@ -273,7 +279,7 @@ namespace InventoryKamera
             }
 
             Logger.Info("Controller weapon scan finished: {0} of {1} scanned (cancelled={2}, stopped={3})",
-                scanned, weaponCount, GameScanner.CancelRequested, StopScanning);
+                scanned, weaponCount, scanSession.IsCancellationRequested, StopScanning);
 
             // Always report "Weapons" here, not whatever SwitchToTab returned: this
             // method's whole job is to end up scanning the Weapons tab, so by the time we get here

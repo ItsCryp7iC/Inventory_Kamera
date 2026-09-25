@@ -142,13 +142,16 @@ namespace InventoryKamera.game
                 ocrService.Restart();
                 var imagePreprocessor = new ImageProcessor();
                 var scanSettings = new FixedCharacterCountScanSettings();
-                var scraper = new CharacterScraper(ocrService, imagePreprocessor, scanSettings, progressReporter);
+                using var scanSession = new ScanSession();
+                var scraper = new CharacterScraper(
+                    ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
                 var paimonNavigator = new PaimonMenuNavigator(
                     navigator,
                     new PaimonMenuDetector(ocrService, imagePreprocessor),
                     new NavigationGameScreenCapture(),
                     new InventoryScreenDetector(ocrService, imagePreprocessor),
-                    new CharacterScreenDetector(ocrService, imagePreprocessor));
+                    new CharacterScreenDetector(ocrService, imagePreprocessor),
+                    cancellationRequested: () => scanSession.IsCancellationRequested);
                 var characters = new List<Character>();
 
                 try

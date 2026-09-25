@@ -16,7 +16,13 @@ namespace InventoryKamera
 	{
 		private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
-		public ArtifactScraper(IOcrService ocrService, IImagePreprocessor imagePreprocessor, IScanSettings scanSettings, IScanProgressReporter progressReporter) : base(ocrService, imagePreprocessor, scanSettings, progressReporter)
+		public ArtifactScraper(
+            IOcrService ocrService,
+            IImagePreprocessor imagePreprocessor,
+            IScanSettings scanSettings,
+            IScanProgressReporter progressReporter,
+            ScanSession scanSession)
+            : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
 		{
 			inventoryPage = InventoryPage.Artifacts;
             // Level takes precedence over rarity: sort by level whenever a real minimum level is set,
@@ -368,7 +374,7 @@ namespace InventoryKamera
             }
 
             Logger.Info("Artifact scan #{0}: queued for cataloguing (sanctified={1}).", id, sanctified);
-            GameScanner.workerChannel.Writer.TryWrite(new OCRImageCollection(artifactImages, "artifact", id));
+            scanSession.TryQueueWork(new OCRImageCollection(artifactImages, "artifact", id));
         }
 
         /// <summary>
@@ -418,7 +424,7 @@ namespace InventoryKamera
 
             int scanned = 0;
 
-            while (scanned < artifactCount && !GameScanner.CancelRequested && !StopScanning)
+            while (scanned < artifactCount && scanSession.ShouldContinue(StopScanning))
             {
                 progressReporter.WaitIfCorrectionPending();
 
@@ -441,7 +447,7 @@ namespace InventoryKamera
             }
 
             Logger.Info("Controller artifact scan finished: {0} of {1} scanned (cancelled={2}, stopped={3})",
-                scanned, artifactCount, GameScanner.CancelRequested, StopScanning);
+                scanned, artifactCount, scanSession.IsCancellationRequested, StopScanning);
 
             // Always report "Artifacts" here, not whatever SwitchToTab returned -- see
             // WeaponScraper.ScanWeapons's matching comment: by the time we get here the

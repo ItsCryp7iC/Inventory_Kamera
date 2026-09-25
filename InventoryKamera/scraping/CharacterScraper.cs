@@ -21,13 +21,20 @@ namespace InventoryKamera
 		private readonly IImagePreprocessor imagePreprocessor;
 		private readonly IScanSettings scanSettings;
 		private readonly IScanProgressReporter progressReporter;
+		private readonly ScanSession scanSession;
 
-        public CharacterScraper(IOcrService ocrService, IImagePreprocessor imagePreprocessor, IScanSettings scanSettings, IScanProgressReporter progressReporter)
+        public CharacterScraper(
+			IOcrService ocrService,
+			IImagePreprocessor imagePreprocessor,
+			IScanSettings scanSettings,
+			IScanProgressReporter progressReporter,
+			ScanSession scanSession)
 		{
 			this.ocrService = ocrService;
 			this.imagePreprocessor = imagePreprocessor;
 			this.scanSettings = scanSettings;
 			this.progressReporter = progressReporter;
+			this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
 			NumOfCharToScan = scanSettings.NumOfCharToScan;
 		}
 
@@ -260,7 +267,7 @@ namespace InventoryKamera
 				gapSinceLastRecorded++;
 
 				if (maxToScan != 0 && Characters.Count >= maxToScan) break;
-				if (GameScanner.CancelRequested)
+				if (scanSession.IsCancellationRequested)
 				{
 					Logger.Info("Stopping character scan: cancel requested");
 					break;
@@ -275,7 +282,7 @@ namespace InventoryKamera
 			// silently kept running the full Constellations/Talents passes over every character
 			// already recorded instead of stopping. If Phase 1 itself was cancelled, skip straight to
 			// the Tartaglia fix on whatever was scanned rather than starting Phase 2/3 at all.
-			if (GameScanner.CancelRequested)
+			if (scanSession.IsCancellationRequested)
 			{
 				ApplyTartagliaFix(Characters);
 				ApplySkirkFix(Characters);
@@ -324,7 +331,7 @@ namespace InventoryKamera
 			else
 				ScanRosterBackward(navigator, characterTiming, characterList, gapsBeforeEach, gapAfterLast, ScanConstellation);
 
-			if (GameScanner.CancelRequested)
+			if (scanSession.IsCancellationRequested)
 			{
 				ApplyTartagliaFix(Characters);
 				ApplySkirkFix(Characters);
@@ -405,7 +412,7 @@ namespace InventoryKamera
 
 				// Per user (2026-07-05): a cancel request during Phase 2/3 previously went
 				// unchecked, silently finishing the whole roster pass instead of stopping.
-				if (GameScanner.CancelRequested)
+				if (scanSession.IsCancellationRequested)
 				{
 					Logger.Info("Stopping character scan: cancel requested");
 					break;
@@ -443,7 +450,7 @@ namespace InventoryKamera
 
 				// Per user (2026-07-05): a cancel request during Phase 2/3 previously went
 				// unchecked, silently finishing the whole roster pass instead of stopping.
-				if (GameScanner.CancelRequested)
+				if (scanSession.IsCancellationRequested)
 				{
 					Logger.Info("Stopping character scan: cancel requested");
 					break;

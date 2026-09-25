@@ -38,6 +38,7 @@ namespace InventoryKamera
         private static DatabaseManager databaseManager;
 
         private bool running = false;
+        private volatile ScanSession activeScanSession;
 
         public MainForm()
         {
@@ -52,7 +53,6 @@ namespace InventoryKamera
             if (LicenseManager.UsageMode == LicenseUsageMode.Designtime) return;
 
             scanViewModel = new ScanViewModel();
-            data = new GameScanner(scanViewModel);
             databaseManager = new DatabaseManager();
 
             BindSettings();
@@ -297,13 +297,12 @@ namespace InventoryKamera
         {
             Logger.Info("Hotkey pressed");
             e.Handled = true;
-            // Check if scanner is running
-            if (scannerThread.IsAlive)
+            ScanSession session = activeScanSession;
+            if (session != null)
             {
-                // Stop navigating weapons/artifacts. .NET no longer supports Thread.Abort, so the
-                // scanner thread is asked to stop cooperatively; it checks this flag between scan
-                // phases and between items within a phase (see GameScanner.CancelRequested).
-                GameScanner.CancelRequested = true;
+                // .NET no longer supports Thread.Abort, so request cooperative cancellation from
+                // the session that owns this scan's token and worker queue.
+                session.RequestCancellation();
 
                 scanViewModel.SetProgramStatus("Stopping scan...");
             }
@@ -325,7 +324,7 @@ namespace InventoryKamera
 
         public static void UnexpectedError(string error)
         {
-            if (scannerThread.IsAlive)
+            if (scannerThread?.IsAlive == true)
             {
                 scanViewModel.AddError(error);
             }
@@ -510,6 +509,9 @@ namespace InventoryKamera
             if (Directory.Exists(Properties.Settings.Default.OutputPath) || Directory.CreateDirectory(Properties.Settings.Default.OutputPath).Exists)
             {
                 running = true;
+                var scanSession = new ScanSession();
+                activeScanSession = scanSession;
+                GameScanner currentScanner = null;
 
                 HotkeyManager.Current.AddOrReplace("Stop", Keys.Enter, Hotkey_Pressed);
                 Logger.Info("Hotkey registered");
@@ -558,7 +560,8 @@ namespace InventoryKamera
                             if (capture.Size != expectedSize) throw new FormatException("Window size and screenshot size mismatch. Please make sure the game is not in a fullscreen mode.");
                         }
 
-                        data = new GameScanner(scanViewModel);
+                        currentScanner = new GameScanner(scanViewModel, scanSession);
+                        data = currentScanner;
 
                         Logger.Info("Resolution: {0}x{1}", Navigation.GetSize().Width, Navigation.GetSize().Height);
 
@@ -579,12 +582,12 @@ namespace InventoryKamera
                         // still safe to call again in `finally` (e.g. on the cancelled/exception paths).
                         ResetUI();
 
-                        if (GameScanner.CancelRequested)
+                        if (scanSession.IsCancellationRequested)
                         {
                             // Scan was stopped cooperatively (Stop hotkey). Matches the previous
                             // Thread.Abort behaviour: skip GOOD conversion/export/optimizer dialog.
                             // The user can still use "Export Scanned Data" to export what was collected.
-                            data?.StopImageProcessorWorkers();
+                            currentScanner?.StopImageProcessorWorkers();
                             scanViewModel.SetProgramStatus("Scan stopped");
                         }
                         else
@@ -603,23 +606,26 @@ namespace InventoryKamera
                     }
                     catch (NotImplementedException ex)
                     {
+                        currentScanner?.StopImageProcessorWorkers();
                         scanViewModel.AddError(ex.ToString());
                     }
                     catch (Exception ex)
                     {
                         // Workers can get stuck if the thread is aborted or an exception is raised
-                        data?.StopImageProcessorWorkers();
+                        currentScanner?.StopImageProcessorWorkers();
                         while (ex.InnerException != null) ex = ex.InnerException;
                         scanViewModel.AddError(ex.ToString());
                         scanViewModel.SetProgramStatus("Scan aborted", ok: false);
                     }
                     finally
                     {
+                        activeScanSession = null;
+                        scanSession.Dispose();
                         ResetUI();
                         running = false;
                         ManualExportButton.Invoke((System.Windows.Forms.MethodInvoker)delegate
                         {
-                            ManualExportButton.Enabled = data.HasData;
+                            ManualExportButton.Enabled = data?.HasData == true;
                         });
                         MainForm_Activate();
                     }

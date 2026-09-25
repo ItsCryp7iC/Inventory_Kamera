@@ -38,12 +38,25 @@ namespace InventoryKamera
 		private static NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
 
-		public MaterialScraper(IOcrService ocrService, IImagePreprocessor imagePreprocessor, IScanSettings scanSettings, IScanProgressReporter progressReporter) : base(ocrService, imagePreprocessor, scanSettings, progressReporter)
+		public MaterialScraper(
+			IOcrService ocrService,
+			IImagePreprocessor imagePreprocessor,
+			IScanSettings scanSettings,
+			IScanProgressReporter progressReporter,
+			ScanSession scanSession)
+			: base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
 		{
 			inventoryPage = InventoryPage.CharacterDevelopmentItems;
 		}
 
-		public MaterialScraper(IOcrService ocrService, IImagePreprocessor imagePreprocessor, IScanSettings scanSettings, IScanProgressReporter progressReporter, InventoryPage section) : base(ocrService, imagePreprocessor, scanSettings, progressReporter)
+		public MaterialScraper(
+			IOcrService ocrService,
+			IImagePreprocessor imagePreprocessor,
+			IScanSettings scanSettings,
+			IScanProgressReporter progressReporter,
+			ScanSession scanSession,
+			InventoryPage section)
+			: base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
 		{
 			inventoryPage = section;
 		}
@@ -428,7 +441,7 @@ namespace InventoryKamera
 			double rowQuantityTop = ExpectedRowQuantityTop(0);
 			double rowQuantityHeight = QuantityHeight;
 
-			while (!GameScanner.CancelRequested && !StopScanning)
+			while (scanSession.ShouldContinue(StopScanning))
 			{
 				progressReporter.WaitIfCorrectionPending();
 
@@ -511,7 +524,7 @@ namespace InventoryKamera
 			}
 
 			Logger.Info("Controller {0} scan finished: {1} scanned (cancelled={2}, stopped={3})",
-				inventoryPage, scanned, GameScanner.CancelRequested, StopScanning);
+				inventoryPage, scanned, scanSession.IsCancellationRequested, StopScanning);
 
 			// Always report targetTab here, not whatever SwitchToTab returned -- see
 			// WeaponScraper.ScanWeapons's matching comment: by the time we get here the
