@@ -5,6 +5,12 @@ using System.Threading;
 
 namespace InventoryKamera.game
 {
+    internal enum PaimonMenuTarget
+    {
+        Inventory,
+        Character,
+    }
+
     internal sealed class PaimonMenuNavigationTiming
     {
         // Paimon menu focus must advance exactly once before the next capture. The 80ms hold is the
@@ -72,8 +78,8 @@ namespace InventoryKamera.game
     }
 
     /// <summary>
-    /// State-aware Inventory entry: observe the current Paimon menu, make one move, and observe again.
-    /// It never confirms until Inventory itself is the visually selected tile.
+    /// State-aware Paimon-menu entry: observe the current menu, make one move, and observe again.
+    /// It never confirms until the requested semantic target is the visually selected tile.
     /// </summary>
     internal sealed class PaimonMenuNavigator
     {
@@ -82,11 +88,13 @@ namespace InventoryKamera.game
         internal const int DefaultMaximumMoves = 12;
         internal const int DefaultDetectionAttempts = 3;
         internal const int DefaultUnchangedSelectionRetries = 2;
+        internal const int CharacterDestinationVerificationAttempts = 3;
 
         private readonly GameNavigator navigator;
         private readonly IPaimonMenuDetector detector;
         private readonly IGameScreenCapture screenCapture;
         private readonly IInventoryScreenDetector inventoryScreenDetector;
+        private readonly ICharacterScreenDetector characterScreenDetector;
         private readonly PaimonMenuPathPlanner pathPlanner;
         private readonly Action<int> wait;
         private readonly Func<bool> cancellationRequested;
@@ -99,6 +107,7 @@ namespace InventoryKamera.game
             IPaimonMenuDetector detector,
             IGameScreenCapture screenCapture,
             IInventoryScreenDetector inventoryScreenDetector,
+            ICharacterScreenDetector characterScreenDetector = null,
             PaimonMenuPathPlanner pathPlanner = null,
             Action<int> wait = null,
             Func<bool> cancellationRequested = null,
@@ -110,6 +119,7 @@ namespace InventoryKamera.game
             this.detector = detector ?? throw new ArgumentNullException(nameof(detector));
             this.screenCapture = screenCapture ?? throw new ArgumentNullException(nameof(screenCapture));
             this.inventoryScreenDetector = inventoryScreenDetector ?? throw new ArgumentNullException(nameof(inventoryScreenDetector));
+            this.characterScreenDetector = characterScreenDetector;
             this.pathPlanner = pathPlanner ?? new PaimonMenuPathPlanner();
             this.wait = wait ?? Thread.Sleep;
             this.cancellationRequested = cancellationRequested ?? (() => false);
@@ -120,10 +130,25 @@ namespace InventoryKamera.game
 
         public PaimonMenuNavigationResult OpenInventory(PaimonMenuNavigationTiming timing)
         {
+            return OpenTarget(PaimonMenuTarget.Inventory, timing);
+        }
+
+        public PaimonMenuNavigationResult OpenCharacter(PaimonMenuNavigationTiming timing)
+        {
+            return OpenTarget(PaimonMenuTarget.Character, timing);
+        }
+
+        private PaimonMenuNavigationResult OpenTarget(PaimonMenuTarget target, PaimonMenuNavigationTiming timing)
+        {
             if (timing == null) throw new ArgumentNullException(nameof(timing));
+            if (target == PaimonMenuTarget.Character && characterScreenDetector == null)
+                return Fail("Character destination detection is not configured.", null, null);
+
+            string targetName = target.ToString();
 
             Bitmap latestScreenshot = null;
             PaimonMenuDetection latestDetection = null;
+            PaimonMenuTile latestTargetTile = null;
             try
             {
                 navigator.EnterControllerMode();
@@ -141,7 +166,7 @@ namespace InventoryKamera.game
                 while (true)
                 {
                     if (cancellationRequested())
-                        return Fail("Inventory menu navigation was cancelled.", latestDetection, Transfer(ref latestScreenshot));
+                        return Fail($"{targetName} menu navigation was cancelled.", latestDetection, Transfer(ref latestScreenshot));
 
                     bool usable = false;
                     for (int attempt = 1; attempt <= detectionAttempts; attempt++)
@@ -149,7 +174,8 @@ namespace InventoryKamera.game
                         latestScreenshot?.Dispose();
                         latestScreenshot = screenCapture.CaptureWindow();
                         latestDetection = detector.Detect(latestScreenshot);
-                        usable = latestDetection.HasUsableSelection && latestDetection.InventoryTile != null;
+                        latestTargetTile = GetTargetTile(latestDetection, target);
+                        usable = latestDetection.HasUsableSelection && latestTargetTile != null;
                         Logger.Debug("Paimon menu detection attempt {0}/{1}: {2}; failure={3}",
                             attempt, detectionAttempts, latestDetection.Describe(), latestDetection.FailureReason ?? "(none)");
                         if (usable) break;
@@ -169,8 +195,8 @@ namespace InventoryKamera.game
 
                     if (!usable)
                     {
-                        string reason = latestDetection?.InventoryTile == null
-                            ? "Inventory was not confidently detected in the visible Paimon menu."
+                        string reason = latestTargetTile == null
+                            ? $"{targetName} was not confidently detected in the visible Paimon menu."
                             : latestDetection?.FailureReason ?? "The selected Paimon menu tile could not be detected.";
                         return Fail(reason, latestDetection, Transfer(ref latestScreenshot));
                     }
@@ -203,35 +229,50 @@ namespace InventoryKamera.game
                             Transfer(ref latestScreenshot));
                     }
 
-                    if (ReferenceEquals(latestDetection.SelectedTile, latestDetection.InventoryTile))
+                    if (ReferenceEquals(latestDetection.SelectedTile, latestTargetTile))
                     {
-                        Logger.Info("Inventory tile is visibly selected; confirming.");
+                        Logger.Info("{0} tile is visibly selected; confirming.", targetName);
                         wait(timing.PreConfirmSettleMs);
                         navigator.TapConfirm(timing.ConfirmHoldMs);
                         wait(timing.DestinationSettleMs);
 
-                        latestScreenshot.Dispose();
-                        latestScreenshot = screenCapture.CaptureWindow();
-                        InventoryScreenDetection destination = inventoryScreenDetector.Detect(latestScreenshot);
-                        if (!destination.IsInventoryOpen)
+                        int destinationAttempts = target == PaimonMenuTarget.Character
+                            ? CharacterDestinationVerificationAttempts
+                            : 1;
+                        DestinationVerification destination = default;
+                        for (int attempt = 1; attempt <= destinationAttempts; attempt++)
+                        {
+                            latestScreenshot?.Dispose();
+                            latestScreenshot = screenCapture.CaptureWindow();
+                            destination = VerifyDestination(target, latestScreenshot);
+                            Logger.Info(
+                                "{0} destination verification attempt {1}/{2}: success={3}; {4}",
+                                targetName,
+                                attempt,
+                                destinationAttempts,
+                                destination.Success,
+                                destination.Success ? destination.SuccessDetails : destination.FailureMessage);
+                            if (destination.Success) break;
+                            if (attempt < destinationAttempts) wait(timing.DetectionRetryMs);
+                        }
+
+                        if (!destination.Success)
                         {
                             return Fail(
-                                $"Inventory confirmation was sent, but the Inventory screen could not be verified (OCR: \"{destination.RawText}\").",
+                                destination.FailureMessage,
                                 latestDetection,
                                 Transfer(ref latestScreenshot));
                         }
 
-                        string details = $"Selected Inventory and verified destination tab {destination.TabName} " +
-                            $"(OCR: \"{destination.RawText}\").";
                         latestScreenshot.Dispose();
                         latestScreenshot = null;
-                        return PaimonMenuNavigationResult.Succeeded(details);
+                        return PaimonMenuNavigationResult.Succeeded(destination.SuccessDetails);
                     }
 
                     if (moves >= maximumMoves)
                     {
                         return Fail(
-                            $"Inventory was not reached within the {maximumMoves}-move safety limit.",
+                            $"{targetName} was not reached within the {maximumMoves}-move safety limit.",
                             latestDetection,
                             Transfer(ref latestScreenshot));
                     }
@@ -239,18 +280,18 @@ namespace InventoryKamera.game
                     PaimonMenuPathPlan plan = pathPlanner.Plan(
                         latestDetection.Tiles,
                         latestDetection.SelectedTile,
-                        latestDetection.InventoryTile);
+                        latestTargetTile);
                     if (!plan.Success || plan.Steps.Count == 0)
                     {
                         return Fail(
-                            plan.FailureReason ?? "No safe next step toward Inventory was available.",
+                            plan.FailureReason ?? $"No safe next step toward {targetName} was available.",
                             latestDetection,
                             Transfer(ref latestScreenshot));
                     }
 
                     GameNavigator.MenuDirection next = plan.Steps[0];
                     Logger.Info("Paimon menu: selected={0}, target={1}, next={2}, plannedSteps={3}",
-                        latestDetection.SelectedTile, latestDetection.InventoryTile, next, plan.Steps.Count);
+                        latestDetection.SelectedTile, latestTargetTile, next, plan.Steps.Count);
                     selectionExpectedToChange = currentSelection;
                     lastPlannedDirection = next;
                     previousSelectionForLastMove = latestDetection.SelectedTile.ToString();
@@ -263,11 +304,58 @@ namespace InventoryKamera.game
             catch (Exception ex)
             {
                 Logger.Error(ex, "State-aware Paimon menu navigation failed unexpectedly.");
-                return Fail($"State-aware Inventory navigation failed: {ex.Message}", latestDetection, Transfer(ref latestScreenshot));
+                return Fail($"State-aware {targetName} navigation failed: {ex.Message}", latestDetection, Transfer(ref latestScreenshot));
             }
             finally
             {
                 latestScreenshot?.Dispose();
+            }
+        }
+
+        private static PaimonMenuTile GetTargetTile(PaimonMenuDetection detection, PaimonMenuTarget target)
+        {
+            if (detection == null) return null;
+            return target switch
+            {
+                PaimonMenuTarget.Inventory => detection.InventoryTile,
+                PaimonMenuTarget.Character => detection.CharacterTile,
+                _ => null,
+            };
+        }
+
+        private DestinationVerification VerifyDestination(PaimonMenuTarget target, Bitmap screenshot)
+        {
+            if (target == PaimonMenuTarget.Inventory)
+            {
+                InventoryScreenDetection detection = inventoryScreenDetector.Detect(screenshot);
+                return new DestinationVerification(
+                    detection.IsInventoryOpen,
+                    $"Selected Inventory and verified destination tab {detection.TabName} " +
+                        $"(OCR: \"{detection.RawText}\").",
+                    $"Inventory confirmation was sent, but the Inventory screen could not be verified " +
+                        $"(OCR: \"{detection.RawText}\").");
+            }
+
+            CharacterScreenDetection character = characterScreenDetector.Detect(screenshot);
+            return new DestinationVerification(
+                character.IsCharacterOpen,
+                $"Selected Character and verified destination label Attributes " +
+                    $"(OCR: \"{character.RawText}\"; confidence={character.Confidence:P0}).",
+                $"Character confirmation was sent, but the Character screen could not be verified " +
+                    $"(OCR: \"{character.RawText}\"; confidence={character.Confidence:P0}).");
+        }
+
+        private readonly struct DestinationVerification
+        {
+            public bool Success { get; }
+            public string SuccessDetails { get; }
+            public string FailureMessage { get; }
+
+            public DestinationVerification(bool success, string successDetails, string failureMessage)
+            {
+                Success = success;
+                SuccessDetails = successDetails;
+                FailureMessage = failureMessage;
             }
         }
 

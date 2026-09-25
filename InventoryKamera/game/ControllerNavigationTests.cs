@@ -143,11 +143,17 @@ namespace InventoryKamera.game
                 var imagePreprocessor = new ImageProcessor();
                 var scanSettings = new FixedCharacterCountScanSettings();
                 var scraper = new CharacterScraper(ocrService, imagePreprocessor, scanSettings, progressReporter);
+                var paimonNavigator = new PaimonMenuNavigator(
+                    navigator,
+                    new PaimonMenuDetector(ocrService, imagePreprocessor),
+                    new NavigationGameScreenCapture(),
+                    new InventoryScreenDetector(ocrService, imagePreprocessor),
+                    new CharacterScreenDetector(ocrService, imagePreprocessor));
                 var characters = new List<Character>();
 
                 try
                 {
-                    scraper.ScanCharacters(navigator, ref characters);
+                    scraper.ScanCharacters(navigator, paimonNavigator, ref characters);
                     MessageBox.Show($"Scanned {characters.Count} character(s). Check the log for details.",
                         "Controller Character Scan Test", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }

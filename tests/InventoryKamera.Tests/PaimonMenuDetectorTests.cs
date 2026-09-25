@@ -12,6 +12,7 @@ namespace InventoryKamera.Tests
         private readonly OcrService ocr = new OcrService(engineCount: 1);
         internal PaimonMenuDetector Detector { get; }
         internal InventoryScreenDetector InventoryScreenDetector { get; }
+        internal CharacterScreenDetector CharacterScreenDetector { get; }
 
         public PaimonMenuDetectorFixture()
         {
@@ -19,6 +20,7 @@ namespace InventoryKamera.Tests
             var images = new ImageProcessor();
             Detector = new PaimonMenuDetector(ocr, images);
             InventoryScreenDetector = new InventoryScreenDetector(ocr, images);
+            CharacterScreenDetector = new CharacterScreenDetector(ocr, images);
         }
 
         public static Bitmap Load(string name) => new Bitmap(Path.Combine(
@@ -116,6 +118,49 @@ namespace InventoryKamera.Tests
             Assert.False(characterResult.IsInventoryOpen, $"OCR: {characterResult.RawText}");
         }
 
+        [Fact]
+        public void CharacterDestinationVerifier_AcceptsCharacterAndRejectsInventory()
+        {
+            using var character = PaimonMenuDetectorFixture.Load("character_open.png");
+            using var inventory = PaimonMenuDetectorFixture.Load("inventory_open.png");
+
+            CharacterScreenDetection characterResult = fixture.CharacterScreenDetector.Detect(character);
+            CharacterScreenDetection inventoryResult = fixture.CharacterScreenDetector.Detect(inventory);
+
+            Assert.True(characterResult.IsCharacterOpen,
+                $"OCR: {characterResult.RawText}; confidence={characterResult.Confidence:P0}");
+            Assert.False(inventoryResult.IsCharacterOpen,
+                $"OCR: {inventoryResult.RawText}; confidence={inventoryResult.Confidence:P0}");
+        }
+
+        [Fact]
+        public void CharacterDestinationVerifier_AcceptsRedactedLiveFailureCapture()
+        {
+            using var character = PaimonMenuDetectorFixture.Load("character_open_live_failure.png");
+
+            CharacterScreenDetection result = fixture.CharacterScreenDetector.Detect(character);
+
+            Assert.True(result.IsCharacterOpen,
+                $"OCR: {result.RawText}; confidence={result.Confidence:P0}");
+        }
+
+        [Theory]
+        [InlineData("Attributes", 0.10f)]
+        [InlineData("", 0.95f)]
+        public void CharacterDestinationVerifier_LowConfidenceOrMissingSignalFailsSafely(
+            string text,
+            float confidence)
+        {
+            using var screenshot = new Bitmap(1919, 1079);
+            var detector = new CharacterScreenDetector(
+                new StubOcrService(text, confidence),
+                new ImageProcessor());
+
+            CharacterScreenDetection result = detector.Detect(screenshot);
+
+            Assert.False(result.IsCharacterOpen);
+        }
+
         private sealed class StubPositionalOcrService : IPositionalOcrService
         {
             private readonly IReadOnlyList<PositionalOcrResult> results;
@@ -123,6 +168,30 @@ namespace InventoryKamera.Tests
             public StubPositionalOcrService(params PositionalOcrResult[] results) => this.results = results;
 
             public IReadOnlyList<PositionalOcrResult> AnalyzeTextRegions(Bitmap bitmap) => results;
+        }
+
+        private sealed class StubOcrService : IOcrService
+        {
+            private readonly string text;
+            private readonly float confidence;
+
+            public StubOcrService(string text, float confidence)
+            {
+                this.text = text;
+                this.confidence = confidence;
+            }
+
+            public void Restart() { }
+
+            public string AnalyzeText(
+                Bitmap bitmap,
+                Tesseract.PageSegMode pageMode = Tesseract.PageSegMode.SingleLine,
+                bool numbersOnly = false) => text;
+
+            public (string Text, float Confidence) AnalyzeTextWithConfidence(
+                Bitmap bitmap,
+                Tesseract.PageSegMode pageMode = Tesseract.PageSegMode.SingleLine,
+                bool numbersOnly = false) => (text, confidence);
         }
     }
 }

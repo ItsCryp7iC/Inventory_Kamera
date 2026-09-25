@@ -124,14 +124,26 @@ namespace InventoryKamera
 		/// rather than reusing the mouse path's per-node click loop.
 		/// <paramref name="Characters"/> is scanned up to <see cref="NumOfCharToScan"/> entries (0 =
 		/// whole roster).
+		/// Returns false only when Character menu entry could not be visually verified; no roster input
+		/// is sent in that case.
 		/// </summary>
-		public void ScanCharacters(GameNavigator navigator, ref List<Character> Characters)
+		public bool ScanCharacters(
+			GameNavigator navigator,
+			PaimonMenuNavigator paimonMenuNavigator,
+			ref List<Character> Characters)
 		{
 			int maxToScan = NumOfCharToScan;
 			if (maxToScan != 0) progressReporter.SetCharacter_Max(maxToScan);
 			progressReporter.ResetCharacterDisplay();
+			CharacterNavigationTiming characterTiming = CharacterNavigationTiming.FromCurrentScanSpeed();
+			Logger.Info(
+				"Character scan timing: requested={0} ({1:0.###}x), effective={2} ({3:0.###}x)",
+				characterTiming.RequestedTier,
+				characterTiming.RequestedMultiplier,
+				characterTiming.EffectiveTier,
+				characterTiming.EffectiveMultiplier);
 
-			EnterCharacterMenu(navigator);
+			if (!EnterCharacterMenu(navigator, paimonMenuNavigator)) return false;
 
 			// Per user (2026-07-05): the Character menu always opens on the Attributes sub-tab
 			// regardless of what was open last time, so no reset-to-known-position step is needed
@@ -167,7 +179,7 @@ namespace InventoryKamera
 			while (true)
 			{
 				string name = null, element = null;
-				string rawRead = ScanNameAndElement(ref name, ref element);
+				string rawRead = ScanNameAndElement(characterTiming, ref name, ref element);
 
 				bool isManequin = name == "Manequin1" || name == "Manequin2";
 				bool hasValidNameAndElement = !isManequin && !string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(element);
@@ -184,7 +196,7 @@ namespace InventoryKamera
 					}
 
 					bool ascended = false;
-					int level = ScanLevel(ref ascended);
+					int level = ScanLevel(characterTiming, ref ascended);
 					if (level == -1)
 					{
 						progressReporter.AddError($"Could not determine {name}'s level. Setting to 1.");
@@ -243,8 +255,8 @@ namespace InventoryKamera
 						screenshot.Save($"./logging/characters/unrecognized_{unrecognizedCount}.png");
 				}
 
-				navigator.TapNextTab(InventoryScraper.ScaledControllerDelay(80));
-				Thread.Sleep(InventoryScraper.ScaledControllerDelay(100));
+				navigator.TapNextTab(characterTiming.Scale(80));
+				Thread.Sleep(characterTiming.Scale(100));
 				gapSinceLastRecorded++;
 
 				if (maxToScan != 0 && Characters.Count >= maxToScan) break;
@@ -256,7 +268,7 @@ namespace InventoryKamera
 			}
 
 			int count = Characters.Count;
-			if (count == 0) return;
+			if (count == 0) return true;
 
 			// Per user (2026-07-05): a cancel request during Phase 1 was respected (the loop above
 			// already checks it), but Phase 2/3 never checked it at all, so a cancel mid-scan
@@ -267,7 +279,7 @@ namespace InventoryKamera
 			{
 				ApplyTartagliaFix(Characters);
 				ApplySkirkFix(Characters);
-				return;
+				return true;
 			}
 
 			// Local functions/lambdas below can't capture the `ref` parameter Characters directly
@@ -284,20 +296,21 @@ namespace InventoryKamera
 			// Constellations, Talents, Profile -- Constellations is 3 stops down from Attributes, not
 			// 1 (Weapons and Artifacts sit between them).
 			navigator.Move(GameNavigator.MenuDirection.Down, 3,
-				holdMs: InventoryScraper.ScaledControllerDelay(150), settleMs: InventoryScraper.ScaledControllerDelay(150));
+				holdMs: characterTiming.Scale(150),
+				settleMs: characterTiming.Scale(150));
 
 			void ScanConstellation(Character character)
 			{
 				// Verify the roster cursor is actually on this character before pressing B -- on a
 				// manequin (no constellation page) B closes the whole Character menu and derails the
 				// scan. See VerifyOnExpectedCharacter.
-				if (!VerifyOnExpectedCharacter(character, "Constellation")) return;
+				if (!VerifyOnExpectedCharacter(characterTiming, character, "Constellation")) return;
 
 				// Per user (2026-07-05): greedy (C6-first, read backward) mode only for 4-star
 				// characters so far -- see IsFourStarCharacter/ScanConstellationsGreedy.
 				character.Constellation = IsFourStarCharacter(character)
-					? ScanConstellationsGreedy(navigator, character)
-					: ScanConstellations(navigator, character);
+					? ScanConstellationsGreedy(navigator, character, characterTiming)
+					: ScanConstellations(navigator, character, characterTiming);
 				Logger.Info("{0} Constellation: {1}", character.NameGOOD, character.Constellation);
 			}
 
@@ -307,15 +320,15 @@ namespace InventoryKamera
 			// characters past the last one scanned, so reading backward from there reaches the same
 			// characters a rewind-then-forward pass would, for far fewer shoulder taps.
 			if (endedAtFirstCharacter)
-				ScanRosterForward(navigator, characterList, gapsBeforeEach, gapAfterLast, ScanConstellation);
+				ScanRosterForward(navigator, characterTiming, characterList, gapsBeforeEach, gapAfterLast, ScanConstellation);
 			else
-				ScanRosterBackward(navigator, characterList, gapsBeforeEach, gapAfterLast, ScanConstellation);
+				ScanRosterBackward(navigator, characterTiming, characterList, gapsBeforeEach, gapAfterLast, ScanConstellation);
 
 			if (GameScanner.CancelRequested)
 			{
 				ApplyTartagliaFix(Characters);
 				ApplySkirkFix(Characters);
-				return;
+				return true;
 			}
 
 			// --- Phase 3: Talents for the whole roster ---
@@ -325,16 +338,17 @@ namespace InventoryKamera
 			// read), so this phase can always read forward. No trailing gap needed (null) since this
 			// is the last phase -- nothing follows that needs the cursor back at the start.
 			navigator.Move(GameNavigator.MenuDirection.Down, 1,
-				holdMs: InventoryScraper.ScaledControllerDelay(150), settleMs: InventoryScraper.ScaledControllerDelay(150));
+				holdMs: characterTiming.Scale(150),
+				settleMs: characterTiming.Scale(150));
 
-			ScanRosterForward(navigator, characterList, gapsBeforeEach, null, character =>
+			ScanRosterForward(navigator, characterTiming, characterList, gapsBeforeEach, null, character =>
 			{
 				// Same identity check as the constellation pass: confirm the cursor is on this
 				// character before reading talents, so a drifted cursor doesn't record a manequin's or
 				// the wrong character's talent levels.
-				if (!VerifyOnExpectedCharacter(character, "Talent")) return;
+				if (!VerifyOnExpectedCharacter(characterTiming, character, "Talent")) return;
 
-				character.Talents = ScanTalents(character);
+				character.Talents = ScanTalents(character, characterTiming);
 				Logger.Info("{0} Talents: {1}", character.NameGOOD, "{" + string.Join(", ", character.Talents.Select(kv => kv.Key + "=" + kv.Value).ToArray()) + "}");
 
 				ApplyConstellationTalentScaling(character);
@@ -342,6 +356,7 @@ namespace InventoryKamera
 
 			ApplyTartagliaFix(Characters);
 			ApplySkirkFix(Characters);
+			return true;
 		}
 
 		/// <summary>
@@ -349,15 +364,19 @@ namespace InventoryKamera
 		/// (never a single multi-position jump), matching how <see cref="ScanCharacters"/>'s
 		/// Phase 1 measured each gap the same way.
 		/// </summary>
-		private void AdvanceRoster(GameNavigator navigator, bool forward, int taps)
+		private void AdvanceRoster(
+			GameNavigator navigator,
+			CharacterNavigationTiming timing,
+			bool forward,
+			int taps)
 		{
 			for (int t = 0; t < taps; t++)
 			{
 				if (forward)
-					navigator.TapNextTab(InventoryScraper.ScaledControllerDelay(80));
+					navigator.TapNextTab(timing.Scale(80));
 				else
-					navigator.TapPreviousTab(InventoryScraper.ScaledControllerDelay(80));
-				Thread.Sleep(InventoryScraper.ScaledControllerDelay(100));
+					navigator.TapPreviousTab(timing.Scale(80));
+				Thread.Sleep(timing.Scale(100));
 			}
 		}
 
@@ -371,7 +390,13 @@ namespace InventoryKamera
 		/// name="gapAfterLast"/> if given (used when the following phase also needs the cursor back
 		/// at the start), or not at all if null (the last phase needs no such trailing move).
 		/// </summary>
-		private void ScanRosterForward(GameNavigator navigator, List<Character> characters, List<int> gapsBeforeEach, int? gapAfterLast, Action<Character> scanCharacter)
+		private void ScanRosterForward(
+			GameNavigator navigator,
+			CharacterNavigationTiming timing,
+			List<Character> characters,
+			List<int> gapsBeforeEach,
+			int? gapAfterLast,
+			Action<Character> scanCharacter)
 		{
 			int count = characters.Count;
 			for (int i = 0; i < count; i++)
@@ -387,7 +412,7 @@ namespace InventoryKamera
 				}
 
 				int? gap = i < count - 1 ? gapsBeforeEach[i + 1] : gapAfterLast;
-				if (gap.HasValue) AdvanceRoster(navigator, forward: true, taps: gap.Value);
+				if (gap.HasValue) AdvanceRoster(navigator, timing, forward: true, taps: gap.Value);
 			}
 		}
 
@@ -401,13 +426,19 @@ namespace InventoryKamera
 		/// reading backward from Phase 1's stopping point reaches the same characters a
 		/// rewind-to-start-then-forward pass would, without the wasted rewind taps.
 		/// </summary>
-		private void ScanRosterBackward(GameNavigator navigator, List<Character> characters, List<int> gapsBeforeEach, int gapAfterLast, Action<Character> scanCharacter)
+		private void ScanRosterBackward(
+			GameNavigator navigator,
+			CharacterNavigationTiming timing,
+			List<Character> characters,
+			List<int> gapsBeforeEach,
+			int gapAfterLast,
+			Action<Character> scanCharacter)
 		{
 			int count = characters.Count;
 			for (int i = count - 1; i >= 0; i--)
 			{
 				int gap = i == count - 1 ? gapAfterLast : gapsBeforeEach[i + 1];
-				AdvanceRoster(navigator, forward: false, taps: gap);
+				AdvanceRoster(navigator, timing, forward: false, taps: gap);
 				scanCharacter(characters[i]);
 
 				// Per user (2026-07-05): a cancel request during Phase 2/3 previously went
@@ -421,21 +452,11 @@ namespace InventoryKamera
 		}
 
 		/// <summary>
-		/// Opens Genshin's pause menu and navigates the controller-mode tab bar to the Character
-		/// screen (grid position [2,1] in the 4-wide x 5-tall tab grid, per MODERNIZATION_PLAN.md §6c,
-		/// 2026-07-05), then confirms with B (Genshin's confirm/select button -- A backs out/cancels,
-		/// confirmed 2026-07-05).
-		/// Unlike the Inventory sub-tab row (which does remember its last-viewed tab, see
-		/// <see cref="InventoryScraper.SwitchToTab"/>), the pause menu's own top-level tab bar resets
-		/// to [0,0] every time it's opened fresh from gameplay -- so Move(Right,2) then Move(Down,1)
-		/// from [0,0] is always correct here, provided this is entered from the unpaused free-roam
-		/// state. The caller guarantees that: characters run in the same single controller session as
-		/// the inventory phases (Phase 3 §6c, revised 2026-07-07 -- no more per-phase disconnect), and
-		/// <c>InventoryKamera.GatherData</c> explicitly backs out to free-roam (MashBack + a generous
-		/// settle wait) before this runs when an inventory phase preceded it. The leading Escape +
-		/// MashBack below are a belt-and-suspenders reset on top of that.
+		/// Opens Genshin's pause menu and enters Character through the shared state-aware Paimon-menu
+		/// navigator. The leading Escape + MashBack preserve the existing free-roam reset before the
+		/// navigator begins its capture/move/re-detect loop.
 		/// </summary>
-		private void EnterCharacterMenu(GameNavigator navigator)
+		private bool EnterCharacterMenu(GameNavigator navigator, PaimonMenuNavigator paimonMenuNavigator)
 		{
 			Navigation.sim.Keyboard.KeyPress(Navigation.escapeKey);
 			Navigation.SystemWait(Navigation.Speed.UI);
@@ -447,17 +468,37 @@ namespace InventoryKamera
 			// A here is harmless once already at the root (per MashBack's own doc comment).
 			navigator.MashBack();
 
-			navigator.EnterControllerMode();
-			Thread.Sleep(InventoryScraper.ScaledControllerDelay(2000));
-			navigator.OpenMenu();
-			Thread.Sleep(InventoryScraper.ScaledControllerDelay(2000));
-			navigator.Move(GameNavigator.MenuDirection.Right, 2,
-				holdMs: InventoryScraper.ScaledControllerDelay(300), settleMs: InventoryScraper.ScaledControllerDelay(300));
-			navigator.Move(GameNavigator.MenuDirection.Down, 1,
-				holdMs: InventoryScraper.ScaledControllerDelay(300), settleMs: InventoryScraper.ScaledControllerDelay(300));
-			Thread.Sleep(InventoryScraper.ScaledControllerDelay(600));
-			navigator.TapConfirm(holdMs: InventoryScraper.ScaledControllerDelay(300));
-			Thread.Sleep(Math.Max(3000, InventoryScraper.ScaledControllerDelay(2000)));
+			// Paimon navigation is already live-verified at the requested global speed. The
+			// Character-specific safe profile begins only after this entry succeeds.
+			var timing = new PaimonMenuNavigationTiming(
+				controllerModeSettleMs: InventoryScraper.ScaledControllerDelay(2000),
+				menuOpenSettleMs: InventoryScraper.ScaledControllerDelay(2000),
+				moveHoldMs: InventoryScraper.ScaledControllerDelay(PaimonMenuNavigationTiming.SingleStepHoldMs),
+				moveSettleMs: InventoryScraper.ScaledControllerDelay(PaimonMenuNavigationTiming.SingleStepSettleMs),
+				preConfirmSettleMs: InventoryScraper.ScaledControllerDelay(600),
+				confirmHoldMs: InventoryScraper.ScaledControllerDelay(300),
+				destinationSettleMs: Math.Max(3000, InventoryScraper.ScaledControllerDelay(2000)),
+				detectionRetryMs: InventoryScraper.ScaledControllerDelay(300));
+
+			using (PaimonMenuNavigationResult result = paimonMenuNavigator.OpenCharacter(timing))
+			{
+				if (result.Success)
+				{
+					Logger.Info("State-aware Character entry succeeded. {0}", result.DetectionDetails);
+					return true;
+				}
+
+				string error = result.Message + " Character scanning was skipped. " + result.DetectionDetails;
+				Logger.Error(error);
+				progressReporter.AddError(error);
+				if (result.DiagnosticScreenshot != null)
+				{
+					const string path = "./logging/paimonmenu/character_entry_failure.png";
+					Directory.CreateDirectory(Path.GetDirectoryName(path));
+					result.DiagnosticScreenshot.Save(path);
+				}
+				return false;
+			}
 		}
 
 		/// <summary>
@@ -472,10 +513,13 @@ namespace InventoryKamera
 		/// it. Uses a small retry budget (fails fast on a wrong slot); the name/element header is shown
 		/// on every Character sub-tab, so it reads the same region as Phase 1's Attributes read.
 		/// </summary>
-		private bool VerifyOnExpectedCharacter(Character character, string phaseLabel)
+		private bool VerifyOnExpectedCharacter(
+			CharacterNavigationTiming timing,
+			Character character,
+			string phaseLabel)
 		{
 			string currentName = null, currentElement = null;
-			ScanNameAndElement(ref currentName, ref currentElement, maxAttempts: 5);
+			ScanNameAndElement(timing, ref currentName, ref currentElement, maxAttempts: 5);
 			if (currentName == character.NameGOOD) return true;
 
 			Logger.Warn("{0} scan expected \"{1}\" but the selected slot reads \"{2}\" -- skipping this character.",
@@ -685,9 +729,13 @@ namespace InventoryKamera
 		/// element are read from one combined OCR string, so callers can surface it in a failure
 		/// message to show what was actually read).
 		/// </summary>
-		private string ScanNameAndElement(ref string name, ref string element, int maxAttempts = 20)
+		private string ScanNameAndElement(
+			CharacterNavigationTiming timing,
+			ref string name,
+			ref string element,
+			int maxAttempts = 20)
 		{
-			int attempts = 0; // reduced from 75 per user (2026-07-05) -- 75 retries at Speed.Fast was too slow when parsing genuinely fails
+			int attempts = 0; // reduced from 75 per user (2026-07-05) -- excessive when parsing genuinely fails
 			Rectangle region = NameElementRegion();
 			string rawText = "";
 
@@ -759,7 +807,7 @@ namespace InventoryKamera
                     }
 				}
 				attempts++;
-				Navigation.SystemWait(200f);
+				Thread.Sleep(timing.Scale(200));
 			} while ( attempts < maxAttempts );
 			name = null;
 			element = null;
@@ -773,7 +821,7 @@ namespace InventoryKamera
 		/// shared across aspect ratios, so only the y position branches -- the window is letterboxed
 		/// vertically, but the horizontal axis and the box's dimensions don't change.
 		/// </summary>
-		private int ScanLevel(ref bool ascended)
+		private int ScanLevel(CharacterNavigationTiming timing, ref bool ascended)
 		{
             int attempt = 0;
 
@@ -822,7 +870,7 @@ namespace InventoryKamera
 
                 n.Dispose();
                 bm.Dispose();
-                Navigation.SystemWait(Navigation.Speed.Fast);
+                Thread.Sleep(timing.Scale(100));
 			} while (attempt < 20); // reduced from 50 per user (2026-07-05), matching ScanNameAndElement's cap
 
 			return -1;
@@ -840,7 +888,10 @@ namespace InventoryKamera
 		/// white-background color sample. Exits via cancel (A) once done or once a locked
 		/// constellation is found. Region measured (2026-07-05) with <c>ui/CoordinatePickerForm.cs</c>.
 		/// </summary>
-		private int ScanConstellations(GameNavigator navigator, Character character)
+		private int ScanConstellations(
+			GameNavigator navigator,
+			Character character,
+			CharacterNavigationTiming timing)
 		{
 			Rectangle activatedRegion = new RECT(
 				Left:   (int)( 0.1574 * Navigation.GetWidth() ),
@@ -850,8 +901,8 @@ namespace InventoryKamera
 
 			int constellation;
 
-			navigator.TapConfirm(InventoryScraper.ScaledControllerDelay(300));
-			Thread.Sleep(InventoryScraper.ScaledControllerDelay(600)); // set to 600 per user (2026-07-05)
+			navigator.TapConfirm(timing.Scale(300));
+			Thread.Sleep(timing.Scale(600)); // set to 600 per user (2026-07-05)
 
 			Bitmap constellationShot = null;
 			for (constellation = 0; constellation < 6; constellation++)
@@ -862,13 +913,14 @@ namespace InventoryKamera
 					// (GameNavigator.MoveStep), so a separate Thread.Sleep on top of it was a
 					// redundant double-wait -- folded into settleMs directly instead.
 					navigator.MoveStep(GameNavigator.MenuDirection.Down,
-						holdMs: InventoryScraper.ScaledControllerDelay(100), settleMs: InventoryScraper.ScaledControllerDelay(400));
+						holdMs: timing.Scale(100),
+						settleMs: timing.Scale(400));
 				}
 
 				LogCharacterScreenshot(character.NameGOOD, $"constellations/constellation_{constellation + 1}", activatedRegion);
 				LogCharacterWindow(character.NameGOOD, $"constellations/constellation_{constellation + 1}");
 
-				bool activated = ReadConstellationActivated(activatedRegion);
+				bool activated = ReadConstellationActivated(activatedRegion, timing);
 
 				// Capture the constellation region to show in the UI: keep the last ACTIVATED node,
 				// falling back to the first node examined so a C0 character still shows something.
@@ -881,8 +933,8 @@ namespace InventoryKamera
 				if (!activated) break;
 			}
 
-			navigator.TapBack(InventoryScraper.ScaledControllerDelay(300));
-			Thread.Sleep(InventoryScraper.ScaledControllerDelay(250)); // lowered from 400 per user (2026-07-05)
+			navigator.TapBack(timing.Scale(300));
+			Thread.Sleep(timing.Scale(250)); // lowered from 400 per user (2026-07-05)
 
 			progressReporter.SetCharacter_Constellation(constellationShot, constellation);
 			constellationShot?.Dispose();
@@ -902,11 +954,14 @@ namespace InventoryKamera
 		/// that exact text/background combination in this codebase. Shared by
 		/// <see cref="ScanConstellations"/> and <see cref="ScanConstellationsGreedy"/>.
 		/// </summary>
-		private bool ReadConstellationActivated(Rectangle activatedRegion)
+		private bool ReadConstellationActivated(
+			Rectangle activatedRegion,
+			CharacterNavigationTiming timing)
 		{
 			for (int readAttempt = 0; readAttempt < 3; readAttempt++)
 			{
-				if (readAttempt > 0) Navigation.SystemWait(200f);
+				if (readAttempt > 0)
+					Thread.Sleep(timing.Scale(200));
 
 				Bitmap bm = Navigation.CaptureRegion(activatedRegion);
 				GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref bm);
@@ -939,7 +994,10 @@ namespace InventoryKamera
 		/// constellation list specifically (confirmed only for the Character screen's own sub-tab row
 		/// so far).
 		/// </summary>
-		private int ScanConstellationsGreedy(GameNavigator navigator, Character character)
+		private int ScanConstellationsGreedy(
+			GameNavigator navigator,
+			Character character,
+			CharacterNavigationTiming timing)
 		{
 			Rectangle activatedRegion = new RECT(
 				Left:   (int)( 0.1574 * Navigation.GetWidth() ),
@@ -947,11 +1005,12 @@ namespace InventoryKamera
 				Right:  (int)( 0.2241 * Navigation.GetWidth() ),
 				Bottom: (int)( 0.8777 * Navigation.GetHeight() ));
 
-			navigator.TapConfirm(InventoryScraper.ScaledControllerDelay(300));
-			Thread.Sleep(InventoryScraper.ScaledControllerDelay(600));
+			navigator.TapConfirm(timing.Scale(300));
+			Thread.Sleep(timing.Scale(600));
 
 			navigator.MoveStep(GameNavigator.MenuDirection.Up,
-				holdMs: InventoryScraper.ScaledControllerDelay(100), settleMs: InventoryScraper.ScaledControllerDelay(400));
+				holdMs: timing.Scale(100),
+				settleMs: timing.Scale(400));
 
 			Bitmap constellationShot = null;
 			int constellation = 0;
@@ -959,7 +1018,7 @@ namespace InventoryKamera
 			{
 				LogCharacterScreenshot(character.NameGOOD, $"constellations/constellation_greedy_{node + 1}", activatedRegion);
 
-				bool activated = ReadConstellationActivated(activatedRegion);
+				bool activated = ReadConstellationActivated(activatedRegion, timing);
 
 				// Capture the constellation region for the UI: the activated node found, or the first
 				// node examined as a fallback if none are activated (C0).
@@ -978,12 +1037,13 @@ namespace InventoryKamera
 				if (node > 0)
 				{
 					navigator.MoveStep(GameNavigator.MenuDirection.Up,
-						holdMs: InventoryScraper.ScaledControllerDelay(100), settleMs: InventoryScraper.ScaledControllerDelay(400));
+						holdMs: timing.Scale(100),
+						settleMs: timing.Scale(400));
 				}
 			}
 
-			navigator.TapBack(InventoryScraper.ScaledControllerDelay(300));
-			Thread.Sleep(InventoryScraper.ScaledControllerDelay(250));
+			navigator.TapBack(timing.Scale(300));
+			Thread.Sleep(timing.Scale(250));
 
 			progressReporter.SetCharacter_Constellation(constellationShot, constellation);
 			constellationShot?.Dispose();
@@ -1016,7 +1076,9 @@ namespace InventoryKamera
 		/// per-icon retry loop) until at least 3 "Lv. XX" rows are found. Region measured (2026-07-05)
 		/// with <c>ui/CoordinatePickerForm.cs</c>.
 		/// </summary>
-		private Dictionary<string, int> ScanTalents(Character character)
+		private Dictionary<string, int> ScanTalents(
+			Character character,
+			CharacterNavigationTiming timing)
 		{
 			var talents = new Dictionary<string, int>
 			{
@@ -1073,7 +1135,7 @@ namespace InventoryKamera
 				n.Dispose();
 				bm.Dispose();
 				attempt++;
-				Navigation.SystemWait(Navigation.Speed.Fast);
+				Thread.Sleep(timing.Scale(100));
 			}
 
 			// The loop only sets all three talents together (on a successful read) then breaks; if it

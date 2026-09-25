@@ -184,19 +184,22 @@ namespace InventoryKamera
 					}
 					else
 					{
+						var paimonDetector = new PaimonMenuDetector(positionalOcrService, imagePreprocessor);
+						var inventoryScreenDetector = new InventoryScreenDetector(ocrService, imagePreprocessor);
+						var characterScreenDetector = new CharacterScreenDetector(ocrService, imagePreprocessor);
+						var paimonNavigator = new PaimonMenuNavigator(
+							navigator,
+							paimonDetector,
+							new NavigationGameScreenCapture(),
+							inventoryScreenDetector,
+							characterScreenDetector,
+							cancellationRequested: () => CancelRequested);
+
 						if (scanInventory && !CancelRequested)
 						{
 							bool inventoryEntered = false;
 							try
 							{
-								var paimonDetector = new PaimonMenuDetector(positionalOcrService, imagePreprocessor);
-								var inventoryScreenDetector = new InventoryScreenDetector(ocrService, imagePreprocessor);
-								var paimonNavigator = new PaimonMenuNavigator(
-									navigator,
-									paimonDetector,
-									new NavigationGameScreenCapture(),
-									inventoryScreenDetector,
-									cancellationRequested: () => CancelRequested);
 								inventoryEntered = weaponScraper.EnterInventory(paimonNavigator);
 							}
 							catch (FormatException ex) { progressReporter.AddError(ex.Message); }
@@ -294,8 +297,8 @@ namespace InventoryKamera
 								// We're still in controller mode sitting in the Inventory menu. Back all
 								// the way out to the unpaused free-roam state before opening the Character
 								// menu, and give the menu-close animation generous time to finish -- the
-								// Character-menu entry re-opens the pause menu assuming a cold [0,0]
-								// tab-bar start (see EnterCharacterMenu), which only holds from free-roam.
+								// Character-menu entry re-opens the pause menu and visually detects its
+								// starting selection, which still requires a clean free-roam baseline.
 								// This replaces the old between-phase controller disconnect/reconnect.
 								Logger.Info("Backing out of inventory to free-roam before character scan...");
 								navigator.MashBack();
@@ -303,15 +306,20 @@ namespace InventoryKamera
 							}
 
 							Logger.Info("Scanning characters...");
+							bool characterEntrySucceeded = false;
 							try
 							{
-								characterScraper.ScanCharacters(navigator, ref Characters);
+								characterEntrySucceeded = characterScraper.ScanCharacters(
+									navigator, paimonNavigator, ref Characters);
 							}
 							catch (Exception ex)
 							{
 								progressReporter.AddError(ex.Message + "\n" + ex.StackTrace);
 							}
-							Logger.Info("Done scanning characters");
+							if (characterEntrySucceeded)
+								Logger.Info("Done scanning characters");
+							else
+								Logger.Warn("Character scanning did not continue because Character entry was not verified.");
 						}
 					}
 				}

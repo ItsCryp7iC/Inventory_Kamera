@@ -201,11 +201,232 @@ namespace InventoryKamera.Tests
             Assert.Equal(1, destination.Calls);
         }
 
+        [Fact]
+        public void OpenCharacter_RetriesDestinationVerificationAndAcceptsLaterSuccess()
+        {
+            var events = new List<string>();
+            PaimonMenuTile character = Tile("Character", 0, 0);
+            var detector = new FakeDetector(events, Detection(character, character));
+            var capture = new FakeCapture(events);
+            var destination = new FakeCharacterScreenDetector(events, false, true);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                destination);
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, destination.Calls);
+            Assert.Equal(3, capture.Count); // menu detection plus two destination attempts
+            Assert.Equal(1, events.Count(e => e == "Button:Confirm:True"));
+        }
+
+        [Fact]
+        public void OpenCharacter_SelectedTargetAllowsConfirmAndRequiresDestinationVerification()
+        {
+            var events = new List<string>();
+            PaimonMenuTile character = Tile("Character", 0, 0);
+            var detector = new FakeDetector(events, Detection(character, character));
+            var capture = new FakeCapture(events);
+            var inventoryDestination = new FakeInventoryScreenDetector(events, succeeds: true);
+            var characterDestination = new FakeCharacterScreenDetector(events, succeeds: true);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events, detector, capture, inventoryDestination, characterDestination);
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Contains("Button:Confirm:True", events);
+            Assert.Equal(1, characterDestination.Calls);
+            Assert.Equal(0, inventoryDestination.Calls);
+            Assert.True(events.IndexOf("Detect:Character") < events.IndexOf("Button:Confirm:True"));
+            Assert.True(events.IndexOf("Button:Confirm:True") < events.IndexOf("VerifyCharacterDestination"));
+        }
+
+        [Fact]
+        public void OpenCharacter_TargetNotSelectedNeverConfirmsWithoutSafePath()
+        {
+            var events = new List<string>();
+            PaimonMenuTile shop = Tile("Shop", 0, 0);
+            PaimonMenuTile character = Tile("Character", 130, 118);
+            var detector = new FakeDetector(events, Detection(shop, shop, character));
+            var capture = new FakeCapture(events);
+            var destination = new FakeCharacterScreenDetector(events, succeeds: true);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                destination);
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.DoesNotContain("Button:Confirm:True", events);
+            Assert.Equal(0, destination.Calls);
+        }
+
+        [Fact]
+        public void OpenCharacter_MissingTargetFailsSafelyWithoutMovementOrConfirm()
+        {
+            var events = new List<string>();
+            PaimonMenuTile shop = Tile("Shop", 0, 0);
+            var detector = new FakeDetector(events, Detection(shop, shop));
+            var capture = new FakeCapture(events);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                new FakeCharacterScreenDetector(events, succeeds: true));
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Contains("Character was not confidently detected", result.Message);
+            Assert.DoesNotContain("Horizontal:1", events);
+            Assert.DoesNotContain("Vertical:-1", events);
+            Assert.DoesNotContain("Button:Confirm:True", events);
+        }
+
+        [Fact]
+        public void OpenCharacter_UnchangedSelectionFailsAfterBoundedRecapture()
+        {
+            var events = new List<string>();
+            PaimonMenuTile shop1 = Tile("Shop", 0, 0);
+            PaimonMenuTile character1 = Tile("Character", 130, 0);
+            PaimonMenuTile shop2 = Tile("Shop", 0, 0);
+            PaimonMenuTile character2 = Tile("Character", 130, 0);
+            PaimonMenuTile shop3 = Tile("Shop", 0, 0);
+            PaimonMenuTile character3 = Tile("Character", 130, 0);
+            var detector = new FakeDetector(events,
+                Detection(shop1, shop1, character1),
+                Detection(shop2, shop2, character2),
+                Detection(shop3, shop3, character3));
+            var capture = new FakeCapture(events);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                new FakeCharacterScreenDetector(events, succeeds: true),
+                unchangedSelectionRetries: 1);
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Contains("did not change", result.Message);
+            Assert.Equal(3, capture.Count);
+            Assert.Equal(1, events.Count(e => e == "Horizontal:1"));
+            Assert.DoesNotContain("Button:Confirm:True", events);
+        }
+
+        [Fact]
+        public void OpenCharacter_SelectionCycleFailsSafely()
+        {
+            var events = new List<string>();
+            PaimonMenuTile a1 = Tile("A", 0, 0);
+            PaimonMenuTile b1 = Tile("B", 130, 0);
+            PaimonMenuTile character1 = Tile("Character", 260, 0);
+            PaimonMenuTile a2 = Tile("A", 0, 0);
+            PaimonMenuTile b2 = Tile("B", 130, 0);
+            PaimonMenuTile character2 = Tile("Character", 260, 0);
+            PaimonMenuTile a3 = Tile("A", 0, 0);
+            PaimonMenuTile b3 = Tile("B", 130, 0);
+            PaimonMenuTile character3 = Tile("Character", 260, 0);
+            var detector = new FakeDetector(events,
+                Detection(a1, a1, b1, character1),
+                Detection(b2, a2, b2, character2),
+                Detection(a3, a3, b3, character3));
+            var capture = new FakeCapture(events);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                new FakeCharacterScreenDetector(events, succeeds: true));
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Contains("cycle", result.Message);
+            Assert.DoesNotContain("Button:Confirm:True", events);
+        }
+
+        [Fact]
+        public void OpenCharacter_RecapturesAndReplansAfterUnexpectedMovement()
+        {
+            var events = new List<string>();
+            PaimonMenuTile start = Tile("Shop", 0, 0);
+            PaimonMenuTile expectedRight = Tile("Expected", 130, 0);
+            PaimonMenuTile initialTarget = Tile("Character", 130, 118);
+            PaimonMenuTile unexpected = Tile("Unexpected", 0, 118);
+            PaimonMenuTile replannedTarget = Tile("Character", 0, 236);
+            PaimonMenuTile finalTarget = Tile("Character", 0, 236);
+            var detector = new FakeDetector(events,
+                Detection(start, start, expectedRight, initialTarget),
+                Detection(unexpected, unexpected, replannedTarget),
+                Detection(finalTarget, finalTarget));
+            var capture = new FakeCapture(events);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                new FakeCharacterScreenDetector(events, succeeds: true),
+                navigatorWait: milliseconds => events.Add($"NavigatorWait:{milliseconds}"));
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(PaimonStepTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Contains("Horizontal:1", events);
+            Assert.Contains("Vertical:-1", events);
+            Assert.Equal(4, capture.Count); // initial, after each of two moves, destination
+            Assert.Equal(3, detector.Calls);
+            int firstMove = events.IndexOf("Horizontal:1");
+            Assert.Equal(new[]
+            {
+                "Horizontal:1",
+                "NavigatorWait:80",
+                "Horizontal:0",
+                "Vertical:0",
+                "NavigatorWait:300",
+            }, events.Skip(firstMove).Take(5));
+        }
+
+        [Fact]
+        public void OpenCharacter_FailedDestinationVerificationReturnsFailureAndBacksOut()
+        {
+            var events = new List<string>();
+            PaimonMenuTile character = Tile("Character", 0, 0);
+            var detector = new FakeDetector(events, Detection(character, character));
+            var capture = new FakeCapture(events);
+            var destination = new FakeCharacterScreenDetector(events, succeeds: false);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                destination);
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Contains("could not be verified", result.Message);
+            Assert.Contains("Button:Confirm:True", events);
+            Assert.Contains("Button:Back:True", events);
+            Assert.Equal(PaimonMenuNavigator.CharacterDestinationVerificationAttempts, destination.Calls);
+        }
+
         private static PaimonMenuNavigator CreateNavigator(
             List<string> events,
             IPaimonMenuDetector detector,
             IGameScreenCapture capture,
             IInventoryScreenDetector destination,
+            ICharacterScreenDetector characterDestination = null,
             int detectionAttempts = 1,
             int unchangedSelectionRetries = 2,
             System.Action<int> navigatorWait = null)
@@ -217,6 +438,7 @@ namespace InventoryKamera.Tests
                 detector,
                 capture,
                 destination,
+                characterDestination,
                 wait: _ => { },
                 maximumMoves: 8,
                 detectionAttempts: detectionAttempts,
@@ -225,6 +447,17 @@ namespace InventoryKamera.Tests
 
         private static PaimonMenuNavigationTiming NoWaitTiming() =>
             new PaimonMenuNavigationTiming(0, 0, 0, 0, 0, 0, 0, 0);
+
+        private static PaimonMenuNavigationTiming PaimonStepTiming() =>
+            new PaimonMenuNavigationTiming(
+                0,
+                0,
+                PaimonMenuNavigationTiming.SingleStepHoldMs,
+                PaimonMenuNavigationTiming.SingleStepSettleMs,
+                0,
+                0,
+                0,
+                0);
 
         private static PaimonMenuTile Tile(string label, int x, int y) =>
             new PaimonMenuTile(label, Rectangle.Empty, new Rectangle(x, y, 120, 108), 1f);
@@ -235,7 +468,9 @@ namespace InventoryKamera.Tests
         {
             PaimonMenuTile inventory = tiles.FirstOrDefault(t =>
                 PaimonMenuDetector.Normalize(t.Label) == "inventory");
-            return new PaimonMenuDetection(tiles, selected, inventory, null);
+            PaimonMenuTile character = tiles.FirstOrDefault(t =>
+                PaimonMenuDetector.Normalize(t.Label) == "character");
+            return new PaimonMenuDetection(tiles, selected, inventory, character);
         }
 
         private sealed class FakeDetector : IPaimonMenuDetector
@@ -293,6 +528,29 @@ namespace InventoryKamera.Tests
                 return succeeds
                     ? new InventoryScreenDetection(0, "Weapons", "Weapons")
                     : new InventoryScreenDetection(-1, null, "unknown");
+            }
+        }
+
+        private sealed class FakeCharacterScreenDetector : ICharacterScreenDetector
+        {
+            private readonly List<string> events;
+            private readonly Queue<bool> results;
+            public int Calls { get; private set; }
+
+            public FakeCharacterScreenDetector(List<string> events, params bool[] succeeds)
+            {
+                this.events = events;
+                results = new Queue<bool>(succeeds);
+            }
+
+            public CharacterScreenDetection Detect(Bitmap screenshot)
+            {
+                Calls++;
+                events.Add("VerifyCharacterDestination");
+                bool succeeds = results.Count > 1 ? results.Dequeue() : results.Peek();
+                return succeeds
+                    ? new CharacterScreenDetection(true, "Attributes", 0.99f)
+                    : new CharacterScreenDetection(false, "unknown", 0.10f);
             }
         }
 
