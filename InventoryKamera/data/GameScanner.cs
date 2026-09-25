@@ -41,6 +41,7 @@ namespace InventoryKamera
 		private List<Task> imageProcessorTasks;
 
 		private readonly IOcrService ocrService;
+		private readonly IPositionalOcrService positionalOcrService;
 		private readonly IImagePreprocessor imagePreprocessor;
 		private readonly IScanSettings scanSettings;
 		private readonly IScanProgressReporter progressReporter;
@@ -80,7 +81,9 @@ namespace InventoryKamera
 			workerChannel = Channel.CreateUnbounded<OCRImageCollection>();
 			workerAbortCts = new CancellationTokenSource();
 
-			ocrService = new OcrService();
+			var tesseractOcr = new OcrService();
+			ocrService = tesseractOcr;
+			positionalOcrService = tesseractOcr;
 			imagePreprocessor = new ImageProcessor();
 			scanSettings = new ScanSettings();
 			this.progressReporter = progressReporter;
@@ -183,9 +186,18 @@ namespace InventoryKamera
 					{
 						if (scanInventory && !CancelRequested)
 						{
+							bool inventoryEntered = false;
 							try
 							{
-								weaponScraper.EnterInventory(navigator);
+								var paimonDetector = new PaimonMenuDetector(positionalOcrService, imagePreprocessor);
+								var inventoryScreenDetector = new InventoryScreenDetector(ocrService, imagePreprocessor);
+								var paimonNavigator = new PaimonMenuNavigator(
+									navigator,
+									paimonDetector,
+									new NavigationGameScreenCapture(),
+									inventoryScreenDetector,
+									cancellationRequested: () => CancelRequested);
+								inventoryEntered = weaponScraper.EnterInventory(paimonNavigator);
 							}
 							catch (FormatException ex) { progressReporter.AddError(ex.Message); }
 							catch (Exception ex)
@@ -193,6 +205,12 @@ namespace InventoryKamera
 								progressReporter.AddError(ex.Message + "\n" + ex.StackTrace);
 							}
 
+							if (!inventoryEntered)
+							{
+								Logger.Warn("Skipping all controller-driven inventory phases because Inventory entry was not verified.");
+							}
+							else
+							{
 							// Per user (2026-07-05): once a phase has switched to and scanned a tab, the
 							// next phase already knows where it left off -- no need to re-detect the
 							// current tab via OCR (which had been flaking) just to compute the next
@@ -259,6 +277,7 @@ namespace InventoryKamera
 									progressReporter.AddError(ex.Message + "\n" + ex.StackTrace);
 								}
 								Logger.Info("Done scanning materials");
+							}
 							}
 						}
 

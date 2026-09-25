@@ -31,6 +31,9 @@
     <None Include="..\..\InventoryKamera\tessdata\genshin_fast_09_04_21.traineddata" Link="tessdata\genshin_fast_09_04_21.traineddata">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="Fixtures\PaimonMenu\*.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

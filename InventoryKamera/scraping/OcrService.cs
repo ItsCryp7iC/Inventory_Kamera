@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using Tesseract;
@@ -7,7 +8,7 @@ using Tesseract;
 namespace InventoryKamera
 {
     /// <inheritdoc cref="IOcrService"/>
-    internal sealed class OcrService : IOcrService, IDisposable
+    internal sealed class OcrService : IOcrService, IPositionalOcrService, IDisposable
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
@@ -96,6 +97,44 @@ namespace InventoryKamera
             engines.Add(e);
 
             return (text, confidence);
+        }
+
+        public IReadOnlyList<PositionalOcrResult> AnalyzeTextRegions(Bitmap bitmap)
+        {
+            if (engines is null) Restart();
+
+            var results = new List<PositionalOcrResult>();
+            TesseractEngine engine = engines.Take();
+            try
+            {
+                using (var pix = BitmapToPix(bitmap))
+                using (var page = engine.Process(pix, PageSegMode.SparseText))
+                using (var iterator = page.GetIterator())
+                {
+                    iterator.Begin();
+                    do
+                    {
+                        string text = iterator.GetText(PageIteratorLevel.Word)?.Trim();
+                        if (string.IsNullOrWhiteSpace(text) ||
+                            !iterator.TryGetBoundingBox(PageIteratorLevel.Word, out Rect bounds))
+                        {
+                            continue;
+                        }
+
+                        results.Add(new PositionalOcrResult(
+                            text,
+                            new Rectangle(bounds.X1, bounds.Y1, bounds.Width, bounds.Height),
+                            iterator.GetConfidence(PageIteratorLevel.Word) / 100f));
+                    }
+                    while (iterator.Next(PageIteratorLevel.Word));
+                }
+            }
+            finally
+            {
+                engines.Add(engine);
+            }
+
+            return results;
         }
 
         /// <summary>

@@ -277,11 +277,7 @@ namespace InventoryKamera
         // Genshin's inventory remembers whichever tab was last open, so tab-switching can't assume a
         // known starting tab -- the tab name label gets OCR'd and fuzzy-matched against this list.
         // Shared across Weapons/Artifacts/Character Development Items (Phase 3 §6c).
-        internal static readonly string[] ControllerInventoryTabNames =
-        {
-            "Weapons", "Artifacts", "Character Development Items", "Food", "Materials",
-            "Gadget", "Quest", "Precious Items", "Furnishings",
-        };
+        internal static readonly string[] ControllerInventoryTabNames = InventoryTabRecognition.Names;
 
         /// <summary>
         /// Captures the selected item's always-visible detail card -- confirmed by the user to be the
@@ -297,12 +293,11 @@ namespace InventoryKamera
                 height: (int)((Navigation.IsNormal ? 0.7556 : 0.7800) * Navigation.GetHeight()));
         }
         /// <summary>
-        /// Opens the pause menu and navigates into Inventory via controller -- ported from the
-        /// live-verified sequence in <c>ControllerNavigationTests</c> (2026-07-05): open menu, move
-        /// down twice (Inventory is at grid position [0,2]), confirm with B (Genshin's confirm button
-        /// -- swapped from standard Xbox convention, A is back/cancel).
+        /// Opens the pause menu and enters Inventory through visually verified Paimon-menu
+        /// navigation. The navigator re-detects focus after every individual move and confirms only
+        /// while the Inventory label itself is selected.
         /// </summary>
-        internal void EnterInventory(GameNavigator navigator)
+        internal bool EnterInventory(PaimonMenuNavigator menuNavigator)
         {
             // The mouse-based scan's Navigation.InventoryScreen() started every phase with a real
             // Escape press to guarantee a known baseline (unpaused, no menu open) before doing
@@ -314,27 +309,31 @@ namespace InventoryKamera
             Navigation.sim.Keyboard.KeyPress(Navigation.escapeKey);
             Navigation.SystemWait(Navigation.Speed.UI);
 
-            // Per user (2026-07-04): "make sure the speed is hooked up" -- these were still fixed
-            // regardless of the Fast/Normal/Slow setting, unlike every per-item timing elsewhere. This
-            // is one-time setup (runs once per scan phase, not per item), so it's a much smaller share
-            // of a full scan's total time than the per-item loop -- being generous here is nearly free.
-            // Doubled again (2026-07-05) after a live tab-detection miss right after this sequence
-            // ("Weapons" misread as "eepons |") -- the menu navigation itself was too fast and
-            // occasionally not fully settled before the next step read the screen.
-            navigator.EnterControllerMode();
-            Thread.Sleep(ScaledControllerDelay(2000));
-            navigator.OpenMenu();
-            Thread.Sleep(ScaledControllerDelay(2000));
-            navigator.Move(GameNavigator.MenuDirection.Down, 2, holdMs: ScaledControllerDelay(300), settleMs: ScaledControllerDelay(300));
-            Thread.Sleep(ScaledControllerDelay(600));
-            navigator.TapConfirm(holdMs: ScaledControllerDelay(300));
-            // Per user (2026-07-04): confirming into Inventory plays a screen-transition animation
-            // that outlasts the plain-scaled wait -- unlike input-registration timing, an animation's
-            // real duration doesn't shrink just because Fast wants quicker input pacing. Floored flat
-            // regardless of speed setting (doubled 2026-07-05, same reasoning as above); this is a
-            // one-time per-scan cost, so being generous here is nearly free even though the same floor
-            // was rejected for the per-item advance wait.
-            Thread.Sleep(Math.Max(3000, ScaledControllerDelay(2000)));
+            var timing = new PaimonMenuNavigationTiming(
+                controllerModeSettleMs: ScaledControllerDelay(2000),
+                menuOpenSettleMs: ScaledControllerDelay(2000),
+                moveHoldMs: ScaledControllerDelay(PaimonMenuNavigationTiming.SingleStepHoldMs),
+                moveSettleMs: ScaledControllerDelay(PaimonMenuNavigationTiming.SingleStepSettleMs),
+                preConfirmSettleMs: ScaledControllerDelay(600),
+                confirmHoldMs: ScaledControllerDelay(300),
+                destinationSettleMs: Math.Max(3000, ScaledControllerDelay(2000)),
+                detectionRetryMs: ScaledControllerDelay(300));
+
+            using (PaimonMenuNavigationResult result = menuNavigator.OpenInventory(timing))
+            {
+                if (result.Success)
+                {
+                    Logger.Info("State-aware Inventory entry succeeded. {0}", result.DetectionDetails);
+                    return true;
+                }
+
+                string error = result.Message + " Inventory scan phases were skipped. " + result.DetectionDetails;
+                Logger.Error(error);
+                progressReporter.AddError(error);
+                if (result.DiagnosticScreenshot != null)
+                    SaveDebugScreenshot(result.DiagnosticScreenshot, "paimonmenu/inventory_entry_failure", force: true);
+                return false;
+            }
         }
 
         /// <summary>
@@ -358,24 +357,19 @@ namespace InventoryKamera
             {
                 SaveDebugScreenshot(region, "tabdetection/region");
 
-                var preprocessor = new ImageProcessor();
-                Bitmap processed = preprocessor.ConvertToGrayscale(region);
-                preprocessor.SetContrast(60.0, ref processed);
-                preprocessor.SetInvert(ref processed);
-
-                SaveDebugScreenshot(processed, "tabdetection/processed");
-
-                using (processed)
-                using (var ocr = new OcrService())
+                if (scanSettings.LogScreenshots)
                 {
-                    rawText = ocr.AnalyzeText(processed, Tesseract.PageSegMode.SingleLine).Trim();
+                    Bitmap processed = imagePreprocessor.ConvertToGrayscale(region);
+                    imagePreprocessor.SetContrast(60.0, ref processed);
+                    imagePreprocessor.SetInvert(ref processed);
+                    using (processed) SaveDebugScreenshot(processed, "tabdetection/processed");
                 }
-            }
 
-            var normalizedTabs = ControllerInventoryTabNames.Select(t => t.ToLower().Replace(" ", "")).ToArray();
-            string normalizedText = Regex.Replace(rawText.ToLower(), @"[\W]", string.Empty);
-            string matchedNormalized = TextNormalizer.FindClosestInList(normalizedText, new HashSet<string>(normalizedTabs));
-            return Array.IndexOf(normalizedTabs, matchedNormalized);
+                var detector = new InventoryScreenDetector(ocrService, imagePreprocessor);
+                InventoryScreenDetection detection = detector.DetectTabRegion(region);
+                rawText = detection.RawText;
+            }
+            return InventoryTabRecognition.Match(rawText);
         }
 
         /// <summary>
