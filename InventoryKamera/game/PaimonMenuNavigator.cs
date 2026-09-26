@@ -156,10 +156,10 @@ namespace InventoryKamera.game
                 navigator.OpenMenu();
                 wait(timing.MenuOpenSettleMs);
 
-                var visitedSelections = new HashSet<string>(StringComparer.Ordinal);
-                string selectionExpectedToChange = null;
+                var visitedSelections = new List<PaimonMenuTilePhysicalIdentity>();
+                PaimonMenuTilePhysicalIdentity? selectionExpectedToChange = null;
                 GameNavigator.MenuDirection? lastPlannedDirection = null;
-                string previousSelectionForLastMove = null;
+                PaimonMenuTile previousSelectionForLastMove = null;
                 int unchangedRetries = 0;
                 int moves = 0;
 
@@ -184,11 +184,19 @@ namespace InventoryKamera.game
 
                     if (lastPlannedDirection.HasValue)
                     {
+                        PaimonMenuTile newlySelected = latestDetection?.SelectedTile;
+                        bool semanticLabelEqual = SemanticLabelsEqual(previousSelectionForLastMove, newlySelected);
+                        bool physicalIdentityEqual = PaimonMenuTilePhysicalIdentity.AreSame(
+                            previousSelectionForLastMove,
+                            newlySelected);
                         Logger.Info(
-                            "Paimon menu movement result: direction={0}, previous={1}, detected={2}",
+                            "Paimon menu movement result: direction={0}; previous={1}; detected={2}; " +
+                            "semanticLabelEqual={3}; physicalIdentityEqual={4}",
                             lastPlannedDirection.Value,
-                            previousSelectionForLastMove ?? "(unknown)",
-                            latestDetection?.SelectedTile?.ToString() ?? "(none)");
+                            DescribeTile(previousSelectionForLastMove),
+                            DescribeTile(newlySelected),
+                            semanticLabelEqual,
+                            physicalIdentityEqual);
                         lastPlannedDirection = null;
                         previousSelectionForLastMove = null;
                     }
@@ -201,8 +209,8 @@ namespace InventoryKamera.game
                         return Fail(reason, latestDetection, Transfer(ref latestScreenshot));
                     }
 
-                    string currentSelection = SelectionIdentity(latestDetection.SelectedTile);
-                    if (selectionExpectedToChange != null && currentSelection == selectionExpectedToChange)
+                    PaimonMenuTile currentSelection = latestDetection.SelectedTile;
+                    if (selectionExpectedToChange.HasValue && selectionExpectedToChange.Value.Matches(currentSelection))
                     {
                         unchangedRetries++;
                         if (unchangedRetries > unchangedSelectionRetries)
@@ -221,15 +229,19 @@ namespace InventoryKamera.game
 
                     selectionExpectedToChange = null;
                     unchangedRetries = 0;
-                    if (!visitedSelections.Add(currentSelection))
+                    if (visitedSelections.Exists(identity => identity.Matches(currentSelection)))
                     {
                         return Fail(
                             $"Paimon menu navigation entered a selection cycle at {latestDetection.SelectedTile}.",
                             latestDetection,
                             Transfer(ref latestScreenshot));
                     }
+                    visitedSelections.Add(new PaimonMenuTilePhysicalIdentity(currentSelection));
 
-                    if (ReferenceEquals(latestDetection.SelectedTile, latestTargetTile))
+                    if (PaimonMenuTilePhysicalIdentity.AreUniqueCorrespondingTiles(
+                        latestDetection.SelectedTile,
+                        latestTargetTile,
+                        latestDetection.Tiles))
                     {
                         Logger.Info("{0} tile is visibly selected; confirming.", targetName);
                         wait(timing.PreConfirmSettleMs);
@@ -292,9 +304,9 @@ namespace InventoryKamera.game
                     GameNavigator.MenuDirection next = plan.Steps[0];
                     Logger.Info("Paimon menu: selected={0}, target={1}, next={2}, plannedSteps={3}",
                         latestDetection.SelectedTile, latestTargetTile, next, plan.Steps.Count);
-                    selectionExpectedToChange = currentSelection;
+                    selectionExpectedToChange = new PaimonMenuTilePhysicalIdentity(currentSelection);
                     lastPlannedDirection = next;
-                    previousSelectionForLastMove = latestDetection.SelectedTile.ToString();
+                    previousSelectionForLastMove = latestDetection.SelectedTile;
                     latestScreenshot.Dispose();
                     latestScreenshot = null;
                     navigator.MoveStep(next, timing.MoveHoldMs, timing.MoveSettleMs);
@@ -384,11 +396,16 @@ namespace InventoryKamera.game
             return transferred;
         }
 
-        private static string SelectionIdentity(PaimonMenuTile tile)
+        // Diagnostic only: semantic OCR equality never determines movement, cycles, or confirmation.
+        private static bool SemanticLabelsEqual(PaimonMenuTile first, PaimonMenuTile second)
         {
-            string label = PaimonMenuDetector.Normalize(tile.Label);
-            if (label.Length > 0) return label;
-            return $"position:{Math.Round(tile.Center.X / 10f)}:{Math.Round(tile.Center.Y / 10f)}";
+            if (first == null || second == null) return false;
+            return PaimonMenuDetector.Normalize(first.Label) == PaimonMenuDetector.Normalize(second.Label);
         }
+
+        private static string DescribeTile(PaimonMenuTile tile) => tile == null
+            ? "(none)"
+            : $"label=\"{tile.Label}\", center=({tile.Center.X:0.0},{tile.Center.Y:0.0}), " +
+                $"bounds={tile.TileBounds}";
     }
 }

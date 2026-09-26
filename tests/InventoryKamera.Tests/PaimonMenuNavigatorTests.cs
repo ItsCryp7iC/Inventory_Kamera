@@ -293,6 +293,136 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void OpenCharacter_SameOcrLabelOnAdjacentTilesStillMovesAndReplans()
+        {
+            var events = new List<string>();
+            PaimonMenuTile archiveA1 = Tile("Archive", 0, 0);
+            PaimonMenuTile archiveB1 = Tile("Archive", 130, 0);
+            PaimonMenuTile character1 = Tile("Character", 260, 0);
+            PaimonMenuTile archiveA2 = Tile("Archive", 0, 0);
+            PaimonMenuTile archiveB2 = Tile("Archive", 130, 0);
+            PaimonMenuTile character2 = Tile("Character", 260, 0);
+            PaimonMenuTile character3 = Tile("Character", 260, 0);
+            var detector = new FakeDetector(events,
+                Detection(archiveA1, archiveA1, archiveB1, character1),
+                Detection(archiveB2, archiveA2, archiveB2, character2),
+                Detection(character3, character3));
+            var capture = new FakeCapture(events);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                new FakeCharacterScreenDetector(events, succeeds: true));
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, events.Count(e => e == "Horizontal:1"));
+            Assert.Equal(3, detector.Calls);
+            Assert.Equal(4, capture.Count);
+            Assert.Equal(1, events.Count(e => e == "Button:Confirm:True"));
+        }
+
+        [Fact]
+        public void OpenCharacter_CycleUsesGeometryDespiteSameAndNoisyOcrLabels()
+        {
+            var events = new List<string>();
+            PaimonMenuTile a1 = Tile("Archive", 0, 0);
+            PaimonMenuTile b1 = Tile("Archive", 130, 0);
+            PaimonMenuTile character1 = Tile("Character", 260, 0);
+            PaimonMenuTile a2 = Tile("Archive", 0, 0);
+            PaimonMenuTile b2 = Tile("Archive", 130, 0);
+            PaimonMenuTile character2 = Tile("Character", 260, 0);
+            PaimonMenuTile noisyA3 = Tile("rchive", 2, -2);
+            PaimonMenuTile b3 = Tile("Completely Different OCR", 130, 0);
+            PaimonMenuTile character3 = Tile("Character", 260, 0);
+            var detector = new FakeDetector(events,
+                Detection(a1, a1, b1, character1),
+                Detection(b2, a2, b2, character2),
+                Detection(noisyA3, noisyA3, b3, character3));
+            var capture = new FakeCapture(events);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                new FakeCharacterScreenDetector(events, succeeds: true));
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Contains("cycle", result.Message);
+            Assert.Equal(2, events.Count(e => e == "Horizontal:1"));
+            Assert.DoesNotContain("Button:Confirm:True", events);
+        }
+
+        [Fact]
+        public void OpenCharacter_SelectedGeometryMatchingSemanticTargetAllowsConfirm()
+        {
+            var events = new List<string>();
+            PaimonMenuTile semanticCharacter = Tile("Character", 260, 0);
+            PaimonMenuTile selectedWithNoisyLabel = Tile("haracter", 263, 2);
+            var detection = new PaimonMenuDetection(
+                new[] { semanticCharacter },
+                selectedWithNoisyLabel,
+                null,
+                semanticCharacter);
+            var detector = new FakeDetector(events, detection);
+            var capture = new FakeCapture(events);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                new FakeCharacterScreenDetector(events, succeeds: true));
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, events.Count(e => e == "Button:Confirm:True"));
+            Assert.DoesNotContain("Horizontal:1", events);
+        }
+
+        [Fact]
+        public void OpenCharacter_MatchingLabelAtDifferentGeometryDoesNotConfirm()
+        {
+            var events = new List<string>();
+            PaimonMenuTile selected1 = Tile("Character", 0, 0);
+            PaimonMenuTile middle1 = Tile("Middle", 130, 0);
+            PaimonMenuTile semanticCharacter1 = Tile("Character", 260, 0);
+            PaimonMenuTile selected2 = Tile("Character", 0, 0);
+            PaimonMenuTile middle2 = Tile("Middle", 130, 0);
+            PaimonMenuTile semanticCharacter2 = Tile("Character", 260, 0);
+            var detector = new FakeDetector(events,
+                new PaimonMenuDetection(
+                    new[] { selected1, middle1, semanticCharacter1 },
+                    selected1,
+                    null,
+                    semanticCharacter1),
+                new PaimonMenuDetection(
+                    new[] { selected2, middle2, semanticCharacter2 },
+                    selected2,
+                    null,
+                    semanticCharacter2));
+            var capture = new FakeCapture(events);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                new FakeInventoryScreenDetector(events, succeeds: true),
+                new FakeCharacterScreenDetector(events, succeeds: true),
+                unchangedSelectionRetries: 0);
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenCharacter(NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Contains("did not change", result.Message);
+            Assert.DoesNotContain("Button:Confirm:True", events);
+            Assert.Equal(1, events.Count(e => e == "Horizontal:1"));
+        }
+
+        [Fact]
         public void OpenCharacter_UnchangedSelectionFailsAfterBoundedRecapture()
         {
             var events = new List<string>();
