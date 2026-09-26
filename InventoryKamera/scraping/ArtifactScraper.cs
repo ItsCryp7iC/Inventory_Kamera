@@ -426,7 +426,7 @@ namespace InventoryKamera
 
             while (scanned < artifactCount && scanSession.ShouldContinue(StopScanning))
             {
-                progressReporter.WaitIfCorrectionPending();
+                if (!progressReporter.WaitIfCorrectionPending(scanSession.CancellationToken)) break;
 
                 // Not wrapped in `using` -- QueueScan hands `card` into
                 // artifactImages, which either gets disposed immediately (filtered out) or flows

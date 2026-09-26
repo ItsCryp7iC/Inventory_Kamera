@@ -5,10 +5,9 @@ namespace InventoryKamera
     /// <summary>
     /// Carries a low-confidence OCR result out to the UI for inline correction (Phase 3 §3.3), and
     /// carries the user's answer back. <see cref="ScanViewModel.RequestCorrection"/> raises
-    /// <see cref="ScanViewModel.CorrectionRequested"/> with one of these and blocks synchronously on
-    /// the subscriber's <c>Control.Invoke</c> call returning -- there's no separate wait handle here
-    /// because a modal dialog shown inside that <c>Invoke</c> already blocks the calling (scan)
-    /// thread for free, the same idiom every other <see cref="ScanViewModel"/> event already uses.
+    /// <see cref="ScanViewModel.CorrectionRequested"/> with one of these from a correction task. The
+    /// subscriber's modal UI blocks that task while the scan thread waits for either correction
+    /// completion or its session cancellation token.
     /// </summary>
     internal sealed class OcrCorrectionEventArgs
     {

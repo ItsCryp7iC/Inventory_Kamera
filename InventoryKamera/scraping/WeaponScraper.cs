@@ -251,7 +251,7 @@ namespace InventoryKamera
 
             while (scanned < weaponCount && scanSession.ShouldContinue(StopScanning))
             {
-                progressReporter.WaitIfCorrectionPending();
+                if (!progressReporter.WaitIfCorrectionPending(scanSession.CancellationToken)) break;
 
                 // Not wrapped in `using` -- QueueScan hands `card` into weaponImages,
                 // which either gets disposed immediately (filtered out) or flows into the worker

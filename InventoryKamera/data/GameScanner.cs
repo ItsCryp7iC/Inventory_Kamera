@@ -324,7 +324,7 @@ namespace InventoryKamera
 			// after the workers have drained (so the callbacks' inventory mutations run single-threaded)
 			// and before the assignment passes below (so a correction that rescues an equipped item is
 			// assigned to its character).
-			progressReporter.FlushDeferredCorrections();
+			progressReporter.FlushDeferredCorrections(scanSession.CancellationToken);
 
 			if (scanSettings.ScanCharacters)
 			{
@@ -578,7 +578,7 @@ namespace InventoryKamera
 							break;
 
 						default:
-							MainForm.UnexpectedError("Unknown Image type for Image Processor");
+							progressReporter.AddError("Unknown Image type for Image Processor");
 							break;
 					}
 		}

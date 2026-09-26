@@ -24,21 +24,18 @@ namespace InventoryKamera
     public partial class MainForm : Form
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
-        private static Thread scannerThread;
 
         // Owns the weapon/artifact/character counter state (first real slice of the MVVM redesign,
-        // Phase 2 §2.5) -- long-lived across scans (unlike `data`, which gets recreated per scan below)
+        // Phase 2 §2.5) -- long-lived across scans (unlike the scanner, which is recreated per scan)
         // so subscribers never need to re-subscribe. Constructed in the constructor (in dependency
-        // order: scanViewModel first, then `data`, which takes it) rather than via field initializers,
+        // order rather than via field initializers,
         // so the WinForms designer -- which instantiates this form to render it -- doesn't run
         // DatabaseManager's constructor, which touches the filesystem and can trigger a blocking network
         // data download that hangs/breaks the designer.
-        private static ScanViewModel scanViewModel;
-        private static GameScanner data;
-        private static DatabaseManager databaseManager;
-
-        private bool running = false;
-        private volatile ScanSession activeScanSession;
+        private ScanViewModel scanViewModel;
+        private GameScanner lastScanData;
+        private DatabaseManager databaseManager;
+        private readonly ScanRunOwner scanRunOwner = new ScanRunOwner();
 
         public MainForm()
         {
@@ -176,11 +173,11 @@ namespace InventoryKamera
             ErrorLog_TextBox.Invoke(render);
         }
 
-        // Runs on the scan thread. Invoke() blocks the caller until the delegate returns, and
-        // ShowDialog() blocks until the user closes the dialog -- together that's the entire
-        // pause-the-scan-thread mechanism (Phase 3 §3.3), no separate wait handle needed. If the form
-        // is closing/disposed when this fires, args.ResolvedText simply stays null and
-        // ScanViewModel.RequestCorrection falls back to the original OCR text.
+        // Runs on ScanViewModel's correction task. Invoke() marshals the dialog to the UI thread and
+        // blocks that correction task until the user closes it. The scan thread waits separately for
+        // either this interaction or its ScanSession cancellation token, so cancellation need not
+        // force-close or silently answer the dialog. If the form is closing/disposed, ResolvedText
+        // stays null and ScanViewModel falls back to the original OCR text.
         private void OnCorrectionRequested(OcrCorrectionEventArgs args)
         {
             try
@@ -297,12 +294,10 @@ namespace InventoryKamera
         {
             Logger.Info("Hotkey pressed");
             e.Handled = true;
-            ScanSession session = activeScanSession;
-            if (session != null)
+            if (scanRunOwner.RequestCancellation())
             {
                 // .NET no longer supports Thread.Abort, so request cooperative cancellation from
-                // the session that owns this scan's token and worker queue.
-                session.RequestCancellation();
+                // the owner of the currently active run.
 
                 scanViewModel.SetProgramStatus("Stopping scan...");
             }
@@ -320,14 +315,6 @@ namespace InventoryKamera
         private void RemoveHotkey()
         {
             HotkeyManager.Current.Remove("Stop");
-        }
-
-        public static void UnexpectedError(string error)
-        {
-            if (scannerThread?.IsAlive == true)
-            {
-                scanViewModel.AddError(error);
-            }
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -492,7 +479,7 @@ namespace InventoryKamera
         private void StartButton_Clicked(object sender, EventArgs e)
         {
             if (!PreflightChecksPass()) return;
-            if (running)
+            if (scanRunOwner.HasActiveRun)
             {
                 Logger.Debug("Already running");
                 return;
@@ -508,10 +495,11 @@ namespace InventoryKamera
 
             if (Directory.Exists(Properties.Settings.Default.OutputPath) || Directory.CreateDirectory(Properties.Settings.Default.OutputPath).Exists)
             {
-                running = true;
-                var scanSession = new ScanSession();
-                activeScanSession = scanSession;
-                GameScanner currentScanner = null;
+                if (!scanRunOwner.TryCreate(scanViewModel, out ScanRun scanRun))
+                {
+                    Logger.Debug("Already running");
+                    return;
+                }
 
                 HotkeyManager.Current.AddOrReplace("Stop", Keys.Enter, Hotkey_Pressed);
                 Logger.Info("Hotkey registered");
@@ -534,8 +522,10 @@ namespace InventoryKamera
 
                 Logger.Info("Scan settings: {0}", options);
 
-                scannerThread = new Thread(() =>
+                scanRun.Start(() =>
                 {
+                    GameScanner currentScanner = null;
+                    ScanSession scanSession = scanRun.Session;
                     try
                     {
                         // Get Screen Location and Size
@@ -560,8 +550,11 @@ namespace InventoryKamera
                             if (capture.Size != expectedSize) throw new FormatException("Window size and screenshot size mismatch. Please make sure the game is not in a fullscreen mode.");
                         }
 
-                        currentScanner = new GameScanner(scanViewModel, scanSession);
-                        data = currentScanner;
+                        // Retain this run's scanner for manual export, matching the previous `data`
+                        // behavior. Assignment stays after navigation validation so a pre-scan
+                        // setup failure does not replace the last successfully-started scan.
+                        currentScanner = scanRun.InitializeScanner();
+                        lastScanData = currentScanner;
 
                         Logger.Info("Resolution: {0}x{1}", Navigation.GetSize().Width, Navigation.GetSize().Height);
 
@@ -570,7 +563,7 @@ namespace InventoryKamera
 
 
                         // The Data object of json object
-                        data.GatherData();
+                        currentScanner.GatherData();
 
                         // Tear down the global "Stop" hotkey as soon as the scan itself is done, not
                         // in the `finally` block below -- that only runs once OpenOptimizerDialog
@@ -593,7 +586,7 @@ namespace InventoryKamera
                         else
                         {
                             // Covert to GOOD
-                            GOOD good = new GOOD(data);
+                            GOOD good = new GOOD(currentScanner);
                             Logger.Info("Data converted to GOOD");
 
                             // Make Json File
@@ -619,21 +612,15 @@ namespace InventoryKamera
                     }
                     finally
                     {
-                        activeScanSession = null;
-                        scanSession.Dispose();
+                        scanRunOwner.Complete(scanRun);
                         ResetUI();
-                        running = false;
                         ManualExportButton.Invoke((System.Windows.Forms.MethodInvoker)delegate
                         {
-                            ManualExportButton.Enabled = data?.HasData == true;
+                            ManualExportButton.Enabled = lastScanData?.HasData == true;
                         });
                         MainForm_Activate();
                     }
-                })
-                {
-                    IsBackground = true
-                };
-                scannerThread.Start();
+                });
             }
             else
             {
@@ -864,7 +851,7 @@ namespace InventoryKamera
 
         private void Export_Button_Click(object sender, EventArgs e)
         {
-            OpenOptimizerDialog(new GOOD(data), true);
+            OpenOptimizerDialog(new GOOD(lastScanData), true);
         }
 
         private void MainForm_Activate()

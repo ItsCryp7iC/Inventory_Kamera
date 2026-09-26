@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Threading;
 
 namespace InventoryKamera
 {
@@ -42,12 +43,16 @@ namespace InventoryKamera
 
         /// <summary>
         /// Surfaces a low-confidence OCR result for inline user correction (Phase 3 §3.3). Blocks the
-        /// calling (scan) thread until the user resolves it; returns <paramref name="recognizedText"/>
-        /// unchanged if nothing is subscribed (e.g. running headless/under test) or the user declines
-        /// to correct it, so callers can always trust the return value the same way they'd trust a
-        /// direct OCR result.
+        /// calling scan thread until the user resolves it or <paramref name="cancellationToken"/> is
+        /// cancelled. Returns <paramref name="recognizedText"/> unchanged if nothing is subscribed,
+        /// the user declines to correct it, or cancellation wins the wait.
         /// </summary>
-        string RequestCorrection(Bitmap image, string recognizedText, float confidencePercent, string fieldLabel);
+        string RequestCorrection(
+            Bitmap image,
+            string recognizedText,
+            float confidencePercent,
+            string fieldLabel,
+            CancellationToken cancellationToken);
 
         /// <summary>
         /// Queues a low-confidence identifying-name OCR result (weapon name / artifact set name) for
@@ -68,9 +73,11 @@ namespace InventoryKamera
         /// dialog after another, then invokes each apply callback. Must be called on the scan thread
         /// once all image-processor workers have drained (so the apply callbacks' inventory mutations
         /// don't race the workers) and before per-character assignment runs (so a name correction that
-        /// rescues an equipped item still gets assigned). No-op if nothing was queued.
+        /// rescues an equipped item still gets assigned). No-op if nothing was queued. Cancellation
+        /// stops presenting remaining corrections and releases an active wait without force-closing
+        /// its dialog.
         /// </summary>
-        void FlushDeferredCorrections();
+        void FlushDeferredCorrections(CancellationToken cancellationToken);
 
         /// <summary>
         /// Blocks the calling thread while any inline correction requested via
@@ -80,6 +87,9 @@ namespace InventoryKamera
         /// worker blocking inside <see cref="RequestCorrection"/> has no effect on the loop that's
         /// still clicking/scrolling the game.
         /// </summary>
-        void WaitIfCorrectionPending();
+        /// <returns>
+        /// <c>true</c> when correction work is complete; <c>false</c> when cancellation won the wait.
+        /// </returns>
+        bool WaitIfCorrectionPending(CancellationToken cancellationToken);
     }
 }

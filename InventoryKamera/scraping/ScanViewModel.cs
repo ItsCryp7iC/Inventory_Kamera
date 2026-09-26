@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace InventoryKamera
 {
@@ -396,49 +397,98 @@ namespace InventoryKamera
         }
 
         /// <summary>
-        /// Raised by <see cref="RequestCorrection"/> on the calling (scan) thread. Subscribers must
+        /// Raised by <see cref="RequestCorrection"/> on a correction task. Subscribers must
         /// marshal onto the UI thread themselves (matching every other event here) and set
         /// <see cref="OcrCorrectionEventArgs.ResolvedText"/> before returning from that marshaled
-        /// call -- typically by showing a modal dialog inside <c>Control.Invoke</c>, whose own
-        /// blocking-until-closed behavior is what pauses the scan thread; no separate wait handle is
-        /// needed here.
+        /// call -- typically by showing a modal dialog inside <c>Control.Invoke</c>. The caller waits
+        /// for this task or its scan-session cancellation token.
         /// </summary>
         public event Action<OcrCorrectionEventArgs> CorrectionRequested;
 
-        // The remaining inline RequestCorrection caller is the inventory item-count read, which runs
-        // on the main scan (click/scroll) thread and so blocks that loop directly while its dialog is
-        // open -- the gate below is redundant for it, but is kept because it's cheap, still correctly
-        // scoped, and lets any future worker-thread inline correction reuse it. (Weapon-name and
-        // artifact-set-name corrections, which DO run on background workers, no longer block at all:
-        // they're deferred and shown in a batch after the scan via EnqueueCorrection/
-        // FlushDeferredCorrections, so they never need the gate.) correctionsPending is a count, not a
-        // flag, so the gate stays closed until every outstanding inline correction resolves.
+        // RequestCorrection runs each modal interaction on its own correction task. The gate lets scan
+        // loops wait for outstanding correction work while their session token provides an independent
+        // cancellation exit. correctionsPending is a count, not a flag, so the gate remains closed
+        // until every interaction actually resolves, even if one scan stopped waiting for it.
         private int correctionsPending;
         private readonly ManualResetEventSlim correctionGate = new ManualResetEventSlim(true);
 
-        /// <summary>Blocks the calling thread while any inline correction is awaiting user input.</summary>
-        public void WaitIfCorrectionPending() => correctionGate.Wait();
+        /// <summary>
+        /// Waits without polling until inline correction work finishes or the active scan is
+        /// cancelled. Cancellation deliberately does not close or answer the correction dialog;
+        /// the dialog may resolve later and safely reopen the gate for any future scan.
+        /// </summary>
+        public bool WaitIfCorrectionPending(CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested) return false;
+
+            int signaled = WaitHandle.WaitAny(new[]
+            {
+                cancellationToken.WaitHandle,
+                correctionGate.WaitHandle,
+            });
+            return signaled == 1;
+        }
 
         public string RequestCorrection(Bitmap image, string recognizedText, float confidencePercent, string fieldLabel)
         {
+            return RequestCorrection(
+                image,
+                recognizedText,
+                confidencePercent,
+                fieldLabel,
+                CancellationToken.None);
+        }
+
+        public string RequestCorrection(
+            Bitmap image,
+            string recognizedText,
+            float confidencePercent,
+            string fieldLabel,
+            CancellationToken cancellationToken)
+        {
             // No subscriber (headless run, unit test) -- degrade to "use the OCR result as-is"
             // instead of raising an event nobody will ever resolve, which would block forever.
-            if (CorrectionRequested == null) return recognizedText;
+            Action<OcrCorrectionEventArgs> correctionRequested = CorrectionRequested;
+            if (correctionRequested == null || cancellationToken.IsCancellationRequested)
+                return recognizedText;
 
             if (Interlocked.Increment(ref correctionsPending) == 1) correctionGate.Reset();
 
             var clone = CloneBitmap(image);
-            try
+            Task<string> correction = Task.Run(() =>
             {
-                var args = new OcrCorrectionEventArgs(clone, recognizedText, confidencePercent, fieldLabel);
-                CorrectionRequested.Invoke(args);
-                return args.ResolvedText ?? recognizedText;
-            }
-            finally
+                try
+                {
+                    var args = new OcrCorrectionEventArgs(clone, recognizedText, confidencePercent, fieldLabel);
+                    correctionRequested.Invoke(args);
+                    return args.ResolvedText ?? recognizedText;
+                }
+                finally
+                {
+                    clone.Dispose();
+                    if (Interlocked.Decrement(ref correctionsPending) == 0) correctionGate.Set();
+                }
+            });
+
+            if (!cancellationToken.CanBeCanceled)
+                return correction.GetAwaiter().GetResult();
+
+            var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (cancellationToken.Register(() => cancelled.TrySetResult(true)))
             {
-                clone.Dispose();
-                if (Interlocked.Decrement(ref correctionsPending) == 0) correctionGate.Set();
+                Task winner = Task.WhenAny(correction, cancelled.Task).GetAwaiter().GetResult();
+                if (winner == correction) return correction.GetAwaiter().GetResult();
             }
+
+            // The UI interaction is deliberately left open. Observe any later failure so returning
+            // early on cancellation cannot create an unobserved task exception; normal completion
+            // still releases correctionGate in the task's finally block.
+            correction.ContinueWith(
+                task => Logger.Error(task.Exception, "OCR correction failed after scan cancellation."),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return recognizedText;
         }
 
         // Deferred corrections (weapon name / artifact set name) collected during the scan and shown
@@ -479,7 +529,7 @@ namespace InventoryKamera
             }
         }
 
-        public void FlushDeferredCorrections()
+        public void FlushDeferredCorrections(CancellationToken cancellationToken)
         {
             List<DeferredCorrection> pending;
             lock (deferredLock)
@@ -494,14 +544,16 @@ namespace InventoryKamera
             {
                 try
                 {
-                    string resolved = d.RecognizedText;
-                    if (CorrectionRequested != null)
-                    {
-                        var args = new OcrCorrectionEventArgs(d.Image, d.RecognizedText, d.ConfidencePercent, d.FieldLabel);
-                        CorrectionRequested.Invoke(args);
-                        resolved = args.ResolvedText ?? d.RecognizedText;
-                    }
-                    d.Apply?.Invoke(resolved);
+                    if (cancellationToken.IsCancellationRequested) continue;
+
+                    string resolved = RequestCorrection(
+                        d.Image,
+                        d.RecognizedText,
+                        d.ConfidencePercent,
+                        d.FieldLabel,
+                        cancellationToken);
+                    if (!cancellationToken.IsCancellationRequested)
+                        d.Apply?.Invoke(resolved);
                 }
                 catch (Exception ex)
                 {

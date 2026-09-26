@@ -443,7 +443,7 @@ namespace InventoryKamera
 
 			while (scanSession.ShouldContinue(StopScanning))
 			{
-				progressReporter.WaitIfCorrectionPending();
+				if (!progressReporter.WaitIfCorrectionPending(scanSession.CancellationToken)) break;
 
 				// New row: find where this row's white quantity band actually sits.
 				if (column == 0)

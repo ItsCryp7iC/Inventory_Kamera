@@ -189,7 +189,12 @@ namespace InventoryKamera
                 if (string.IsNullOrWhiteSpace(text) || confidencePercent < scanSettings.OcrConfidenceThreshold)
                 {
                     Logger.Debug("{0} item count below confidence threshold -- requesting inline correction", inventoryPage);
-                    string corrected = progressReporter.RequestCorrection(countBitmap, text, confidencePercent, $"{inventoryPage} item count");
+                    string corrected = progressReporter.RequestCorrection(
+                        countBitmap,
+                        text,
+                        confidencePercent,
+                        $"{inventoryPage} item count",
+                        scanSession.CancellationToken);
                     text = Regex.Replace(corrected ?? string.Empty, @"[^0-9/]", string.Empty);
                 }
 
