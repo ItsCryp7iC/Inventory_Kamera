@@ -104,8 +104,11 @@ namespace InventoryKamera.game
         /// NumOfCharToScan setting, so a quick test run doesn't require changing (and remembering to
         /// revert) that setting in Options.
         /// </summary>
-        public static void RunControllerCharacterScanTest(IScanProgressReporter progressReporter)
+        public static void RunControllerCharacterScanTest(
+            IScanProgressReporter progressReporter,
+            GameDataSnapshot gameData)
         {
+            if (gameData == null) throw new ArgumentNullException(nameof(gameData));
             // Navigation.GetWidth()/GetHeight()/GetPosition() all read from WindowSize/WindowPosition,
             // which stay zeroed until Navigation.Initialize() locates the game window -- the real scan
             // pipeline always runs this via MainForm.PreflightChecksPass() first. This standalone test
@@ -143,7 +146,6 @@ namespace InventoryKamera.game
                 var imagePreprocessor = new ImageProcessor();
                 var scanSettings = new FixedCharacterCountScanSettings();
                 using var scanSession = new ScanSession();
-                var gameData = new GameDataSnapshotFactory().Load();
                 var scraper = new CharacterScraper(
                     ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
                 var paimonNavigator = new PaimonMenuNavigator(

@@ -56,7 +56,10 @@ namespace InventoryKamera
         [JsonIgnore]
         public WeaponType WeaponType { 
             
-            get => (gameData == null ? GenshinProcesor.Characters : gameData.Characters)[_nameKey.ToLower()]["WeaponType"].ToObject<WeaponType>();
+            // Scanner-created characters always receive explicit gameData. The compatibility snapshot
+            // remains only for deserialized/externally-created legacy models.
+            get => (gameData ?? GenshinProcesor.CompatibilitySnapshot)
+                .Characters[_nameKey.ToLower()]["WeaponType"].ToObject<WeaponType>();
             
             internal set { WeaponType = value; } 
         }

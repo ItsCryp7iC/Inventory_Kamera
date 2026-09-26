@@ -35,6 +35,7 @@ namespace InventoryKamera
         private ScanViewModel scanViewModel;
         private GameScanner lastScanData;
         private DatabaseManager databaseManager;
+        private GameDataSnapshotProvider gameDataProvider;
         private readonly ScanRunOwner scanRunOwner = new ScanRunOwner();
 
         public MainForm()
@@ -51,9 +52,8 @@ namespace InventoryKamera
 
             scanViewModel = new ScanViewModel();
             databaseManager = new DatabaseManager();
-            // Explicit legacy-UI compatibility load. Scanner runs use their own GameDataSnapshot and
-            // no longer rely on GenshinProcesor's static constructor to perform hidden file I/O.
-            GenshinProcesor.ReloadData();
+            var gameDataFactory = new GameDataSnapshotFactory(databaseManager);
+            gameDataProvider = new GameDataSnapshotProvider(gameDataFactory.Load);
 
             BindSettings();
 
@@ -503,11 +503,14 @@ namespace InventoryKamera
                     Logger.Debug("Already running");
                     return;
                 }
+                // Capture exactly one coherent application snapshot for this run. A database update
+                // can atomically replace the provider later without changing this scan's lookup data.
+                GameDataSnapshot scanGameData = gameDataProvider.Current;
 
                 HotkeyManager.Current.AddOrReplace("Stop", Keys.Enter, Hotkey_Pressed);
                 Logger.Info("Hotkey registered");
                 var settings = Properties.Settings.Default;
-                var gameVersion = new DatabaseManager().LocalVersion.ToString(2);
+                var gameVersion = databaseManager.LocalVersion.ToString(2);
                 var options =
                     $"\n\tGame Version Data:\t\t\t {gameVersion}\n" +
                     $"\tWeapons:\t\t\t\t {settings.ScanWeapons}\n" +
@@ -556,7 +559,7 @@ namespace InventoryKamera
                         // Retain this run's scanner for manual export, matching the previous `data`
                         // behavior. Assignment stays after navigation validation so a pre-scan
                         // setup failure does not replace the last successfully-started scan.
-                        currentScanner = scanRun.InitializeScanner();
+                        currentScanner = scanRun.InitializeScanner(scanGameData);
                         lastScanData = currentScanner;
 
                         Logger.Info("Resolution: {0}x{1}", Navigation.GetSize().Width, Navigation.GetSize().Height);
@@ -704,6 +707,7 @@ namespace InventoryKamera
                     MessageBox.Show("Unable to update game data. Please check the log for more details", "Update failed", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Stop);
                     break;
                 case UpdateStatus.Success:
+                    if (!ReloadApplicationGameData()) break;
                     MessageBox.Show($"Update for game version {databaseManager.LocalVersion.ToString(2)} successful.", "Update status", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Information);
                     Logger.Info("Updated game date to {0}", databaseManager.LocalVersion.ToString(2));
                     break;
@@ -720,9 +724,13 @@ namespace InventoryKamera
                             case UpdateStatus.Fail:
                                 MessageBox.Show("Unable to update game data. Please check the log for more details", "Update failed", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Stop);
                                 break;
+                            case UpdateStatus.Success:
+                                if (!ReloadApplicationGameData()) break;
+                                MessageBox.Show($"Update for game version {databaseManager.LocalVersion.ToString(2)} successful.", "Update success", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Information);
+                                Logger.Info("Successfully updated game data to {0}", databaseManager.LocalVersion.ToString(2));
+                                break;
                             default:
                                 MessageBox.Show($"Update for game version {databaseManager.LocalVersion.ToString(2)} successful.", "Update success", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Information);
-                                Logger.Info("Successfully updated game data to {0}", new DatabaseManager().LocalVersion.ToString(2));
                                 break;
                         }
                     }
@@ -746,7 +754,7 @@ namespace InventoryKamera
 
         private void AdvancedSettingsMenuItem_Click(object sender, EventArgs e)
         {
-            new ui.SettingsForm().ShowDialog(this);
+            new ui.SettingsForm(gameDataProvider.Current).ShowDialog(this);
 
             // The Settings dialog can change key bindings and dark mode; re-sync Navigation and
             // re-theme MainForm now that it's closed. ProgramStatus_Label's color is semantic
@@ -761,7 +769,10 @@ namespace InventoryKamera
         // MainForm.Designer.cs) untouched by frequent coordinate/timing tweaks, since editing either
         // risks tripping the WinForms Designer regeneration bug (see MODERNIZATION_PLAN.md §3.0).
         private void TestControllerMashBackMenuItem_Click(object sender, EventArgs e) => game.ControllerNavigationTests.RunMashBackTest();
-        private void TestControllerCharacterScanMenuItem_Click(object sender, EventArgs e) => game.ControllerNavigationTests.RunControllerCharacterScanTest(scanViewModel);
+        private void TestControllerCharacterScanMenuItem_Click(object sender, EventArgs e) =>
+            game.ControllerNavigationTests.RunControllerCharacterScanTest(
+                scanViewModel,
+                gameDataProvider.Current);
         private void CoordinatePickerMenuItem_Click(object sender, EventArgs e) => new ui.CoordinatePickerForm().Show(this);
 
         private void MainForm_Shown(object sender, EventArgs e)
@@ -811,7 +822,6 @@ namespace InventoryKamera
 
         private void CheckForGenshinUpdates()
         {
-            var databaseManager = new DatabaseManager();
             try
             {
                 var updatesAvailable = databaseManager.UpdateAvailable();
@@ -827,6 +837,7 @@ namespace InventoryKamera
                                 MessageBox.Show("Unable to update game data. Please check the log for more details", "Update failed", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Stop);
                                 break;
                             case UpdateStatus.Success:
+                                if (!ReloadApplicationGameData()) break;
                                 MessageBox.Show($"Update for game version {databaseManager.LocalVersion.ToString(2)} successful.", "Update status", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Information);
                                 Logger.Info("Updated game data to {0}", databaseManager.LocalVersion.ToString(2));
                                 break;
@@ -850,6 +861,24 @@ namespace InventoryKamera
                 MessageBox.Show("Could not check for updates. Consider trying again in an hour or so.", "Game Version Update", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             Properties.Settings.Default.LastUpdateCheck = DateTime.Now;
+        }
+
+        private bool ReloadApplicationGameData()
+        {
+            if (gameDataProvider.TryReload(out Exception error))
+            {
+                Logger.Info("Installed updated game-data snapshot for future scans.");
+                return true;
+            }
+
+            Logger.Error(error, "Game-data files were updated, but the application snapshot could not be reloaded. Keeping the previous snapshot.");
+            MessageBox.Show(
+                "The game-data files were updated, but Inventory Kamera could not load the new data. " +
+                "The previous in-memory data will remain active. Please check the log for more details.",
+                "Game Data Reload Failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return false;
         }
 
         private void Export_Button_Click(object sender, EventArgs e)

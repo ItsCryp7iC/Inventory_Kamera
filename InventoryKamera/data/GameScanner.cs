@@ -53,11 +53,6 @@ namespace InventoryKamera
 		/// needs to outlive any single <see cref="GameScanner"/> instance (MainForm recreates one
 		/// per scan) so its subscribers don't have to re-subscribe every time.
 		/// </param>
-		internal GameScanner(IScanProgressReporter progressReporter, ScanSession scanSession)
-			: this(progressReporter, scanSession, new GameDataSnapshotFactory().Load())
-		{
-		}
-
 		internal GameScanner(
 			IScanProgressReporter progressReporter,
 			ScanSession scanSession,

@@ -9,98 +9,74 @@ using System.Drawing.Imaging;
 using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace InventoryKamera
 {
     public static class GenshinProcesor
 	{
 		private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
-
-		internal static Dictionary<string, string> Stats = new Dictionary<string, string>
-		{
-			["hp"] = "hp",
-			["hp%"] = "hp_",
-			["atk"] = "atk",
-			["atk%"] = "atk_",
-			["def"] = "def",
-			["def%"] = "def_",
-			["energyrecharge"] = "enerRech_",
-			["elementalmastery"] = "eleMas",
-			["healingbonus"] = "heal_",
-			["critrate"] = "critRate_",
-			["critdmg"] = "critDMG_",
-			["physicaldmgbonus"] = "physical_dmg_",
-		};
-
-		internal static readonly List<string> gearSlots = new List<string>
-		{
-			"flower",
-			"plume",
-			"sands",
-			"goblet",
-			"circlet",
-		};
-
-		private static readonly List<string> elements = new List<string>
-		{
-			"pyro",
-			"hydro",
-			"dendro",
-			"electro",
-			"anemo",
-			"cryo",
-			"geo",
-		};
-
-		internal static readonly HashSet<string> enhancementMaterials = new HashSet<string>
-		{
-			"enhancementore",
-			"fineenhancementore",
-			"mysticenhancementore",
-			"sanctifyingunction",
-			"sanctifyingessence",
-		};
-
-		internal static readonly List<string> customNames = new List<string>
-		{
-			"Traveler",
-			"Wanderer",
-			"Manequin1",
-			"Manequin2"
-		};
-
-		internal static Dictionary<string, string> Weapons = new Dictionary<string, string>();
-		internal static Dictionary<string, string> DevItems = new Dictionary<string, string>();
-		internal static Dictionary<string, string> Materials = new Dictionary<string, string>();
-		internal static Dictionary<string, string> Elements = new Dictionary<string, string>();
-
-		internal static Dictionary<string, JObject> Characters = new Dictionary<string, JObject>();
-		internal static Dictionary<string, JObject> Artifacts = new Dictionary<string, JObject>();
+		private static GameDataSnapshot compatibilitySnapshot = CreateCompatibilityDefaults();
 
 		static GenshinProcesor()
         {
-			foreach (var element in elements)
-			{
-				Stats.Add($"{element}dmgbonus", $"{element}_dmg_");
-				Elements.Add(element, char.ToUpper(element[0]) + element.Substring(1));
-			}
 			Logger.Info("Scraper initialized");
         }
 
 		/// <summary>
-		/// Refreshes the legacy static compatibility dictionaries from one coherent snapshot. New scan
-		/// code receives its own <see cref="GameDataSnapshot"/> and does not read these fields.
+		/// A narrow compatibility view for models constructed without explicit lookup data. Normal UI
+		/// and scanner paths receive a <see cref="GameDataSnapshot"/> directly. The entire compatibility
+		/// view is replaced as one reference, never dictionary-by-dictionary.
 		/// </summary>
-		internal static void ReloadData()
-        {
-			GameDataSnapshot snapshot = new GameDataSnapshotFactory().Load();
-			Characters = new Dictionary<string, JObject>(snapshot.Characters);
-			Artifacts = new Dictionary<string, JObject>(snapshot.Artifacts);
-			Weapons = new Dictionary<string, string>(snapshot.Weapons);
-			DevItems = new Dictionary<string, string>(snapshot.CharacterDevelopmentItems);
-			Materials = new Dictionary<string, string>(snapshot.Materials);
-			Stats = new Dictionary<string, string>(snapshot.Stats);
-			Elements = new Dictionary<string, string>(snapshot.Elements);
+		internal static GameDataSnapshot CompatibilitySnapshot =>
+			Volatile.Read(ref compatibilitySnapshot);
+
+		internal static void InstallCompatibilitySnapshot(GameDataSnapshot snapshot)
+		{
+			if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
+			Interlocked.Exchange(ref compatibilitySnapshot, snapshot);
+		}
+
+		private static GameDataSnapshot CreateCompatibilityDefaults()
+		{
+			var stats = new Dictionary<string, string>
+			{
+				["hp"] = "hp",
+				["hp%"] = "hp_",
+				["atk"] = "atk",
+				["atk%"] = "atk_",
+				["def"] = "def",
+				["def%"] = "def_",
+				["energyrecharge"] = "enerRech_",
+				["elementalmastery"] = "eleMas",
+				["healingbonus"] = "heal_",
+				["critrate"] = "critRate_",
+				["critdmg"] = "critDMG_",
+				["physicaldmgbonus"] = "physical_dmg_",
+			};
+			string[] elements = { "pyro", "hydro", "dendro", "electro", "anemo", "cryo", "geo" };
+			foreach (string element in elements)
+				stats[$"{element}dmgbonus"] = $"{element}_dmg_";
+
+			return new GameDataSnapshot(
+				new Dictionary<string, JObject>(),
+				new Dictionary<string, JObject>(),
+				new Dictionary<string, string>(),
+				new Dictionary<string, string>(),
+				new Dictionary<string, string>(),
+				stats,
+				elements.ToDictionary(
+					element => element,
+					element => char.ToUpper(element[0]) + element.Substring(1)),
+				new[] { "flower", "plume", "sands", "goblet", "circlet" },
+				new[]
+				{
+					"enhancementore",
+					"fineenhancementore",
+					"mysticenhancementore",
+					"sanctifyingunction",
+					"sanctifyingessence",
+				});
 		}
 
 		internal static JObject BuildManequinEntry(string key)
@@ -113,16 +89,18 @@ namespace InventoryKamera
 
 			if (target == name) return;
 
-			if (Characters.TryGetValue(name, out _))
+			GameDataSnapshot snapshot = CompatibilitySnapshot;
+			if (snapshot.Characters.ContainsKey(name))
 			{
 				Logger.Error("{0} already exists as a character in the game. " +
 					"This may wind up confusing Kamera when connecting items for {1}.", name, target);
 			}
 
-            if (Characters.TryGetValue(target, out _))
+            if (snapshot.Characters.ContainsKey(target))
 			{
-				Characters[target]["CustomName"] = name;
-				Logger.Info("Internally set {0} custom name to {1}", target, Characters[target]["CustomName"]);
+				var customNames = new Dictionary<string, string> { [target] = name };
+				InstallCompatibilitySnapshot(snapshot.WithCharacterCustomNames(customNames));
+				Logger.Info("Internally set {0} custom name to {1}", target, name);
 			}
 			else throw new KeyNotFoundException($"Could not find '{target}' entry in characters.json");
 		}
@@ -143,53 +121,53 @@ namespace InventoryKamera
 
 		#region Check valid parameters
 
-		// Legacy forwarding wrappers pass the compatibility dictionaries explicitly. New scanner
-		// consumers use LookupService overloads that receive their scan's GameDataSnapshot instead.
+		// Legacy forwarding wrappers use the atomically replaced compatibility snapshot. New scanner
+		// consumers receive their scan's GameDataSnapshot explicitly.
 
-		internal static bool IsValidSetName(string setName) => LookupService.IsValidSetName(setName, Artifacts);
+		internal static bool IsValidSetName(string setName) => LookupService.IsValidSetName(setName, CompatibilitySnapshot);
 
-		internal static bool IsValidMaterial(string name) => LookupService.IsValidMaterial(name, Materials);
+		internal static bool IsValidMaterial(string name) => LookupService.IsValidMaterial(name, CompatibilitySnapshot);
 
-		internal static bool IsValidStat(string stat) => LookupService.IsValidStat(stat, Stats);
+		internal static bool IsValidStat(string stat) => LookupService.IsValidStat(stat, CompatibilitySnapshot);
 
-		internal static bool IsValidSlot(string gearSlot) => LookupService.IsValidSlot(gearSlot, gearSlots);
+		internal static bool IsValidSlot(string gearSlot) => LookupService.IsValidSlot(gearSlot, CompatibilitySnapshot);
 
-		internal static bool IsValidCharacter(string character) => LookupService.IsValidCharacter(character, Characters);
+		internal static bool IsValidCharacter(string character) => LookupService.IsValidCharacter(character, CompatibilitySnapshot);
 
-		internal static bool IsValidElement(string element) => LookupService.IsValidElement(element, Elements);
+		internal static bool IsValidElement(string element) => LookupService.IsValidElement(element, CompatibilitySnapshot);
 
-		internal static bool IsEnhancementMaterial(string material) => LookupService.IsEnhancementMaterial(material, enhancementMaterials, Materials);
+		internal static bool IsEnhancementMaterial(string material) => LookupService.IsEnhancementMaterial(material, CompatibilitySnapshot);
 
-		internal static bool IsValidWeapon(string weapon) => LookupService.IsValidWeapon(weapon, Weapons);
+		internal static bool IsValidWeapon(string weapon) => LookupService.IsValidWeapon(weapon, CompatibilitySnapshot);
 
 		#endregion Check valid parameters
 
 		#region Element Searching
 
-		// Legacy forwarding wrappers pass the compatibility dictionaries explicitly. New scanner
-		// consumers use TextNormalizer overloads that receive their scan's GameDataSnapshot instead.
+		// Legacy forwarding wrappers use the atomically replaced compatibility snapshot. New scanner
+		// consumers receive their scan's GameDataSnapshot explicitly.
 
-		internal static string FindClosestGearSlot(string input) => TextNormalizer.FindClosestGearSlot(input, gearSlots);
+		internal static string FindClosestGearSlot(string input) => TextNormalizer.FindClosestGearSlot(input, CompatibilitySnapshot);
 
-		internal static string FindClosestStat(string stat, int minConfidence = 90) => TextNormalizer.FindClosestStat(stat, Stats, minConfidence);
+		internal static string FindClosestStat(string stat, int minConfidence = 90) => TextNormalizer.FindClosestStat(stat, CompatibilitySnapshot, minConfidence);
 
-		internal static string FindElementByName(string name, int minConfidence = 90) => TextNormalizer.FindElementByName(name, Elements, minConfidence);
+		internal static string FindElementByName(string name, int minConfidence = 90) => TextNormalizer.FindElementByName(name, CompatibilitySnapshot, minConfidence);
 
-		internal static string FindClosestWeapon(string name, int maxEdits = 90) => TextNormalizer.FindClosestWeapon(name, Weapons, maxEdits);
+		internal static string FindClosestWeapon(string name, int maxEdits = 90) => TextNormalizer.FindClosestWeapon(name, CompatibilitySnapshot, maxEdits);
 
-		internal static string FindClosestSetName(string name, int minConfidence = 90) => TextNormalizer.FindClosestSetName(name, Artifacts, minConfidence);
+		internal static string FindClosestSetName(string name, int minConfidence = 90) => TextNormalizer.FindClosestSetName(name, CompatibilitySnapshot, minConfidence);
 
 		internal static string FindClosestArtifactSetFromArtifactName(string name, int minConfidence = 90) =>
-			TextNormalizer.FindClosestArtifactSetFromArtifactName(name, Artifacts, minConfidence);
+			TextNormalizer.FindClosestArtifactSetFromArtifactName(name, CompatibilitySnapshot, minConfidence);
 
 		internal static string FindClosestCharacterName(string name, int minConfidence = 90) =>
-			TextNormalizer.FindClosestCharacterName(name, Characters, minConfidence);
+			TextNormalizer.FindClosestCharacterName(name, CompatibilitySnapshot, minConfidence);
 
 		internal static string FindClosestDevelopmentName(string name, int minConfidence = 90) =>
-			TextNormalizer.FindClosestDevelopmentName(name, DevItems, Materials, minConfidence);
+			TextNormalizer.FindClosestDevelopmentName(name, CompatibilitySnapshot, minConfidence);
 
 		internal static string FindClosestMaterialName(string name, int minConfidence = 90) =>
-			TextNormalizer.FindClosestMaterialName(name, Materials, minConfidence);
+			TextNormalizer.FindClosestMaterialName(name, CompatibilitySnapshot, minConfidence);
 
         #endregion Element Searching
 
@@ -410,7 +388,7 @@ namespace InventoryKamera
             }
             else
             {
-                if (Characters.TryGetValue(name.ToLower(), out var data))
+                if (CompatibilitySnapshot.Characters.TryGetValue(name.ToLower(), out var data))
                 {
                     return data["Element"].ToObject<List<string>>();
                 }

@@ -11,9 +11,17 @@ namespace InventoryKamera.ui
     public partial class SettingsForm : Form
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+        private readonly GameDataSnapshot gameData;
 
-        public SettingsForm()
+        public SettingsForm() : this(null)
         {
+            // Parameterless construction is retained for the WinForms designer. Runtime callers pass
+            // the application snapshot explicitly through the overload below.
+        }
+
+        internal SettingsForm(GameDataSnapshot gameData)
+        {
+            this.gameData = gameData;
             InitializeComponent();
 
             UiTheme.RoundCorners(FileSelectButton, 4);
@@ -147,42 +155,30 @@ namespace InventoryKamera.ui
 
         private void ValidateCustomName(object sender, EventArgs e)
         {
-            var textbox = sender as TextBox;
-            var name = textbox.Text;
-
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                textbox.BackColor = GenshinProcesor.Characters.ContainsKey(name.ConvertToGood().ToLower())
-                    ? Color.Yellow
-                    : Color.White;
-            }
+            ValidateCustomNameTextBox(sender as TextBox);
         }
 
         private void ValidateCustomName1(object sender, EventArgs e)
         {
-            var textbox = sender as TextBox;
-            var name = textbox.Text;
-
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                textbox.BackColor = GenshinProcesor.Characters.ContainsKey(name.ConvertToGood().ToLower())
-                    ? Color.Yellow
-                    : Color.White;
-            }
+            ValidateCustomNameTextBox(sender as TextBox);
         }
 
         private void ValidateCustomName2(object sender, EventArgs e)
         {
-            var textbox = sender as TextBox;
-            var name = textbox.Text;
-
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                textbox.BackColor = GenshinProcesor.Characters.ContainsKey(name.ConvertToGood().ToLower())
-                    ? Color.Yellow
-                    : Color.White;
-            }
+            ValidateCustomNameTextBox(sender as TextBox);
         }
+
+        private void ValidateCustomNameTextBox(TextBox textbox)
+        {
+            if (textbox == null || string.IsNullOrWhiteSpace(textbox.Text)) return;
+            textbox.BackColor = IsExistingCharacterName(textbox.Text, gameData)
+                ? Color.Yellow
+                : Color.White;
+        }
+
+        internal static bool IsExistingCharacterName(string name, GameDataSnapshot gameData) =>
+            gameData != null &&
+            gameData.Characters.ContainsKey((name ?? string.Empty).ConvertToGood().ToLower());
 
         private void DisplayCustomNameTooltip(object sender, EventArgs e)
         {

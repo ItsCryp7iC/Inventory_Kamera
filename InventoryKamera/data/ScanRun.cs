@@ -26,16 +26,15 @@ namespace InventoryKamera
             Session = new ScanSession();
         }
 
-        internal GameScanner InitializeScanner(GameDataSnapshot gameData = null)
+        internal GameScanner InitializeScanner(GameDataSnapshot gameData)
         {
             if (Volatile.Read(ref disposed) != 0) throw new ObjectDisposedException(nameof(ScanRun));
+            if (gameData == null) throw new ArgumentNullException(nameof(gameData));
             lock (scannerGate)
             {
                 if (Scanner == null)
                 {
-                    Scanner = gameData == null
-                        ? new GameScanner(progressReporter, Session)
-                        : new GameScanner(progressReporter, Session, gameData);
+                    Scanner = new GameScanner(progressReporter, Session, gameData);
                 }
                 return Scanner;
             }

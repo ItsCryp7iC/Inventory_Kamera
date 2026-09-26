@@ -105,10 +105,16 @@ namespace InventoryKamera
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
         private static readonly string[] ManequinKeys = { "manequin1", "manequin2" };
+        private readonly DatabaseManager databaseManager;
+
+        internal GameDataSnapshotFactory(DatabaseManager databaseManager)
+        {
+            this.databaseManager = databaseManager ?? throw new ArgumentNullException(nameof(databaseManager));
+        }
 
         internal GameDataSnapshot Load()
         {
-            var manager = new DatabaseManager();
+            DatabaseManager manager = databaseManager;
             Dictionary<string, JObject> characters = manager.LoadCharacters();
             EnsureManequinEntriesExist(characters, manager.ListsDir);
 
