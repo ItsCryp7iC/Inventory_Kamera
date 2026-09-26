@@ -4,9 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
-using System.Threading;
 using System.Threading.Tasks;
 
 namespace InventoryKamera
@@ -15,6 +13,7 @@ namespace InventoryKamera
     {
 		private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
 		private readonly GameDataSnapshot gameData;
+		private readonly WeaponSortModeVerifier sortModeVerifier;
 
 		// Set by ScanWeapons from SetSortMode's result; QueueScan
 		// only trusts the sorted-order early-stop optimization when this is true.
@@ -30,6 +29,9 @@ namespace InventoryKamera
             : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
         {
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
+			sortModeVerifier = new WeaponSortModeVerifier(
+				new NavigationWeaponSortModeCapture(),
+				new WeaponSortModeDetector(ocrService, imagePreprocessor));
             inventoryPage = InventoryPage.Weapons;
             SortByLevel = scanSettings.MinimumWeaponLevel > 1;
         }
@@ -70,9 +72,14 @@ namespace InventoryKamera
             // SetSortMode actually confirmed the sort; otherwise (e.g. the sort-mode OCR
             // read failed) still filter this one item out below, but keep scanning the rest of the
             // (potentially unsorted) grid instead of assuming everything after it is also below threshold.
-            StopScanning = sortModeConfirmed && ((SortByLevel && belowLevel) || (!SortByLevel && belowRarity));
+            WeaponFilterDecision filterDecision = WeaponFilterPolicy.Evaluate(
+                sortModeConfirmed,
+                SortByLevel,
+                belowRarity,
+                belowLevel);
+            StopScanning = filterDecision.ShouldStop;
 
-            if (StopScanning || belowRarity || belowLevel)
+            if (filterDecision.ShouldDiscard)
             {
                 Logger.Info("Weapon scan #{0}: filtered out (belowRarity={1}, belowLevel={2}, stopping={3}).",
                     id, belowRarity, belowLevel, StopScanning);
@@ -93,122 +100,28 @@ namespace InventoryKamera
             scanSession.TryQueueWork(new OCRImageCollection(weaponImages, "weapon", id));
         }
 
-        // Fixed dropdown order per user (2026-07-04): Level, Quality, Type.
-        private static readonly string[] SortModeNames = { "Level", "Quality", "Type" };
-
-        /// <summary>
-        /// Reads the currently selected sort mode from the collapsed dropdown button (region measured
-        /// with the coordinate-picker tool, 2026-07-04) and fuzzy-matches it against
-        /// <see cref="SortModeNames"/>. Must be called while on the Weapons tab with the dropdown
-        /// closed. Returns null if no confident match.
-        /// </summary>
-        private string DetectCurrentSortMode()
-        {
-            using (var region = Navigation.CaptureRegion(
-                x: (int)(0.0625 * Navigation.GetWidth()),
-                y: (int)((Navigation.IsNormal ? 0.9037 : 0.9162) * Navigation.GetHeight()),
-                width: (int)(0.1167 * Navigation.GetWidth()),
-                height: (int)(0.0389 * Navigation.GetHeight())))
-            {
-                SaveDebugScreenshot(region, "weapons/sortmode/region");
-
-                var preprocessor = new ImageProcessor();
-                Bitmap gray = preprocessor.ConvertToGrayscale(region);
-                preprocessor.SetContrast(60.0, ref gray);
-
-                var normalizedModes = SortModeNames.Select(m => m.ToLower()).ToArray();
-                string matchedMode = null;
-                string rawTextLog = "";
-
-                // Try both polarities. The tab bar is light-text-on-dark, so the shared
-                // grayscale+contrast+invert pipeline (see InventoryScraper tab detection) makes it
-                // Tesseract-ready -- but the sort-dropdown button renders dark-text-on-light, which that
-                // invert flips to light-on-dark and garbles. Rather than hard-code one polarity (the
-                // button's can differ by game version/state), OCR the non-inverted image first, then the
-                // inverted one, and take whichever matches a known mode.
-                foreach (bool invert in new[] { false, true })
-                {
-                    // Plain local (not `using`) so it can be passed by ref to SetInvert.
-                    Bitmap candidate = (Bitmap)gray.Clone();
-                    try
-                    {
-                        if (invert) preprocessor.SetInvert(ref candidate);
-                        SaveDebugScreenshot(candidate, invert ? "weapons/sortmode/processed_inverted" : "weapons/sortmode/processed");
-
-                        string rawText;
-                        using (var ocr = new OcrService())
-                            rawText = ocr.AnalyzeText(candidate, Tesseract.PageSegMode.SingleLine).Trim();
-
-                        string normalizedText = Regex.Replace(rawText.ToLower(), @"[\W]", string.Empty);
-                        rawTextLog += $"[invert={invert} raw=\"{rawText}\" norm=\"{normalizedText}\"] ";
-
-                        string matchedNormalized = TextNormalizer.FindClosestInList(normalizedText, new HashSet<string>(normalizedModes));
-                        int idx = Array.IndexOf(normalizedModes, matchedNormalized);
-                        if (idx >= 0) { matchedMode = SortModeNames[idx]; break; }
-                    }
-                    finally
-                    {
-                        candidate.Dispose();
-                    }
-                }
-                gray.Dispose();
-
-                Logger.Info("Sort mode OCR: {0}matched=\"{1}\"", rawTextLog, matchedMode ?? "(none)");
-
-                // Sort mode couldn't be read confidently -- always save the captured region for
-                // diagnosis (the SaveDebugScreenshot calls above only run when LogScreenshots is on),
-                // so there's evidence of what the OCR saw when the sort (and thus the filter's
-                // early-stop-on-threshold) gets disabled.
-                if (matchedMode == null)
-                    SaveDebugScreenshot(region, "weapons/sortmode/unconfirmed", force: true);
-
-                return matchedMode;
-            }
-        }
-
         /// <summary>
         /// Sets the weapon list's sort mode via controller (per user, 2026-07-04, live-tested
         /// working): D-pad Down opens the dropdown, the left stick moves the highlighted selection
         /// up/down within it, B confirms/closes it (the established confirm button everywhere else in
         /// this codebase). No-ops if already on <paramref name="targetMode"/>. Assumes the dropdown
         /// opens with the currently-active mode pre-highlighted, so the up/down step count can be
-        /// computed from <see cref="DetectCurrentSortMode"/>'s result -- confirmed live
-        /// rather than just assumed. If detection fails (no confident OCR match), skips sorting
-        /// entirely rather than guessing a direction.
+        /// computed from a visually detected current mode. Detection and post-change verification
+        /// use bounded fresh-screen retries; if either remains uncertain, sorting is not trusted.
         /// </summary>
-        /// <returns>True if the sort mode is confirmed to already match or was successfully changed to
-        /// <paramref name="targetMode"/>; false if detection failed and no sort selection was made, in
-        /// which case callers must not assume the weapon grid is sorted.</returns>
+        /// <returns>True only if the visible mode is verified as <paramref name="targetMode"/> before
+        /// or after the bounded change attempt; false if either the initial read or post-change
+        /// verification remains uncertain, in which case callers must not assume the grid is sorted.</returns>
         private bool SetSortMode(GameNavigator navigator, string targetMode)
         {
-            string currentMode = DetectCurrentSortMode();
-            if (currentMode == targetMode)
-            {
-                Logger.Info("Controller weapon sort: already \"{0}\", no change needed.", currentMode);
-                return true;
-            }
-
-            int currentIndex = Array.IndexOf(SortModeNames, currentMode);
-            int targetIndex = Array.IndexOf(SortModeNames, targetMode);
-            if (currentIndex < 0)
-            {
-                Logger.Warn("Could not confidently detect current weapon sort mode -- skipping sort selection.");
-                return false;
-            }
-
-            navigator.TapDPadDown(holdMs: ScaledControllerDelay(80));
-            Thread.Sleep(ScaledControllerDelay(300));
-
-            int steps = Math.Abs(targetIndex - currentIndex);
-            var direction = targetIndex > currentIndex ? GameNavigator.MenuDirection.Down : GameNavigator.MenuDirection.Up;
-            navigator.Move(direction, steps);
-            Thread.Sleep(ScaledControllerDelay(100));
-
-            navigator.TapConfirm(holdMs: ScaledControllerDelay(80));
-            Thread.Sleep(ScaledControllerDelay(300));
-
-            Logger.Info("Controller weapon sort: {0} -> {1} ({2} steps {3})", currentMode, targetMode, steps, direction);
-            return true;
+            var timing = new WeaponSortModeTiming(
+                dropdownHoldMs: ScaledControllerDelay(80),
+                dropdownSettleMs: ScaledControllerDelay(300),
+                preConfirmSettleMs: ScaledControllerDelay(100),
+                confirmHoldMs: ScaledControllerDelay(80),
+                postConfirmSettleMs: ScaledControllerDelay(300),
+                detectionRetryMs: ScaledControllerDelay(300));
+            return sortModeVerifier.ConfirmSortMode(navigator, targetMode, timing);
         }
 
         /// <summary>
@@ -243,8 +156,8 @@ namespace InventoryKamera
             sortModeConfirmed = SetSortMode(navigator, SortByLevel ? "Level" : "Quality");
             if (!sortModeConfirmed)
             {
-                Logger.Error("Weapon sort mode could not be confirmed -- early-stop-on-threshold is disabled, so the full weapon grid will be scanned. See ./logging/weapons/sortmode/ for the captured sort-mode region.");
-                progressReporter.AddError("Could not confirm weapon sort mode; scanning all weapons (filter early-stop disabled). See logging/weapons/sortmode.");
+                Logger.Error("Weapon sort mode could not be confirmed -- early-stop-on-threshold is disabled, so the full weapon grid will be scanned. See ./logging/weapon-sort-mode/ for attempt crops.");
+                progressReporter.AddError("Could not confirm weapon sort mode; scanning all weapons (filter early-stop disabled). See logging/weapon-sort-mode.");
             }
 
             int weaponCount = count == 0 ? ScanItemCount() : count;
