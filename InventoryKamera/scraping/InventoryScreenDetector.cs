@@ -45,11 +45,13 @@ namespace InventoryKamera
             if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
 
             // The active sub-tab label is anchored to the top-left independently of inventory-grid
-            // geometry. Keep the region narrow so controller hints and tab icons cannot pollute OCR.
+            // geometry. Character Development Items needs the same 20%-wide title crop already used
+            // by InventoryScraper's phase transitions; the former 7.5% crop truncated persisted long
+            // tab names and incorrectly reported that Inventory had not opened.
             var region = new Rectangle(
                 x: (int)(0.085 * screenshot.Width),
                 y: (int)(0.035 * screenshot.Height),
-                width: (int)(0.075 * screenshot.Width),
+                width: (int)(0.20 * screenshot.Width),
                 height: (int)(0.050 * screenshot.Height));
             using (Bitmap crop = screenshot.Clone(region, PixelFormat.Format24bppRgb))
                 return DetectTabRegion(crop);

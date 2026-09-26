@@ -313,8 +313,11 @@ namespace InventoryKamera
         /// navigation. The navigator re-detects focus after every individual move and confirms only
         /// while the Inventory label itself is selected.
         /// </summary>
-        internal bool EnterInventory(PaimonMenuNavigator menuNavigator)
+        internal bool EnterInventory(
+            PaimonMenuNavigator menuNavigator,
+            InventoryTabNavigator tabNavigator)
         {
+            if (tabNavigator == null) throw new ArgumentNullException(nameof(tabNavigator));
             // The mouse-based scan's Navigation.InventoryScreen() started every phase with a real
             // Escape press to guarantee a known baseline (unpaused, no menu open) before doing
             // anything else -- controller-mode ad-hoc tests never needed this because the user
@@ -340,7 +343,34 @@ namespace InventoryKamera
                 if (result.Success)
                 {
                     Logger.Info("State-aware Inventory entry succeeded. {0}", result.DetectionDetails);
-                    return true;
+
+                    var tabTiming = new InventoryTabNavigationTiming(
+                        initialSettleMs: ScaledControllerDelay(500),
+                        buttonHoldMs: ScaledControllerDelay(200),
+                        stepSettleMs: ScaledControllerDelay(800),
+                        finalSettleMs: ScaledControllerDelay(1000),
+                        detectionRetryMs: ScaledControllerDelay(300));
+                    using (InventoryTabNavigationResult normalization =
+                        tabNavigator.NormalizeToWeapons(tabTiming))
+                    {
+                        if (normalization.Success)
+                        {
+                            Logger.Info("Inventory entry normalized to {0} (OCR: \"{1}\").",
+                                normalization.CurrentTab, normalization.RawText);
+                            return true;
+                        }
+
+                        string normalizationError = normalization.Message +
+                            " Inventory scan phases were skipped.";
+                        Logger.Error(normalizationError);
+                        progressReporter.AddError(normalizationError);
+                        if (normalization.DiagnosticScreenshot != null)
+                            SaveDebugScreenshot(
+                                normalization.DiagnosticScreenshot,
+                                "inventory/tab_normalization_failure",
+                                force: true);
+                        return false;
+                    }
                 }
 
                 string error = result.Message + " Inventory scan phases were skipped. " + result.DetectionDetails;

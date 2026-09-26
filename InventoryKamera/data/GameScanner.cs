@@ -216,13 +216,20 @@ namespace InventoryKamera
 							inventoryScreenDetector,
 							characterScreenDetector,
 							cancellationRequested: () => scanSession.IsCancellationRequested);
+						var inventoryTabNavigator = new InventoryTabNavigator(
+							navigator,
+							inventoryScreenDetector,
+							new NavigationGameScreenCapture(),
+							cancellationRequested: () => scanSession.IsCancellationRequested);
 
 						if (scanInventory && !scanSession.IsCancellationRequested)
 						{
 							bool inventoryEntered = false;
 							try
 							{
-								inventoryEntered = weaponScraper.EnterInventory(paimonNavigator);
+								inventoryEntered = weaponScraper.EnterInventory(
+									paimonNavigator,
+									inventoryTabNavigator);
 							}
 							catch (FormatException ex) { progressReporter.AddError(ex.Message); }
 							catch (Exception ex)
@@ -240,7 +247,7 @@ namespace InventoryKamera
 							// next phase already knows where it left off -- no need to re-detect the
 							// current tab via OCR (which had been flaking) just to compute the next
 							// switch. Threaded through explicitly rather than re-derived.
-							string currentTab = null;
+							string currentTab = InventoryTabNavigator.CanonicalTabName;
 
 							if (scanSettings.ScanWeapons && !scanSession.IsCancellationRequested)
 							{
