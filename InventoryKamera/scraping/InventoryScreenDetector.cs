@@ -14,12 +14,35 @@ namespace InventoryKamera
         public int TabIndex { get; }
         public string TabName { get; }
         public string RawText { get; }
+        public IReadOnlyList<InventoryScreenOcrAttempt> OcrAttempts { get; }
 
-        public InventoryScreenDetection(int tabIndex, string tabName, string rawText)
+        public InventoryScreenDetection(
+            int tabIndex,
+            string tabName,
+            string rawText,
+            IReadOnlyList<InventoryScreenOcrAttempt> ocrAttempts = null)
         {
             TabIndex = tabIndex;
             TabName = tabName;
             RawText = rawText ?? string.Empty;
+            OcrAttempts = ocrAttempts == null
+                ? Array.Empty<InventoryScreenOcrAttempt>()
+                : new List<InventoryScreenOcrAttempt>(ocrAttempts).AsReadOnly();
+        }
+    }
+
+    internal sealed class InventoryScreenOcrAttempt
+    {
+        public bool Inverted { get; }
+        public string RawText { get; }
+        public string RecognizedTab { get; }
+        public bool Accepted => RecognizedTab != null;
+
+        public InventoryScreenOcrAttempt(bool inverted, string rawText, string recognizedTab)
+        {
+            Inverted = inverted;
+            RawText = rawText ?? string.Empty;
+            RecognizedTab = recognizedTab;
         }
     }
 
@@ -44,6 +67,14 @@ namespace InventoryKamera
         {
             if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
 
+            using (Bitmap crop = CopyDetectionRegion(screenshot))
+                return DetectTabRegion(crop);
+        }
+
+        internal static Bitmap CopyDetectionRegion(Bitmap screenshot)
+        {
+            if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
+
             // The active sub-tab label is anchored to the top-left independently of inventory-grid
             // geometry. Character Development Items needs the same 20%-wide title crop already used
             // by InventoryScraper's phase transitions; the former 7.5% crop truncated persisted long
@@ -53,14 +84,13 @@ namespace InventoryKamera
                 y: (int)(0.035 * screenshot.Height),
                 width: (int)(0.20 * screenshot.Width),
                 height: (int)(0.050 * screenshot.Height));
-            using (Bitmap crop = screenshot.Clone(region, PixelFormat.Format24bppRgb))
-                return DetectTabRegion(crop);
+            return screenshot.Clone(region, PixelFormat.Format24bppRgb);
         }
 
         internal InventoryScreenDetection DetectTabRegion(Bitmap region)
         {
             using Bitmap resized = GenshinProcesor.ResizeImage(region, region.Width * 3, region.Height * 3);
-            var attempts = new List<string>();
+            var attempts = new List<InventoryScreenOcrAttempt>();
 
             // The title can be light-on-dark or dark-on-light as the active tab styling changes.
             // Both variants use the existing OCR contrast value; this does not affect scanner OCR.
@@ -73,10 +103,11 @@ namespace InventoryKamera
                     if (invert) imagePreprocessor.SetInvert(ref processed);
 
                     string rawText = ocrService.AnalyzeText(processed, PageSegMode.SingleLine).Trim();
-                    attempts.Add(rawText);
                     int index = InventoryTabRecognition.Match(rawText);
+                    string recognizedTab = index >= 0 ? InventoryTabRecognition.Names[index] : null;
+                    attempts.Add(new InventoryScreenOcrAttempt(invert, rawText, recognizedTab));
                     if (index >= 0)
-                        return new InventoryScreenDetection(index, InventoryTabRecognition.Names[index], rawText);
+                        return new InventoryScreenDetection(index, recognizedTab, rawText, attempts.ToArray());
                 }
                 finally
                 {
@@ -84,7 +115,11 @@ namespace InventoryKamera
                 }
             }
 
-            return new InventoryScreenDetection(-1, null, string.Join(" | ", attempts));
+            return new InventoryScreenDetection(
+                -1,
+                null,
+                string.Join(" | ", attempts.Select(attempt => attempt.RawText)),
+                attempts.ToArray());
         }
     }
 

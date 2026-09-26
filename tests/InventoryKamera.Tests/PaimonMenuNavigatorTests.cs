@@ -35,6 +35,51 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void OpenInventory_FirstObstructedAttemptThenSecondFreshCaptureSucceeds()
+        {
+            var events = new List<string>();
+            PaimonMenuTile inventory = Tile("Inventory", 0, 0);
+            var detector = new FakeDetector(events, Detection(inventory, inventory));
+            var capture = new FakeCapture(events);
+            var destination = new FakeInventoryScreenDetector(events, false, true);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(events, detector, capture, destination);
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenInventory(NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, destination.Calls);
+            Assert.Equal(3, capture.Count); // menu detection plus two destination attempts
+            Assert.NotSame(destination.Screenshots[0], destination.Screenshots[1]);
+            Assert.Equal(1, events.Count(e => e == "Button:Confirm:True"));
+        }
+
+        [Fact]
+        public void OpenInventory_FirstTwoAttemptsFailThenThirdFreshCaptureSucceeds()
+        {
+            var events = new List<string>();
+            PaimonMenuTile inventory = Tile("Inventory", 0, 0);
+            var detector = new FakeDetector(events, Detection(inventory, inventory));
+            var capture = new FakeCapture(events);
+            var destination = new FakeInventoryScreenDetector(events, false, false, true);
+            PaimonMenuNavigator menuNavigator = CreateNavigator(
+                events,
+                detector,
+                capture,
+                destination,
+                verificationWait: milliseconds => events.Add($"VerificationWait:{milliseconds}"));
+            var timing = new PaimonMenuNavigationTiming(0, 0, 0, 0, 0, 0, 0, 73);
+
+            using PaimonMenuNavigationResult result = menuNavigator.OpenInventory(timing);
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(PaimonMenuNavigator.InventoryDestinationVerificationAttempts, destination.Calls);
+            Assert.Equal(4, capture.Count); // menu detection plus three destination attempts
+            Assert.Equal(3, destination.Screenshots.Distinct().Count());
+            Assert.Equal(2, events.Count(e => e == "VerificationWait:73"));
+            Assert.Equal(1, events.Count(e => e == "Button:Confirm:True"));
+        }
+
+        [Fact]
         public void OpenInventory_PassesPaimonSpecificSingleStepTimingToGameNavigator()
         {
             var events = new List<string>();
@@ -198,7 +243,11 @@ namespace InventoryKamera.Tests
             Assert.Contains("could not be verified", result.Message);
             Assert.Contains("Button:Confirm:True", events);
             Assert.Contains("Button:Back:True", events); // safe MashBack
-            Assert.Equal(1, destination.Calls);
+            Assert.Equal(PaimonMenuNavigator.InventoryDestinationVerificationAttempts, destination.Calls);
+            Assert.Equal(4, capture.Count); // menu detection plus three fresh destination attempts
+            Assert.Equal(3, result.DiagnosticScreenshots.Count);
+            Assert.Equal(3, destination.Screenshots.Distinct().Count());
+            Assert.Equal(1, events.Count(e => e == "Button:Confirm:True"));
         }
 
         [Fact]
@@ -221,6 +270,7 @@ namespace InventoryKamera.Tests
             Assert.True(result.Success, result.Message);
             Assert.Equal(2, destination.Calls);
             Assert.Equal(3, capture.Count); // menu detection plus two destination attempts
+            Assert.NotSame(destination.Screenshots[0], destination.Screenshots[1]);
             Assert.Equal(1, events.Count(e => e == "Button:Confirm:True"));
         }
 
@@ -559,7 +609,8 @@ namespace InventoryKamera.Tests
             ICharacterScreenDetector characterDestination = null,
             int detectionAttempts = 1,
             int unchangedSelectionRetries = 2,
-            System.Action<int> navigatorWait = null)
+            System.Action<int> navigatorWait = null,
+            System.Action<int> verificationWait = null)
         {
             var input = new FakeGameInput(events);
             var gameNavigator = new GameNavigator(input, navigatorWait ?? (_ => { }));
@@ -569,7 +620,7 @@ namespace InventoryKamera.Tests
                 capture,
                 destination,
                 characterDestination,
-                wait: _ => { },
+                wait: verificationWait ?? (_ => { }),
                 maximumMoves: 8,
                 detectionAttempts: detectionAttempts,
                 unchangedSelectionRetries: unchangedSelectionRetries);
@@ -642,19 +693,27 @@ namespace InventoryKamera.Tests
         private sealed class FakeInventoryScreenDetector : IInventoryScreenDetector
         {
             private readonly List<string> events;
-            private readonly bool succeeds;
+            private readonly Queue<bool> results;
             public int Calls { get; private set; }
+            public List<Bitmap> Screenshots { get; } = new List<Bitmap>();
 
             public FakeInventoryScreenDetector(List<string> events, bool succeeds)
+                : this(events, new[] { succeeds })
+            {
+            }
+
+            public FakeInventoryScreenDetector(List<string> events, params bool[] succeeds)
             {
                 this.events = events;
-                this.succeeds = succeeds;
+                results = new Queue<bool>(succeeds);
             }
 
             public InventoryScreenDetection Detect(Bitmap screenshot)
             {
                 Calls++;
+                Screenshots.Add(screenshot);
                 events.Add("VerifyDestination");
+                bool succeeds = results.Count > 1 ? results.Dequeue() : results.Peek();
                 return succeeds
                     ? new InventoryScreenDetection(0, "Weapons", "Weapons")
                     : new InventoryScreenDetection(-1, null, "unknown");
@@ -666,6 +725,7 @@ namespace InventoryKamera.Tests
             private readonly List<string> events;
             private readonly Queue<bool> results;
             public int Calls { get; private set; }
+            public List<Bitmap> Screenshots { get; } = new List<Bitmap>();
 
             public FakeCharacterScreenDetector(List<string> events, params bool[] succeeds)
             {
@@ -676,6 +736,7 @@ namespace InventoryKamera.Tests
             public CharacterScreenDetection Detect(Bitmap screenshot)
             {
                 Calls++;
+                Screenshots.Add(screenshot);
                 events.Add("VerifyCharacterDestination");
                 bool succeeds = results.Count > 1 ? results.Dequeue() : results.Peek();
                 return succeeds

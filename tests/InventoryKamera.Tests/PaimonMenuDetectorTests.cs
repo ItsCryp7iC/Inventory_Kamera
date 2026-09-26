@@ -144,12 +144,29 @@ namespace InventoryKamera.Tests
                 $"OCR: {result.RawText}; confidence={result.Confidence:P0}");
         }
 
+        [Fact]
+        public void CharacterDestinationVerifier_ExactNormalizedLabelIgnoresLowAggregateConfidence()
+        {
+            using var screenshot = new Bitmap(1919, 1079);
+            var detector = new CharacterScreenDetector(
+                new StubOcrService("» Attributes", 0.10f),
+                new ImageProcessor());
+
+            CharacterScreenDetection result = detector.Detect(screenshot);
+
+            Assert.True(result.IsCharacterOpen);
+            Assert.True(result.OcrAttempts[0].ExactSemanticMatch);
+            Assert.True(result.OcrAttempts[0].Accepted);
+        }
+
         [Theory]
-        [InlineData("Attributes", 0.10f)]
-        [InlineData("", 0.95f)]
-        public void CharacterDestinationVerifier_LowConfidenceOrMissingSignalFailsSafely(
+        [InlineData("Ateributes", 0.10f, false)]
+        [InlineData("Ateributes", 0.60f, true)]
+        [InlineData("", 0.95f, false)]
+        public void CharacterDestinationVerifier_FuzzyOrMissingSignalRetainsConfidenceFloor(
             string text,
-            float confidence)
+            float confidence,
+            bool expected)
         {
             using var screenshot = new Bitmap(1919, 1079);
             var detector = new CharacterScreenDetector(
@@ -158,7 +175,13 @@ namespace InventoryKamera.Tests
 
             CharacterScreenDetection result = detector.Detect(screenshot);
 
-            Assert.False(result.IsCharacterOpen);
+            Assert.Equal(expected, result.IsCharacterOpen);
+            if (!string.IsNullOrEmpty(text))
+            {
+                Assert.False(result.OcrAttempts[0].ExactSemanticMatch);
+                Assert.True(result.OcrAttempts[0].FuzzySemanticMatch);
+                Assert.Equal(expected, result.OcrAttempts[0].Accepted);
+            }
         }
 
         private sealed class StubPositionalOcrService : IPositionalOcrService

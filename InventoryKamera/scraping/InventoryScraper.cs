@@ -376,8 +376,10 @@ namespace InventoryKamera
                 string error = result.Message + " Inventory scan phases were skipped. " + result.DetectionDetails;
                 Logger.Error(error);
                 progressReporter.AddError(error);
-                if (result.DiagnosticScreenshot != null)
-                    SaveDebugScreenshot(result.DiagnosticScreenshot, "paimonmenu/inventory_entry_failure", force: true);
+                DestinationVerificationDiagnostics.Save(
+                    result,
+                    "inventory",
+                    InventoryScreenDetector.CopyDetectionRegion);
                 return false;
             }
         }

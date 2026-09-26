@@ -54,27 +54,46 @@ namespace InventoryKamera.game
         public bool Success { get; }
         public string Message { get; }
         public string DetectionDetails { get; }
-        public Bitmap DiagnosticScreenshot { get; }
+        public IReadOnlyList<Bitmap> DiagnosticScreenshots { get; }
+        public Bitmap DiagnosticScreenshot => DiagnosticScreenshots.Count == 0
+            ? null
+            : DiagnosticScreenshots[DiagnosticScreenshots.Count - 1];
 
         private PaimonMenuNavigationResult(
             bool success,
             string message,
             string detectionDetails,
-            Bitmap diagnosticScreenshot)
+            IReadOnlyList<Bitmap> diagnosticScreenshots)
         {
             Success = success;
             Message = message;
             DetectionDetails = detectionDetails;
-            DiagnosticScreenshot = diagnosticScreenshot;
+            DiagnosticScreenshots = diagnosticScreenshots == null
+                ? Array.Empty<Bitmap>()
+                : new List<Bitmap>(diagnosticScreenshots).AsReadOnly();
         }
 
         public static PaimonMenuNavigationResult Succeeded(string details) =>
-            new PaimonMenuNavigationResult(true, null, details, null);
+            new PaimonMenuNavigationResult(true, null, details, Array.Empty<Bitmap>());
 
         public static PaimonMenuNavigationResult Failed(string message, string details, Bitmap screenshot) =>
-            new PaimonMenuNavigationResult(false, message, details, screenshot);
+            new PaimonMenuNavigationResult(
+                false,
+                message,
+                details,
+                screenshot == null ? Array.Empty<Bitmap>() : new[] { screenshot });
 
-        public void Dispose() => DiagnosticScreenshot?.Dispose();
+        public static PaimonMenuNavigationResult FailedWithScreenshots(
+            string message,
+            string details,
+            IReadOnlyList<Bitmap> screenshots) =>
+            new PaimonMenuNavigationResult(false, message, details, screenshots);
+
+        public void Dispose()
+        {
+            foreach (Bitmap screenshot in DiagnosticScreenshots)
+                screenshot?.Dispose();
+        }
     }
 
     /// <summary>
@@ -88,6 +107,7 @@ namespace InventoryKamera.game
         internal const int DefaultMaximumMoves = 12;
         internal const int DefaultDetectionAttempts = 3;
         internal const int DefaultUnchangedSelectionRetries = 2;
+        internal const int InventoryDestinationVerificationAttempts = 3;
         internal const int CharacterDestinationVerificationAttempts = 3;
 
         private readonly GameNavigator navigator;
@@ -149,6 +169,7 @@ namespace InventoryKamera.game
             Bitmap latestScreenshot = null;
             PaimonMenuDetection latestDetection = null;
             PaimonMenuTile latestTargetTile = null;
+            List<Bitmap> failedDestinationScreenshots = null;
             try
             {
                 navigator.EnterControllerMode();
@@ -250,13 +271,17 @@ namespace InventoryKamera.game
 
                         int destinationAttempts = target == PaimonMenuTarget.Character
                             ? CharacterDestinationVerificationAttempts
-                            : 1;
+                            : InventoryDestinationVerificationAttempts;
                         DestinationVerification destination = default;
                         for (int attempt = 1; attempt <= destinationAttempts; attempt++)
                         {
                             latestScreenshot?.Dispose();
                             latestScreenshot = screenCapture.CaptureWindow();
-                            destination = VerifyDestination(target, latestScreenshot);
+                            destination = VerifyDestination(
+                                target,
+                                latestScreenshot,
+                                attempt,
+                                destinationAttempts);
                             Logger.Info(
                                 "{0} destination verification attempt {1}/{2}: success={3}; {4}",
                                 targetName,
@@ -265,16 +290,24 @@ namespace InventoryKamera.game
                                 destination.Success,
                                 destination.Success ? destination.SuccessDetails : destination.FailureMessage);
                             if (destination.Success) break;
+
+                            failedDestinationScreenshots ??= new List<Bitmap>();
+                            failedDestinationScreenshots.Add(Transfer(ref latestScreenshot));
                             if (attempt < destinationAttempts) wait(timing.DetectionRetryMs);
                         }
 
                         if (!destination.Success)
                         {
-                            return Fail(
+                            IReadOnlyList<Bitmap> diagnostics = failedDestinationScreenshots;
+                            failedDestinationScreenshots = null;
+                            return FailWithScreenshots(
                                 destination.FailureMessage,
                                 latestDetection,
-                                Transfer(ref latestScreenshot));
+                                diagnostics);
                         }
+
+                        DisposeScreenshots(failedDestinationScreenshots);
+                        failedDestinationScreenshots = null;
 
                         latestScreenshot.Dispose();
                         latestScreenshot = null;
@@ -321,6 +354,7 @@ namespace InventoryKamera.game
             finally
             {
                 latestScreenshot?.Dispose();
+                DisposeScreenshots(failedDestinationScreenshots);
             }
         }
 
@@ -335,11 +369,26 @@ namespace InventoryKamera.game
             };
         }
 
-        private DestinationVerification VerifyDestination(PaimonMenuTarget target, Bitmap screenshot)
+        private DestinationVerification VerifyDestination(
+            PaimonMenuTarget target,
+            Bitmap screenshot,
+            int attempt,
+            int totalAttempts)
         {
             if (target == PaimonMenuTarget.Inventory)
             {
                 InventoryScreenDetection detection = inventoryScreenDetector.Detect(screenshot);
+                foreach (InventoryScreenOcrAttempt ocrAttempt in detection.OcrAttempts)
+                {
+                    Logger.Info(
+                        "Inventory destination verification attempt {0}/{1}: inverted={2}, text=\"{3}\", recognizedTab={4}, accepted={5}",
+                        attempt,
+                        totalAttempts,
+                        ocrAttempt.Inverted,
+                        SanitizeLogText(ocrAttempt.RawText),
+                        ocrAttempt.RecognizedTab ?? "(none)",
+                        ocrAttempt.Accepted);
+                }
                 return new DestinationVerification(
                     detection.IsInventoryOpen,
                     $"Selected Inventory and verified destination tab {detection.TabName} " +
@@ -349,6 +398,19 @@ namespace InventoryKamera.game
             }
 
             CharacterScreenDetection character = characterScreenDetector.Detect(screenshot);
+            foreach (CharacterScreenOcrAttempt ocrAttempt in character.OcrAttempts)
+            {
+                Logger.Info(
+                    "Character destination verification attempt {0}/{1}: inverted={2}, text=\"{3}\", confidence={4:P0}, exactMatch={5}, fuzzyMatch={6}, accepted={7}",
+                    attempt,
+                    totalAttempts,
+                    ocrAttempt.Inverted,
+                    SanitizeLogText(ocrAttempt.RawText),
+                    ocrAttempt.Confidence,
+                    ocrAttempt.ExactSemanticMatch,
+                    ocrAttempt.FuzzySemanticMatch,
+                    ocrAttempt.Accepted);
+            }
             return new DestinationVerification(
                 character.IsCharacterOpen,
                 $"Selected Character and verified destination label Attributes " +
@@ -378,6 +440,26 @@ namespace InventoryKamera.game
         {
             string details = detection?.Describe() ?? "No menu detection was available.";
             Logger.Warn("{0} Detection: {1}", reason, details);
+            BackOutAfterFailure();
+            return PaimonMenuNavigationResult.Failed(reason, details, diagnosticScreenshot);
+        }
+
+        private PaimonMenuNavigationResult FailWithScreenshots(
+            string reason,
+            PaimonMenuDetection detection,
+            IReadOnlyList<Bitmap> diagnosticScreenshots)
+        {
+            string details = detection?.Describe() ?? "No menu detection was available.";
+            Logger.Warn("{0} Detection: {1}", reason, details);
+            BackOutAfterFailure();
+            return PaimonMenuNavigationResult.FailedWithScreenshots(
+                reason,
+                details,
+                diagnosticScreenshots);
+        }
+
+        private void BackOutAfterFailure()
+        {
             try
             {
                 navigator.MashBack();
@@ -386,8 +468,17 @@ namespace InventoryKamera.game
             {
                 Logger.Warn(ex, "Could not complete the safe menu back-out after navigation failure.");
             }
-            return PaimonMenuNavigationResult.Failed(reason, details, diagnosticScreenshot);
         }
+
+        private static void DisposeScreenshots(IEnumerable<Bitmap> screenshots)
+        {
+            if (screenshots == null) return;
+            foreach (Bitmap screenshot in screenshots)
+                screenshot?.Dispose();
+        }
+
+        private static string SanitizeLogText(string text) =>
+            (text ?? string.Empty).Replace("\r", " ").Replace("\n", " ");
 
         private static Bitmap Transfer(ref Bitmap bitmap)
         {

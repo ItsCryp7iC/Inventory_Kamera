@@ -12,12 +12,46 @@ namespace InventoryKamera
         public bool IsCharacterOpen { get; }
         public string RawText { get; }
         public float Confidence { get; }
+        public IReadOnlyList<CharacterScreenOcrAttempt> OcrAttempts { get; }
 
-        public CharacterScreenDetection(bool isCharacterOpen, string rawText, float confidence)
+        public CharacterScreenDetection(
+            bool isCharacterOpen,
+            string rawText,
+            float confidence,
+            IReadOnlyList<CharacterScreenOcrAttempt> ocrAttempts = null)
         {
             IsCharacterOpen = isCharacterOpen;
             RawText = rawText ?? string.Empty;
             Confidence = confidence;
+            OcrAttempts = ocrAttempts == null
+                ? Array.Empty<CharacterScreenOcrAttempt>()
+                : new List<CharacterScreenOcrAttempt>(ocrAttempts).AsReadOnly();
+        }
+    }
+
+    internal sealed class CharacterScreenOcrAttempt
+    {
+        public bool Inverted { get; }
+        public string RawText { get; }
+        public float Confidence { get; }
+        public bool ExactSemanticMatch { get; }
+        public bool FuzzySemanticMatch { get; }
+        public bool Accepted { get; }
+
+        public CharacterScreenOcrAttempt(
+            bool inverted,
+            string rawText,
+            float confidence,
+            bool exactSemanticMatch,
+            bool fuzzySemanticMatch,
+            bool accepted)
+        {
+            Inverted = inverted;
+            RawText = rawText ?? string.Empty;
+            Confidence = confidence;
+            ExactSemanticMatch = exactSemanticMatch;
+            FuzzySemanticMatch = fuzzySemanticMatch;
+            Accepted = accepted;
         }
     }
 
@@ -32,11 +66,9 @@ namespace InventoryKamera
     /// </summary>
     internal sealed class CharacterScreenDetector : ICharacterScreenDetector
     {
-        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
-
         // Destination verification is deliberately isolated from the scanner's OCR thresholds.
-        // The live 1920x1080 failure capture reads "Attributes" correctly at 45% confidence, so
-        // accept that stable semantic signal while still rejecting genuinely low-confidence text.
+        // This remains the floor for fuzzy/partial matches. Exact normalized "attributes" is accepted
+        // independently because animated particles can lower aggregate confidence on otherwise exact text.
         internal const float MinimumConfidence = 0.40f;
 
         private readonly IOcrService ocrService;
@@ -52,19 +84,26 @@ namespace InventoryKamera
         {
             if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
 
+            using Bitmap crop = CopyDetectionRegion(screenshot);
+            return DetectLabelRegion(crop);
+        }
+
+        internal static Bitmap CopyDetectionRegion(Bitmap screenshot)
+        {
+            if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
+
             var region = new Rectangle(
                 x: (int)(0.080 * screenshot.Width),
                 y: (int)(0.115 * screenshot.Height),
                 width: (int)(0.150 * screenshot.Width),
                 height: (int)(0.070 * screenshot.Height));
-            using Bitmap crop = screenshot.Clone(region, PixelFormat.Format24bppRgb);
-            return DetectLabelRegion(crop);
+            return screenshot.Clone(region, PixelFormat.Format24bppRgb);
         }
 
         internal CharacterScreenDetection DetectLabelRegion(Bitmap region)
         {
             using Bitmap resized = GenshinProcesor.ResizeImage(region, region.Width * 3, region.Height * 3);
-            var attempts = new List<string>();
+            var attempts = new List<CharacterScreenOcrAttempt>();
             float bestConfidence = 0;
 
             bool[] inversionAttempts = { true, false };
@@ -80,24 +119,23 @@ namespace InventoryKamera
                     (string text, float confidence) = ocrService.AnalyzeTextWithConfidence(
                         processed, PageSegMode.SingleLine);
                     string rawText = text?.Trim() ?? string.Empty;
-                    attempts.Add(rawText);
                     bestConfidence = Math.Max(bestConfidence, confidence);
 
-                    (bool semanticMatch, bool fuzzyMatch) = MatchAttributesLabel(rawText);
-                    bool accepted = confidence >= MinimumConfidence && semanticMatch;
-                    Logger.Info(
-                        "Character destination OCR attempt {0}/{1}: inverted={2}, text=\"{3}\", confidence={4:P0}, semanticMatch={5}, fuzzyMatch={6}, accepted={7}",
-                        attempt + 1,
-                        inversionAttempts.Length,
+                    (bool exactMatch, bool fuzzyMatch) = MatchAttributesLabel(rawText);
+                    // An exact normalized label is stronger evidence than Tesseract's aggregate
+                    // confidence on the animated Character background. Noisy/fuzzy text retains the
+                    // existing 40% floor; this policy is local to destination verification.
+                    bool accepted = exactMatch || (fuzzyMatch && confidence >= MinimumConfidence);
+                    attempts.Add(new CharacterScreenOcrAttempt(
                         invert,
-                        rawText.Replace("\r", " ").Replace("\n", " "),
+                        rawText,
                         confidence,
-                        semanticMatch,
+                        exactMatch,
                         fuzzyMatch,
-                        accepted);
+                        accepted));
 
                     if (accepted)
-                        return new CharacterScreenDetection(true, rawText, confidence);
+                        return new CharacterScreenDetection(true, rawText, confidence, attempts.ToArray());
                 }
                 finally
                 {
@@ -105,17 +143,23 @@ namespace InventoryKamera
                 }
             }
 
-            return new CharacterScreenDetection(false, string.Join(" | ", attempts), bestConfidence);
+            return new CharacterScreenDetection(
+                false,
+                string.Join(" | ", attempts.ConvertAll(attempt => attempt.RawText)),
+                bestConfidence,
+                attempts.ToArray());
         }
 
-        private static (bool SemanticMatch, bool FuzzyMatch) MatchAttributesLabel(string rawText)
+        private static (bool ExactMatch, bool FuzzyMatch) MatchAttributesLabel(string rawText)
         {
             string normalized = Regex.Replace((rawText ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]", string.Empty);
+            bool exactMatch = normalized == "attributes";
             string match = TextNormalizer.FindClosestInList(
                 normalized,
                 new HashSet<string>(new[] { "attributes" }));
-            bool fuzzyMatch = match == "attributes";
-            return (normalized.Contains("attributes") || fuzzyMatch, fuzzyMatch);
+            bool fuzzyMatch = !exactMatch &&
+                (normalized.Contains("attributes") || match == "attributes");
+            return (exactMatch, fuzzyMatch);
         }
     }
 }

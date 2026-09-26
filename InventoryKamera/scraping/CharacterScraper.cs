@@ -502,12 +502,10 @@ namespace InventoryKamera
 				string error = result.Message + " Character scanning was skipped. " + result.DetectionDetails;
 				Logger.Error(error);
 				progressReporter.AddError(error);
-				if (result.DiagnosticScreenshot != null)
-				{
-					const string path = "./logging/paimonmenu/character_entry_failure.png";
-					Directory.CreateDirectory(Path.GetDirectoryName(path));
-					result.DiagnosticScreenshot.Save(path);
-				}
+				DestinationVerificationDiagnostics.Save(
+					result,
+					"character",
+					CharacterScreenDetector.CopyDetectionRegion);
 				return false;
 			}
 		}
