@@ -22,19 +22,22 @@ namespace InventoryKamera
 		private readonly IScanSettings scanSettings;
 		private readonly IScanProgressReporter progressReporter;
 		private readonly ScanSession scanSession;
+		private readonly GameDataSnapshot gameData;
 
         public CharacterScraper(
 			IOcrService ocrService,
 			IImagePreprocessor imagePreprocessor,
 			IScanSettings scanSettings,
 			IScanProgressReporter progressReporter,
-			ScanSession scanSession)
+			ScanSession scanSession,
+			GameDataSnapshot gameData)
 		{
 			this.ocrService = ocrService;
 			this.imagePreprocessor = imagePreprocessor;
 			this.scanSettings = scanSettings;
 			this.progressReporter = progressReporter;
 			this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
+			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			NumOfCharToScan = scanSettings.NumOfCharToScan;
 		}
 
@@ -228,6 +231,7 @@ namespace InventoryKamera
 							Level = level,
 							Ascended = ascended
 						};
+						character.UseGameData(gameData);
 						Characters.Add(character);
 						gapsBeforeEach.Add(gapSinceLastRecorded);
 						gapSinceLastRecorded = 0;
@@ -631,7 +635,7 @@ namespace InventoryKamera
 
 			string lookupKey = character.NameGOOD.Contains("Traveler") ? "traveler" : character.NameGOOD.ToLower();
 
-			if (GenshinProcesor.Characters.TryGetValue(lookupKey, out var characterData))
+			if (gameData.Characters.TryGetValue(lookupKey, out var characterData))
 			{
 				if (characterData["ConstellationOrder"] == null)
 				{
@@ -780,21 +784,21 @@ namespace InventoryKamera
 						string namePart1 = "";
 						if (!split[0].Contains(" "))
 						{
-							element = GenshinProcesor.FindElementByName(split[0].Trim());
+							element = TextNormalizer.FindElementByName(split[0].Trim(), gameData);
 						}
 						else
 						{
 							var firstLineWords = split[0].Split(new[] { ' ' }, 2);
-							element = GenshinProcesor.FindElementByName(firstLineWords[0].Trim());
+							element = TextNormalizer.FindElementByName(firstLineWords[0].Trim(), gameData);
 							if (firstLineWords.Length > 1) namePart1 = firstLineWords[1];
 						}
 
 						// Find character based on the leftover first-line text (if any) plus the
 						// string after /. Long name characters might search by their last name only
 						// but it'll still work in the non-wrapped case (namePart1 stays empty).
-						name = GenshinProcesor.FindClosestCharacterName(Regex.Replace(namePart1 + split[1], @"[\W]", string.Empty));
+						name = TextNormalizer.FindClosestCharacterName(Regex.Replace(namePart1 + split[1], @"[\W]", string.Empty), gameData);
 
-						if (!GenshinProcesor.CharacterMatchesElement(name, element)) { name = ""; element = ""; }
+						if (!LookupService.CharacterMatchesElement(name, element, gameData)) { name = ""; element = ""; }
                     }
 					n.Dispose();
 
@@ -1065,10 +1069,7 @@ namespace InventoryKamera
 		/// </summary>
 		private bool IsFourStarCharacter(Character character)
 		{
-			string lookupKey = character.NameGOOD.Contains("Traveler") ? "traveler" : character.NameGOOD.ToLower();
-			return GenshinProcesor.Characters.TryGetValue(lookupKey, out var data)
-				&& data["Rarity"] != null
-				&& data["Rarity"].ToObject<int>() == 4;
+			return LookupService.IsFourStarCharacter(character.NameGOOD, gameData);
 		}
 
 		/// <summary>

@@ -15,15 +15,18 @@ namespace InventoryKamera
     internal class ArtifactScraper : InventoryScraper
 	{
 		private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+		private readonly GameDataSnapshot gameData;
 
 		public ArtifactScraper(
             IOcrService ocrService,
             IImagePreprocessor imagePreprocessor,
             IScanSettings scanSettings,
             IScanProgressReporter progressReporter,
-            ScanSession scanSession)
+            ScanSession scanSession,
+            GameDataSnapshot gameData)
             : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
 		{
+			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			inventoryPage = InventoryPage.Artifacts;
             // Level takes precedence over rarity: sort by level whenever a real minimum level is set,
             // else fall back to rarity. Threshold is the level floor -- artifact levels are 0-based
@@ -508,7 +511,7 @@ namespace InventoryKamera
 
 				await Task.WhenAll(tasks.ToArray());
 			}
-			return (new Artifact(setName, rarity, level, gearSlot, mainStat, subStats, unactivatedSubStats, equippedCharacter, id, _lock), pendingSet);
+			return (new Artifact(setName, rarity, level, gearSlot, mainStat, subStats, unactivatedSubStats, equippedCharacter, id, _lock, gameData), pendingSet);
 		}
 
 		private int GetRarity(Bitmap bm)
@@ -539,7 +542,7 @@ namespace InventoryKamera
 				Right: card.Width,
 				Bottom: (int)( 38.0 / reference.Height * card.Height )), card.PixelFormat);
 			string material = ScanEnhancementMaterialName(nameBitmap);
-			return !string.IsNullOrWhiteSpace(material) && GenshinProcesor.enhancementMaterials.Contains(material.ToLower());
+			return !string.IsNullOrWhiteSpace(material) && gameData.EnhancementMaterials.Contains(material.ToLower());
 		}
 
 		private string ScanEnhancementMaterialName(Bitmap bm)
@@ -550,7 +553,7 @@ namespace InventoryKamera
 
 			// Analyze
 			string name = Regex.Replace(ocrService.AnalyzeText(n).ToLower(), @"[\W]", string.Empty);
-			name = GenshinProcesor.FindClosestMaterialName(name);
+			name = TextNormalizer.FindClosestMaterialName(name, gameData);
 			n.Dispose();
 
 			return name;
@@ -567,7 +570,7 @@ namespace InventoryKamera
 
 			string gearSlot = ocrService.AnalyzeText(n).Trim().ToLower();
 			gearSlot = Regex.Replace(gearSlot, @"[\W_]", string.Empty);
-			gearSlot = GenshinProcesor.FindClosestGearSlot(gearSlot);
+			gearSlot = TextNormalizer.FindClosestGearSlot(gearSlot, gameData);
 			n.Dispose();
 			return gearSlot;
 		}
@@ -578,11 +581,11 @@ namespace InventoryKamera
 			{
 				// Flower of Life. Flat HP
 				case "flower":
-					return GenshinProcesor.Stats["hp"];
+					return gameData.Stats["hp"];
 
 				// Plume of Death. Flat ATK
 				case "plume":
-					return GenshinProcesor.Stats["atk"];
+					return gameData.Stats["atk"];
 
 				// Otherwise it's either sands, goblet or circlet.
 				default:
@@ -600,7 +603,7 @@ namespace InventoryKamera
 					// Remove anything not a-z as well as removes spaces/underscores
 					mainStat = Regex.Replace(mainStat, @"[\W_0-9]", string.Empty);
 
-					mainStat = GenshinProcesor.FindClosestStat(mainStat, 80);
+					mainStat = TextNormalizer.FindClosestStat(mainStat, gameData, 80);
 
 					if (mainStat == "def" || mainStat == "atk" || mainStat == "hp")
 					{
@@ -678,7 +681,7 @@ namespace InventoryKamera
 
 					string name = line.Contains("%") ? stat + "%" : stat;
 
-					substat.stat = GenshinProcesor.FindClosestStat(name, 80) ?? "";
+					substat.stat = TextNormalizer.FindClosestStat(name, gameData, 80) ?? "";
 
 					// Remove any non digits.
 					value = Regex.Replace(value, @"[^0-9]", string.Empty);
@@ -739,7 +742,7 @@ namespace InventoryKamera
 				if (equippedCharacter.Contains("equipped") && equippedCharacter.Contains(":"))
 				{
 					equippedCharacter = Regex.Replace(equippedCharacter.Split(':')[1], @"[\W]", string.Empty);
-					equippedCharacter = GenshinProcesor.FindClosestCharacterName(equippedCharacter);
+					equippedCharacter = TextNormalizer.FindClosestCharacterName(equippedCharacter, gameData);
 
 					return equippedCharacter;
 				}
@@ -765,7 +768,7 @@ namespace InventoryKamera
                     var (rawText, confidence) = ocrService.AnalyzeTextWithConfidence(grayscale, Tesseract.PageSegMode.Auto);
                     var scannedText = rawText.ToLower().Replace("\n", " ");
                     string text = Regex.Replace(scannedText, @"[\W]", string.Empty);
-                    string setName = GenshinProcesor.FindClosestArtifactSetFromArtifactName(text);
+                    string setName = TextNormalizer.FindClosestArtifactSetFromArtifactName(text, gameData);
 
                     float confidencePercent = confidence * 100;
                     Logger.Debug("Artifact set name OCR: rawText=\"{0}\" matchedSet=\"{1}\" confidence={2:0.0}% threshold={3}%", text, setName, confidencePercent, scanSettings.OcrConfidenceThreshold);
@@ -780,7 +783,7 @@ namespace InventoryKamera
                         {
                             if (string.IsNullOrWhiteSpace(corrected)) return null;
                             string normalized = Regex.Replace(corrected.ToLower(), @"[\W]", string.Empty);
-                            return GenshinProcesor.FindClosestArtifactSetFromArtifactName(normalized) ?? corrected;
+                            return TextNormalizer.FindClosestArtifactSetFromArtifactName(normalized, gameData) ?? corrected;
                         });
                     }
 

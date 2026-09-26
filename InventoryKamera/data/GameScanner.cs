@@ -33,6 +33,7 @@ namespace InventoryKamera
 		private readonly IScanSettings scanSettings;
 		private readonly IScanProgressReporter progressReporter;
 		private readonly ScanSession scanSession;
+		private GameDataSnapshot gameData;
 
 		private WeaponScraper weaponScraper;
 		private ArtifactScraper artifactScraper;
@@ -53,12 +54,21 @@ namespace InventoryKamera
 		/// per scan) so its subscribers don't have to re-subscribe every time.
 		/// </param>
 		internal GameScanner(IScanProgressReporter progressReporter, ScanSession scanSession)
+			: this(progressReporter, scanSession, new GameDataSnapshotFactory().Load())
+		{
+		}
+
+		internal GameScanner(
+			IScanProgressReporter progressReporter,
+			ScanSession scanSession,
+			GameDataSnapshot gameData)
 		{
 			Characters = new List<Character>();
 			Inventory = new Inventory();
 			equippedArtifacts = new List<Artifact>();
 			equippedWeapons = new List<Weapon>();
 			this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
+			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 
 			var tesseractOcr = new OcrService();
 			ocrService = tesseractOcr;
@@ -66,11 +76,6 @@ namespace InventoryKamera
 			imagePreprocessor = new ImageProcessor();
 			scanSettings = new ScanSettings();
 			this.progressReporter = progressReporter;
-
-			weaponScraper = new WeaponScraper(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
-			artifactScraper = new ArtifactScraper(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
-			characterScraper = new CharacterScraper(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
-			materialScraper = new MaterialScraper(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
 
 			// Base worker count on available CPU (leaving headroom for the UI/navigation thread) so
 			// small machines don't oversubscribe; the scanner-speed setting further caps it down for
@@ -80,6 +85,62 @@ namespace InventoryKamera
 			NumWorkers = Math.Min(baseWorkers, userCap);
 
 			Logger.Info("Kamera initialized");
+		}
+
+		internal GameDataSnapshot GameData => gameData;
+
+		private void ConfigurePerScanCharacterNames()
+		{
+			var customNames = new Dictionary<string, string>();
+			string travelerName = string.IsNullOrWhiteSpace(scanSettings.TravelerName)
+				? CharacterScraper.ScanMainCharacterName(ocrService, imagePreprocessor, progressReporter)
+				: scanSettings.TravelerName.ToLower();
+
+			if (!string.IsNullOrWhiteSpace(travelerName))
+			{
+				AddCustomName(customNames, "traveler", travelerName);
+				progressReporter.SetMainCharacterName(travelerName);
+			}
+			else
+			{
+				progressReporter.AddError("Could not parse Traveler's username");
+			}
+
+			AddCustomName(customNames, "wanderer", scanSettings.WandererName);
+			AddCustomName(customNames, "manequin1", scanSettings.Manequin1Name);
+			AddCustomName(customNames, "manequin2", scanSettings.Manequin2Name);
+			gameData = gameData.WithCharacterCustomNames(customNames);
+		}
+
+		private void AddCustomName(Dictionary<string, string> customNames, string target, string name)
+		{
+			string targetKey = GameDataSnapshot.NormalizeKey(target);
+			string nameKey = GameDataSnapshot.NormalizeKey(name);
+			if (targetKey == nameKey) return;
+
+			if (gameData.Characters.ContainsKey(nameKey))
+			{
+				Logger.Error("{0} already exists as a character in the game. " +
+					"This may wind up confusing Kamera when connecting items for {1}.", nameKey, targetKey);
+			}
+
+			if (!gameData.Characters.ContainsKey(targetKey))
+				throw new KeyNotFoundException($"Could not find '{targetKey}' entry in characters.json");
+
+			customNames[targetKey] = nameKey;
+			Logger.Info("Internally set {0} custom name to {1}", targetKey, nameKey);
+		}
+
+		private void InitializeScrapers()
+		{
+			weaponScraper = new WeaponScraper(
+				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
+			artifactScraper = new ArtifactScraper(
+				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
+			characterScraper = new CharacterScraper(
+				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
+			materialScraper = new MaterialScraper(
+				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
 		}
 
 		public void ResetLogging()
@@ -110,8 +171,6 @@ namespace InventoryKamera
 		{
 			ResetLogging();
 
-			GenshinProcesor.ReloadData();
-
 			// Initialize Image Processors
 			scanSession.StartWorkers(NumWorkers, ImageProcessorWorkerAsync);
 			Logger.Debug("Added {0} workers", NumWorkers);
@@ -121,16 +180,8 @@ namespace InventoryKamera
 			ocrService.Restart();
 
 
-			// Assign Traveler's custom name
-			GenshinProcesor.AssignTravelerName(scanSettings.TravelerName, ocrService, imagePreprocessor, progressReporter);
-
-            // Assign Wanderer's custom name
-            GenshinProcesor.UpdateCharacterName("wanderer", scanSettings.WandererName);
-
-			// GenshinProcesor.ReloadData() (above) ensures manequin1/manequin2 exist in characters.json
-			// via the JSON object model, so these are now guaranteed to succeed.
-			GenshinProcesor.UpdateCharacterName("manequin1", scanSettings.Manequin1Name);
-			GenshinProcesor.UpdateCharacterName("manequin2", scanSettings.Manequin2Name);
+			ConfigurePerScanCharacterNames();
+			InitializeScrapers();
 
 			bool scanInventory = scanSettings.ScanWeapons || scanSettings.ScanArtifacts
 				|| scanSettings.ScanCharDevItems || scanSettings.ScanMaterials;
@@ -626,7 +677,7 @@ namespace InventoryKamera
 				}
 				if (character.Weapon is null)
 				{
-					Inventory.Add(new Weapon(character.WeaponType, character.NameGOOD));
+					Inventory.Add(new Weapon(character.WeaponType, character.NameGOOD, gameData));
 					Logger.Info("Default weapon assigned to {0}", character.NameGOOD);
 				}
 			}

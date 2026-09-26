@@ -14,6 +14,7 @@ namespace InventoryKamera
     internal class WeaponScraper : InventoryScraper
     {
 		private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
+		private readonly GameDataSnapshot gameData;
 
 		// Set by ScanWeapons from SetSortMode's result; QueueScan
 		// only trusts the sorted-order early-stop optimization when this is true.
@@ -24,9 +25,11 @@ namespace InventoryKamera
             IImagePreprocessor imagePreprocessor,
             IScanSettings scanSettings,
             IScanProgressReporter progressReporter,
-            ScanSession scanSession)
+            ScanSession scanSession,
+            GameDataSnapshot gameData)
             : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
         {
+			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
             inventoryPage = InventoryPage.Weapons;
             SortByLevel = scanSettings.MinimumWeaponLevel > 1;
         }
@@ -379,19 +382,19 @@ namespace InventoryKamera
 
 				await Task.WhenAll(tasks.ToArray());
 			}
-			return (new Weapon(name, level, ascended, refinementLevel, locked, equippedCharacter, id, rarity), pendingName);
+			return (new Weapon(name, level, ascended, refinementLevel, locked, equippedCharacter, id, rarity, gameData), pendingName);
 		}
 
         public bool IsEnhancementMaterial(Bitmap nameBitmap)
 		{
 			string material = ScanEnchancementOreName(nameBitmap);
-			return !string.IsNullOrWhiteSpace(material) && GenshinProcesor.enhancementMaterials.Contains(material.ToLower());
+			return !string.IsNullOrWhiteSpace(material) && gameData.EnhancementMaterials.Contains(material.ToLower());
 		}
 
 		public string ScanEnchancementOreName(Bitmap bm)
 		{
 			// Analyze
-			string name = GenshinProcesor.FindClosestMaterialName(ScanItemName(bm), minConfidence: 95);
+			string name = TextNormalizer.FindClosestMaterialName(ScanItemName(bm), gameData, minConfidence: 95);
 
 			return name;
 		}
@@ -400,7 +403,7 @@ namespace InventoryKamera
 
 		private string ScanWeaponName(string name)
         {
-            return GenshinProcesor.FindClosestWeapon(name);
+            return TextNormalizer.FindClosestWeapon(name, gameData);
         }
 
         /// <summary>
@@ -498,7 +501,7 @@ namespace InventoryKamera
 					var name = extractedString.Split(':')[1];
 
 					name = Regex.Replace(name, @"[\W]", string.Empty).ToLower();
-					name = GenshinProcesor.FindClosestCharacterName(name);
+					name = TextNormalizer.FindClosestCharacterName(name, gameData);
 
 					return name;
 				}

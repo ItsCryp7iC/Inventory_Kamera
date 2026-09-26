@@ -7,7 +7,6 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 
@@ -70,76 +69,42 @@ namespace InventoryKamera
 			"Manequin2"
 		};
 
-		internal static Dictionary<string, string> Weapons, DevItems, Materials, Elements;
+		internal static Dictionary<string, string> Weapons = new Dictionary<string, string>();
+		internal static Dictionary<string, string> DevItems = new Dictionary<string, string>();
+		internal static Dictionary<string, string> Materials = new Dictionary<string, string>();
+		internal static Dictionary<string, string> Elements = new Dictionary<string, string>();
 
-		internal static Dictionary<string, JObject> Characters, Artifacts;
+		internal static Dictionary<string, JObject> Characters = new Dictionary<string, JObject>();
+		internal static Dictionary<string, JObject> Artifacts = new Dictionary<string, JObject>();
 
 		static GenshinProcesor()
         {
-			ReloadData();
-
-			Elements = new Dictionary<string, string>();
 			foreach (var element in elements)
 			{
-				Stats.Add($"{element.ToLower()}dmgbonus", $"{element.ToLower()}_dmg_");  // ["anemodmgbonus"] = "anemo_dmg_"
+				Stats.Add($"{element}dmgbonus", $"{element}_dmg_");
 				Elements.Add(element, char.ToUpper(element[0]) + element.Substring(1));
 			}
-
 			Logger.Info("Scraper initialized");
         }
 
+		/// <summary>
+		/// Refreshes the legacy static compatibility dictionaries from one coherent snapshot. New scan
+		/// code receives its own <see cref="GameDataSnapshot"/> and does not read these fields.
+		/// </summary>
 		internal static void ReloadData()
         {
-			var listManager = new DatabaseManager();
-
-			Characters = listManager.LoadCharacters();
-			Artifacts = listManager.LoadArtifacts();
-			Weapons = listManager.LoadWeapons();
-			DevItems = listManager.LoadDevItems();
-			Materials = listManager.LoadMaterials();
-
-			EnsureManequinEntriesExist(listManager.ListsDir);
-		}
-
-		private static readonly string[] manequinKeys = { "manequin1", "manequin2" };
-
-		/// <summary>
-		/// GOOD doesn't support manequins, so characters.json omits them from the app's hosted data.
-		/// Add placeholder entries (excluded from scanning by name, same as before) if they're
-		/// missing, via the JSON object model rather than string-surgery on the file, and persist
-		/// them so future loads don't need to patch again.
-		/// </summary>
-		private static void EnsureManequinEntriesExist(string listsDir)
-		{
-			bool added = false;
-			foreach (var key in manequinKeys)
-			{
-				if (!Characters.ContainsKey(key))
-				{
-					Characters[key] = BuildManequinEntry(key);
-					added = true;
-				}
-			}
-
-			if (!added) return;
-
-			File.WriteAllText(Path.Combine(listsDir, "characters.json"),
-				JsonConvert.SerializeObject(new SortedDictionary<string, JObject>(Characters), Newtonsoft.Json.Formatting.Indented));
-			Logger.Info("Added missing manequin entries to characters.json");
+			GameDataSnapshot snapshot = new GameDataSnapshotFactory().Load();
+			Characters = new Dictionary<string, JObject>(snapshot.Characters);
+			Artifacts = new Dictionary<string, JObject>(snapshot.Artifacts);
+			Weapons = new Dictionary<string, string>(snapshot.Weapons);
+			DevItems = new Dictionary<string, string>(snapshot.CharacterDevelopmentItems);
+			Materials = new Dictionary<string, string>(snapshot.Materials);
+			Stats = new Dictionary<string, string>(snapshot.Stats);
+			Elements = new Dictionary<string, string>(snapshot.Elements);
 		}
 
 		internal static JObject BuildManequinEntry(string key)
-		{
-			string good = char.ToUpper(key[0]) + key.Substring(1); // "manequin1" -> "Manequin1"
-			return new JObject
-			{
-				["GOOD"] = good,
-				["ConstellationName"] = new JArray("Support entry to omit manequins during scanning; GOOD does not support manequins."),
-				["ConstellationOrder"] = new JArray("burst", "skill"),
-				["Element"] = new JArray("electro", "pyro", "dendro", "geo", "hydro", "anemo"),
-				["WeaponType"] = 0
-			};
-		}
+			=> GameDataSnapshotFactory.BuildManequinEntry(key);
 
 		internal static void UpdateCharacterName(string target, string name)
         {
@@ -178,9 +143,8 @@ namespace InventoryKamera
 
 		#region Check valid parameters
 
-		// Thin forwarding wrappers to the extracted LookupService (Phase 2 §2.1), passing this
-		// class's current static lookup dictionaries each call -- kept so existing call sites don't
-		// need to change, and always fresh since ReloadData() reassigns these dictionaries per scan.
+		// Legacy forwarding wrappers pass the compatibility dictionaries explicitly. New scanner
+		// consumers use LookupService overloads that receive their scan's GameDataSnapshot instead.
 
 		internal static bool IsValidSetName(string setName) => LookupService.IsValidSetName(setName, Artifacts);
 
@@ -202,9 +166,8 @@ namespace InventoryKamera
 
 		#region Element Searching
 
-		// Thin forwarding wrappers to the extracted TextNormalizer (Phase 2 §2.1), passing this
-		// class's current static lookup dictionaries each call -- same reasoning as the
-		// "Check valid parameters" region above: always fresh, no staleness risk from ReloadData().
+		// Legacy forwarding wrappers pass the compatibility dictionaries explicitly. New scanner
+		// consumers use TextNormalizer overloads that receive their scan's GameDataSnapshot instead.
 
 		internal static string FindClosestGearSlot(string input) => TextNormalizer.FindClosestGearSlot(input, gearSlots);
 

@@ -7,18 +7,15 @@ namespace InventoryKamera
 {
     /// <summary>
     /// Fuzzy-matches noisy OCR text against the game's lookup data (gear slots/stats/elements/
-    /// weapons/artifact sets/characters/materials). Extracted from <see cref="GenshinProcesor"/>'s
-    /// "Element Searching" region (Phase 2 §2.1) as pure functions of <c>(data, input)</c>, same
-    /// reasoning as <see cref="LookupService"/>: <c>GenshinProcesor.ReloadData()</c> reassigns its
-    /// lookup dictionaries every scan, so a service capturing them at construction would go stale.
-    /// <c>GenshinProcesor</c>'s existing <c>FindClosestX</c> methods now forward here, passing their
-    /// current static fields each call.
+    /// weapons/artifact sets/characters/materials). Scanner consumers pass one stable
+    /// <see cref="GameDataSnapshot"/> for the complete run; raw read-only collection overloads remain
+    /// useful for synthetic tests and the legacy GenshinProcesor forwarding surface.
     /// </summary>
     internal static class TextNormalizer
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
-        internal static string FindClosestGearSlot(string input, ICollection<string> gearSlots)
+        internal static string FindClosestGearSlot(string input, IEnumerable<string> gearSlots)
         {
             foreach (var slot in gearSlots)
             {
@@ -30,19 +27,19 @@ namespace InventoryKamera
             return input;
         }
 
-        internal static string FindClosestStat(string stat, Dictionary<string, string> stats, int minConfidence = 90) =>
+        internal static string FindClosestStat(string stat, IReadOnlyDictionary<string, string> stats, int minConfidence = 90) =>
             FindClosestInDict(source: stat, targets: stats, minConfidence: minConfidence);
 
-        internal static string FindElementByName(string name, Dictionary<string, string> elements, int minConfidence = 90) =>
+        internal static string FindElementByName(string name, IReadOnlyDictionary<string, string> elements, int minConfidence = 90) =>
             FindClosestInDict(source: name, targets: elements, minConfidence: minConfidence);
 
-        internal static string FindClosestWeapon(string name, Dictionary<string, string> weapons, int maxEdits = 90) =>
+        internal static string FindClosestWeapon(string name, IReadOnlyDictionary<string, string> weapons, int maxEdits = 90) =>
             FindClosestInDict(source: name, targets: weapons, minConfidence: maxEdits);
 
-        internal static string FindClosestSetName(string name, Dictionary<string, JObject> artifacts, int minConfidence = 90) =>
+        internal static string FindClosestSetName(string name, IReadOnlyDictionary<string, JObject> artifacts, int minConfidence = 90) =>
             FindClosestInDict(source: name, targets: artifacts, minConfidence: minConfidence);
 
-        internal static string FindClosestArtifactSetFromArtifactName(string name, Dictionary<string, JObject> artifacts, int minConfidence = 90)
+        internal static string FindClosestArtifactSetFromArtifactName(string name, IReadOnlyDictionary<string, JObject> artifacts, int minConfidence = 90)
         {
             if (string.IsNullOrWhiteSpace(name)) return "";
             string closestMatch = null;
@@ -70,7 +67,7 @@ namespace InventoryKamera
             return closestMatch;
         }
 
-        internal static string FindClosestCharacterName(string name, Dictionary<string, JObject> characters, int minConfidence = 90)
+        internal static string FindClosestCharacterName(string name, IReadOnlyDictionary<string, JObject> characters, int minConfidence = 90)
         {
             var temp = new Dictionary<string, JObject>();
             foreach (var character in characters)
@@ -81,19 +78,19 @@ namespace InventoryKamera
             return FindClosestInDict(source: name, targets: temp, minConfidence: minConfidence);
         }
 
-        internal static string FindClosestDevelopmentName(string name, Dictionary<string, string> devItems, Dictionary<string, string> materials, int minConfidence = 90)
+        internal static string FindClosestDevelopmentName(string name, IReadOnlyDictionary<string, string> devItems, IReadOnlyDictionary<string, string> materials, int minConfidence = 90)
         {
             string value = FindClosestInDict(source: name, targets: devItems, minConfidence: minConfidence);
             return !string.IsNullOrWhiteSpace(value) ? value : FindClosestInDict(source: name, targets: materials, minConfidence: minConfidence);
         }
 
-        internal static string FindClosestMaterialName(string name, Dictionary<string, string> materials, int minConfidence = 90)
+        internal static string FindClosestMaterialName(string name, IReadOnlyDictionary<string, string> materials, int minConfidence = 90)
         {
             string value = FindClosestInDict(source: name, targets: materials, minConfidence: minConfidence);
             return !string.IsNullOrWhiteSpace(value) ? value : FindClosestInDict(source: name, targets: materials, minConfidence: minConfidence);
         }
 
-        private static string FindClosestInDict(string source, Dictionary<string, string> targets, int minConfidence)
+        private static string FindClosestInDict(string source, IReadOnlyDictionary<string, string> targets, int minConfidence)
         {
             if (string.IsNullOrWhiteSpace(source)) return "";
             if (targets.TryGetValue(source, out string value)) return value;
@@ -107,7 +104,7 @@ namespace InventoryKamera
             return targets.TryGetValue(source, out value) ? value : source;
         }
 
-        private static string FindClosestInDict(string source, Dictionary<string, JObject> targets, int minConfidence)
+        private static string FindClosestInDict(string source, IReadOnlyDictionary<string, JObject> targets, int minConfidence)
         {
             if (string.IsNullOrWhiteSpace(source)) return "";
             if (targets.TryGetValue(source, out JObject value)) return (string)value["GOOD"];
@@ -151,6 +148,33 @@ namespace InventoryKamera
 
             return mostSimilarString;
         }
+
+        internal static string FindClosestGearSlot(string input, GameDataSnapshot data) =>
+            FindClosestGearSlot(input, data.GearSlots);
+
+        internal static string FindClosestStat(string input, GameDataSnapshot data, int minConfidence = 90) =>
+            FindClosestStat(input, data.Stats, minConfidence);
+
+        internal static string FindElementByName(string input, GameDataSnapshot data, int minConfidence = 90) =>
+            FindElementByName(input, data.Elements, minConfidence);
+
+        internal static string FindClosestWeapon(string input, GameDataSnapshot data, int minConfidence = 90) =>
+            FindClosestWeapon(input, data.Weapons, minConfidence);
+
+        internal static string FindClosestSetName(string input, GameDataSnapshot data, int minConfidence = 90) =>
+            FindClosestSetName(input, data.Artifacts, minConfidence);
+
+        internal static string FindClosestArtifactSetFromArtifactName(string input, GameDataSnapshot data, int minConfidence = 90) =>
+            FindClosestArtifactSetFromArtifactName(input, data.Artifacts, minConfidence);
+
+        internal static string FindClosestCharacterName(string input, GameDataSnapshot data, int minConfidence = 90) =>
+            FindClosestCharacterName(input, data.Characters, minConfidence);
+
+        internal static string FindClosestDevelopmentName(string input, GameDataSnapshot data, int minConfidence = 90) =>
+            FindClosestDevelopmentName(input, data.CharacterDevelopmentItems, data.Materials, minConfidence);
+
+        internal static string FindClosestMaterialName(string input, GameDataSnapshot data, int minConfidence = 90) =>
+            FindClosestMaterialName(input, data.Materials, minConfidence);
 
         private static int LevenshteinDistance(string s1, string s2)
         {

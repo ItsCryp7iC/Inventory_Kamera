@@ -10,6 +10,7 @@ namespace InventoryKamera
         private string _nameKey;
         private string _element;
         private WeaponType _weaponType;
+        private GameDataSnapshot gameData;
 
         [JsonProperty("key")]
         public string NameGOOD
@@ -55,7 +56,7 @@ namespace InventoryKamera
         [JsonIgnore]
         public WeaponType WeaponType { 
             
-            get => GenshinProcesor.Characters[_nameKey.ToLower()]["WeaponType"].ToObject<WeaponType>();
+            get => (gameData == null ? GenshinProcesor.Characters : gameData.Characters)[_nameKey.ToLower()]["WeaponType"].ToObject<WeaponType>();
             
             internal set { WeaponType = value; } 
         }
@@ -95,7 +96,9 @@ namespace InventoryKamera
 
         public bool HasValidName()
         {
-            return !string.IsNullOrWhiteSpace(NameGOOD) && GenshinProcesor.IsValidCharacter(NameGOOD);
+            return !string.IsNullOrWhiteSpace(NameGOOD) && (gameData == null
+                ? GenshinProcesor.IsValidCharacter(NameGOOD)
+                : LookupService.IsValidCharacter(NameGOOD, gameData));
         }
 
         public bool HasValidLevel()
@@ -105,7 +108,9 @@ namespace InventoryKamera
 
         public bool HasValidElement()
         {
-            return !string.IsNullOrWhiteSpace(Element) && GenshinProcesor.IsValidElement(Element);
+            return !string.IsNullOrWhiteSpace(Element) && (gameData == null
+                ? GenshinProcesor.IsValidElement(Element)
+                : LookupService.IsValidElement(Element, gameData));
         }
 
         public bool HasValidConstellation()
@@ -126,6 +131,8 @@ namespace InventoryKamera
         {
             Weapon = newWeapon;
         }
+
+        internal void UseGameData(GameDataSnapshot data) => gameData = data;
 
         public void AssignArtifact(Artifact artifact)
         {

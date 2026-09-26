@@ -51,6 +51,9 @@ namespace InventoryKamera
 
             scanViewModel = new ScanViewModel();
             databaseManager = new DatabaseManager();
+            // Explicit legacy-UI compatibility load. Scanner runs use their own GameDataSnapshot and
+            // no longer rely on GenshinProcesor's static constructor to perform hidden file I/O.
+            GenshinProcesor.ReloadData();
 
             BindSettings();
 

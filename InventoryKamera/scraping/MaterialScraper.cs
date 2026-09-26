@@ -36,6 +36,7 @@ namespace InventoryKamera
 	internal class MaterialScraper : InventoryScraper
 	{
 		private static NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+		private readonly GameDataSnapshot gameData;
 
 
 		public MaterialScraper(
@@ -43,9 +44,11 @@ namespace InventoryKamera
 			IImagePreprocessor imagePreprocessor,
 			IScanSettings scanSettings,
 			IScanProgressReporter progressReporter,
-			ScanSession scanSession)
+			ScanSession scanSession,
+			GameDataSnapshot gameData)
 			: base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
 		{
+			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			inventoryPage = InventoryPage.CharacterDevelopmentItems;
 		}
 
@@ -55,9 +58,11 @@ namespace InventoryKamera
 			IScanSettings scanSettings,
 			IScanProgressReporter progressReporter,
 			ScanSession scanSession,
+			GameDataSnapshot gameData,
 			InventoryPage section)
 			: base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
 		{
+			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			inventoryPage = section;
 		}
 
@@ -146,10 +151,10 @@ namespace InventoryKamera
 			text = Regex.Replace(text, @"[\W\s]", string.Empty).ToLower();
 
 			if (inventoryPage == InventoryPage.CharacterDevelopmentItems)
-				return GenshinProcesor.FindClosestDevelopmentName(text);
+				return TextNormalizer.FindClosestDevelopmentName(text, gameData);
 
 			if (inventoryPage == InventoryPage.Materials)
-				return GenshinProcesor.FindClosestMaterialName(text);
+				return TextNormalizer.FindClosestMaterialName(text, gameData);
 
 			return null;
 		}

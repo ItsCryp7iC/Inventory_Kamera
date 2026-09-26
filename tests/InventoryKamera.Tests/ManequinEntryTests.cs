@@ -4,11 +4,8 @@ using Xunit;
 namespace InventoryKamera.Tests
 {
     /// <summary>
-    /// Characterization tests for the manequin placeholder entries GenshinProcesor bootstraps into
-    /// characters.json when they're missing (GOOD doesn't support manequins, so the app's hosted
-    /// data omits them). Replaces the previous string-surgery-on-JSON-file hack; this pins the shape
-    /// of the object-model replacement. Only exercises the pure entry-building logic — not the
-    /// containing GenshinProcesor.ReloadData(), whose static constructor does real engine/disk I/O.
+    /// Characterization tests for the manequin placeholder entries the game-data loader adds when
+    /// hosted data omits them. These tests pin the shape of the pure object-model entry builder.
     /// </summary>
     public class ManequinEntryTests
     {

@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace InventoryKamera.Tests
@@ -15,8 +17,18 @@ namespace InventoryKamera.Tests
 
             Assert.NotNull(run.Session);
             Assert.Null(run.Scanner);
-            Assert.NotNull(run.InitializeScanner());
-            Assert.Same(run.Scanner, run.InitializeScanner());
+            var gameData = new GameDataSnapshot(
+                new Dictionary<string, JObject>(),
+                new Dictionary<string, JObject>(),
+                new Dictionary<string, string>(),
+                new Dictionary<string, string>(),
+                new Dictionary<string, string>(),
+                new Dictionary<string, string>(),
+                new Dictionary<string, string>(),
+                Array.Empty<string>(),
+                Array.Empty<string>());
+            Assert.NotNull(run.InitializeScanner(gameData));
+            Assert.Same(run.Scanner, run.InitializeScanner(gameData));
             Assert.False(run.Session.IsCancellationRequested);
             owner.Complete(run);
         }

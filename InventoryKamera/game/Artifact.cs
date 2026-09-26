@@ -9,6 +9,7 @@ namespace InventoryKamera
 	[Serializable]
 	public class Artifact
 	{
+		private readonly GameDataSnapshot gameData;
 		[JsonProperty("setKey")]
 		public string SetName { get; private set; }
 
@@ -53,8 +54,9 @@ namespace InventoryKamera
 			Id = 0;
 		}
 
-		public Artifact(string _setName, int _rarity, int _level, string _gearSlot, string _mainStat, List<SubStat> _subStats, List<SubStat> _unactivatedSubStats, string _equippedCharacter = null, int _id = 0, bool _Lock = false)
+		public Artifact(string _setName, int _rarity, int _level, string _gearSlot, string _mainStat, List<SubStat> _subStats, List<SubStat> _unactivatedSubStats, string _equippedCharacter = null, int _id = 0, bool _Lock = false, GameDataSnapshot gameData = null)
 		{
+			this.gameData = gameData;
 			GearSlot = string.IsNullOrWhiteSpace(_gearSlot) ? "" : _gearSlot;
 			Rarity = _rarity;
 			MainStat = string.IsNullOrWhiteSpace(_mainStat) ? "" : _mainStat;
@@ -91,17 +93,23 @@ namespace InventoryKamera
 
 		public bool HasValidSlot()
 		{
-			return GenshinProcesor.IsValidSlot(GearSlot);
+			return gameData == null
+				? GenshinProcesor.IsValidSlot(GearSlot)
+				: LookupService.IsValidSlot(GearSlot, gameData);
 		}
 
 		public bool HasValidSetName()
 		{
-			return GenshinProcesor.IsValidSetName(SetName);
+			return gameData == null
+				? GenshinProcesor.IsValidSetName(SetName)
+				: LookupService.IsValidSetName(SetName, gameData);
 		}
 
 		public bool HasValidMainStat()
 		{
-			return GenshinProcesor.IsValidStat(MainStat);
+			return gameData == null
+				? GenshinProcesor.IsValidStat(MainStat)
+				: LookupService.IsValidStat(MainStat, gameData);
 		}
 
 		public bool HasValidSubStats()
@@ -111,7 +119,9 @@ namespace InventoryKamera
 			SubStats.ForEach(s =>
 			{
                 if (!string.IsNullOrWhiteSpace(s.stat) &&
-                    (!GenshinProcesor.IsValidStat(s.stat) || s.value == (decimal)(-1.0)))
+                    (!(gameData == null
+						? GenshinProcesor.IsValidStat(s.stat)
+						: LookupService.IsValidStat(s.stat, gameData)) || s.value == (decimal)(-1.0)))
                 {
                     valid = false;
                 }
@@ -122,7 +132,9 @@ namespace InventoryKamera
 
 		public bool HasValidEquippedCharacter()
 		{
-			return string.IsNullOrWhiteSpace(EquippedCharacter) || GenshinProcesor.IsValidCharacter(EquippedCharacter);
+			return string.IsNullOrWhiteSpace(EquippedCharacter) || (gameData == null
+				? GenshinProcesor.IsValidCharacter(EquippedCharacter)
+				: LookupService.IsValidCharacter(EquippedCharacter, gameData));
 		}
 
 		[Serializable]

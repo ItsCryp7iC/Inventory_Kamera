@@ -6,6 +6,7 @@ namespace InventoryKamera
 {
 	public class Weapon
 	{
+		private readonly GameDataSnapshot gameData;
 		[JsonProperty("key")]
 		public string Name { get; private set; }
 
@@ -44,8 +45,9 @@ namespace InventoryKamera
 			Rarity = -1;
 		}
 
-		public Weapon(WeaponType _weaponType, string _equippedCharacter)
+		public Weapon(WeaponType _weaponType, string _equippedCharacter, GameDataSnapshot gameData = null)
 		{
+			this.gameData = gameData;
 			WeaponType = _weaponType;
 			Level = 1;
 			Rarity = 1;
@@ -74,8 +76,9 @@ namespace InventoryKamera
 			}
 		}
 
-		public Weapon(string _name, int _level, bool _ascended, int _refinementLevel, bool locked = false, string _equippedCharacter = null, int _id = 0, int _rarity = -1)
+		public Weapon(string _name, int _level, bool _ascended, int _refinementLevel, bool locked = false, string _equippedCharacter = null, int _id = 0, int _rarity = -1, GameDataSnapshot gameData = null)
 		{
+			this.gameData = gameData;
 			Name = string.IsNullOrWhiteSpace(_name) ? "" : _name;
 			Level = _level;
 			Ascended = _ascended;
@@ -115,12 +118,16 @@ namespace InventoryKamera
 
 		public bool HasValidWeaponName()
 		{
-			return GenshinProcesor.IsValidWeapon(Name);
+			return gameData == null
+				? GenshinProcesor.IsValidWeapon(Name)
+				: LookupService.IsValidWeapon(Name, gameData);
 		}
 
 		public bool HasValidEquippedCharacter()
 		{
-			return string.IsNullOrWhiteSpace(EquippedCharacter) || GenshinProcesor.IsValidCharacter(EquippedCharacter) ;
+			return string.IsNullOrWhiteSpace(EquippedCharacter) || (gameData == null
+				? GenshinProcesor.IsValidCharacter(EquippedCharacter)
+				: LookupService.IsValidCharacter(EquippedCharacter, gameData));
 		}
 
 		public int AscensionCount()

@@ -143,8 +143,9 @@ namespace InventoryKamera.game
                 var imagePreprocessor = new ImageProcessor();
                 var scanSettings = new FixedCharacterCountScanSettings();
                 using var scanSession = new ScanSession();
+                var gameData = new GameDataSnapshotFactory().Load();
                 var scraper = new CharacterScraper(
-                    ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession);
+                    ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
                 var paimonNavigator = new PaimonMenuNavigator(
                     navigator,
                     new PaimonMenuDetector(ocrService, imagePreprocessor),

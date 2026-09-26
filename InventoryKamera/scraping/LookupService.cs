@@ -1,23 +1,17 @@
 using Newtonsoft.Json.Linq;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace InventoryKamera
 {
     /// <summary>
-    /// Validity checks against the game's lookup data (characters/weapons/artifacts/materials/stats).
-    /// Extracted from <see cref="GenshinProcesor"/> (Phase 2 §2.1) as pure functions of
-    /// <c>(data, input)</c> rather than an injected/stateful service: <c>GenshinProcesor.ReloadData()</c>
-    /// *reassigns* its lookup dictionaries each scan (a fresh <see cref="Dictionary{TKey,TValue}"/>
-    /// object, not an in-place mutation), so a service that captured them in a constructor would go
-    /// stale after the first reload. Taking them as parameters sidesteps that entirely — same
-    /// stateless-static-class shape as <see cref="ImageProcessing"/> from Phase 1, appropriate here
-    /// because none of these checks need any state of their own once the data is explicit.
-    /// <c>GenshinProcesor</c>'s existing <c>IsValidX</c> methods now forward here, passing their
-    /// current static fields each call (always fresh, no staleness risk).
+    /// Pure validity checks against explicitly supplied game lookup data. Scanner consumers pass one
+    /// stable <see cref="GameDataSnapshot"/> for the complete run; raw read-only collection overloads
+    /// remain useful for synthetic tests and the legacy GenshinProcesor forwarding surface.
     /// </summary>
     internal static class LookupService
     {
-        internal static bool IsValidSetName(string setName, Dictionary<string, JObject> artifacts)
+        internal static bool IsValidSetName(string setName, IReadOnlyDictionary<string, JObject> artifacts)
         {
             if (artifacts.TryGetValue(setName, out _) || artifacts.TryGetValue(setName.ToLower(), out _)) return true;
             foreach (var artifactSet in artifacts.Values)
@@ -27,39 +21,71 @@ namespace InventoryKamera
             return false;
         }
 
-        internal static bool IsValidMaterial(string name, Dictionary<string, string> materials)
+        internal static bool IsValidMaterial(string name, IReadOnlyDictionary<string, string> materials)
         {
-            return materials.ContainsValue(name) || materials.ContainsKey(name.ToLower());
+            return materials.Values.Contains(name) || materials.ContainsKey(name.ToLower());
         }
 
-        internal static bool IsValidStat(string stat, Dictionary<string, string> stats)
+        internal static bool IsValidStat(string stat, IReadOnlyDictionary<string, string> stats)
         {
-            return stats.ContainsValue(stat);
+            return stats.Values.Contains(stat);
         }
 
-        internal static bool IsValidSlot(string gearSlot, ICollection<string> gearSlots)
+        internal static bool IsValidSlot(string gearSlot, IEnumerable<string> gearSlots)
         {
             return gearSlots.Contains(gearSlot);
         }
 
-        internal static bool IsValidCharacter(string character, Dictionary<string, JObject> characters)
+        internal static bool IsValidCharacter(string character, IReadOnlyDictionary<string, JObject> characters)
         {
             return character.Contains("Traveler") || character == "Wanderer" || character == "Manequin1" || character == "Manequin2" || characters.ContainsKey(character.ToLower());
         }
 
-        internal static bool IsValidElement(string element, Dictionary<string, string> elements)
+        internal static bool IsValidElement(string element, IReadOnlyDictionary<string, string> elements)
         {
-            return elements.ContainsValue(element) || elements.ContainsKey(element.ToLower());
+            return elements.Values.Contains(element) || elements.ContainsKey(element.ToLower());
         }
 
-        internal static bool IsEnhancementMaterial(string material, ICollection<string> enhancementMaterials, Dictionary<string, string> materials)
+        internal static bool IsEnhancementMaterial(string material, IEnumerable<string> enhancementMaterials, IReadOnlyDictionary<string, string> materials)
         {
-            return enhancementMaterials.Contains(material.ToLower()) || materials.ContainsValue(material) || materials.ContainsKey(material.ToLower());
+            return enhancementMaterials.Contains(material.ToLower()) || materials.Values.Contains(material) || materials.ContainsKey(material.ToLower());
         }
 
-        internal static bool IsValidWeapon(string weapon, Dictionary<string, string> weapons)
+        internal static bool IsValidWeapon(string weapon, IReadOnlyDictionary<string, string> weapons)
         {
-            return weapons.ContainsValue(weapon) || weapons.ContainsKey(weapon.ToLower());
+            return weapons.Values.Contains(weapon) || weapons.ContainsKey(weapon.ToLower());
+        }
+
+        internal static bool IsValidSetName(string value, GameDataSnapshot data) => IsValidSetName(value, data.Artifacts);
+        internal static bool IsValidMaterial(string value, GameDataSnapshot data) => IsValidMaterial(value, data.Materials);
+        internal static bool IsValidStat(string value, GameDataSnapshot data) => IsValidStat(value, data.Stats);
+        internal static bool IsValidSlot(string value, GameDataSnapshot data) => IsValidSlot(value, data.GearSlots);
+        internal static bool IsValidCharacter(string value, GameDataSnapshot data) => IsValidCharacter(value, data.Characters);
+        internal static bool IsValidElement(string value, GameDataSnapshot data) => IsValidElement(value, data.Elements);
+        internal static bool IsEnhancementMaterial(string value, GameDataSnapshot data) =>
+            IsEnhancementMaterial(value, data.EnhancementMaterials, data.Materials);
+        internal static bool IsValidWeapon(string value, GameDataSnapshot data) => IsValidWeapon(value, data.Weapons);
+
+        internal static IReadOnlyList<string> GetCharacterElements(string name, GameDataSnapshot data)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return new string[0];
+            return data.Characters.TryGetValue(name.ToLower(), out JObject character)
+                ? character["Element"]?.ToObject<List<string>>()
+                : null;
+        }
+
+        internal static bool CharacterMatchesElement(string name, string element, GameDataSnapshot data)
+        {
+            IReadOnlyList<string> elements = GetCharacterElements(name, data);
+            return elements != null && !string.IsNullOrWhiteSpace(element) && elements.Contains(element.ToLower());
+        }
+
+        internal static bool IsFourStarCharacter(string name, GameDataSnapshot data)
+        {
+            string key = name.Contains("Traveler") ? "traveler" : name.ToLower();
+            return data.Characters.TryGetValue(key, out JObject character)
+                && character["Rarity"] != null
+                && character["Rarity"].ToObject<int>() == 4;
         }
     }
 }
