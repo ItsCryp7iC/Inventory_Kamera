@@ -9,7 +9,7 @@ namespace InventoryKamera
     /// Fuzzy-matches noisy OCR text against the game's lookup data (gear slots/stats/elements/
     /// weapons/artifact sets/characters/materials). Scanner consumers pass one stable
     /// <see cref="GameDataSnapshot"/> for the complete run; raw read-only collection overloads remain
-    /// useful for synthetic tests and the legacy GenshinProcesor forwarding surface.
+    /// useful for small synthetic tests.
     /// </summary>
     internal static class TextNormalizer
     {

@@ -7,7 +7,7 @@ namespace InventoryKamera
     /// <summary>
     /// Pure validity checks against explicitly supplied game lookup data. Scanner consumers pass one
     /// stable <see cref="GameDataSnapshot"/> for the complete run; raw read-only collection overloads
-    /// remain useful for synthetic tests and the legacy GenshinProcesor forwarding surface.
+    /// remain useful for small synthetic tests.
     /// </summary>
     internal static class LookupService
     {

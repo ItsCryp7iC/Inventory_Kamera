@@ -7,7 +7,6 @@ using Xunit;
 
 namespace InventoryKamera.Tests
 {
-    [Collection(GameDataProviderCollection.Name)]
     public class SpecialCharacterMetadataTests
     {
         [Fact]
@@ -169,25 +168,16 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
-        public void MatchingUsesSuppliedSnapshotInsteadOfCompatibilityState()
+        public void MatchingUsesOnlySuppliedSnapshot()
         {
-            GameDataSnapshot originalCompatibility = GenshinProcesor.CompatibilitySnapshot;
-            try
-            {
-                GameDataSnapshot adversarial = CreateBaseSnapshot().WithCharacterCustomNames(
-                    new Dictionary<string, string> { ["manequin1"] = "Unrelated Alias" });
-                GenshinProcesor.InstallCompatibilitySnapshot(adversarial);
-                GameDataSnapshot supplied = CreateCustomizedSnapshot();
+            GameDataSnapshot adversarial = CreateBaseSnapshot().WithCharacterCustomNames(
+                new Dictionary<string, string> { ["manequin1"] = "Unrelated Alias" });
+            GameDataSnapshot supplied = CreateCustomizedSnapshot();
 
-                Assert.Equal("Manequin1", Resolve("Luna", "cryo", supplied));
-                Assert.NotEqual(
-                    "Manequin1",
-                    TextNormalizer.FindClosestCharacterName("luna", adversarial));
-            }
-            finally
-            {
-                GenshinProcesor.InstallCompatibilitySnapshot(originalCompatibility);
-            }
+            Assert.Equal("Manequin1", Resolve("Luna", "cryo", supplied));
+            Assert.NotEqual(
+                "Manequin1",
+                TextNormalizer.FindClosestCharacterName("luna", adversarial));
         }
 
         private static GameDataSnapshot CreateCustomizedSnapshot() =>

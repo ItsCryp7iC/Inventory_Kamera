@@ -14,14 +14,14 @@ namespace InventoryKamera.Tests
         [InlineData("manequin2", "Manequin2")]
         public void BuildManequinEntry_SetsGoodNameFromKey(string key, string expectedGood)
         {
-            var entry = GenshinProcesor.BuildManequinEntry(key);
+            var entry = GameDataSnapshotFactory.BuildManequinEntry(key);
             Assert.Equal(expectedGood, (string)entry["GOOD"]);
         }
 
         [Fact]
         public void BuildManequinEntry_HasAllSevenElements()
         {
-            var entry = GenshinProcesor.BuildManequinEntry("manequin1");
+            var entry = GameDataSnapshotFactory.BuildManequinEntry("manequin1");
             var elements = entry["Element"].ToObject<string[]>();
 
             Assert.Equal(new[] { "electro", "pyro", "dendro", "geo", "hydro", "anemo", "cryo" }, elements);
@@ -30,7 +30,7 @@ namespace InventoryKamera.Tests
         [Fact]
         public void BuildManequinEntry_HasBurstThenSkillConstellationOrder()
         {
-            var entry = GenshinProcesor.BuildManequinEntry("manequin1");
+            var entry = GameDataSnapshotFactory.BuildManequinEntry("manequin1");
             var order = entry["ConstellationOrder"].ToObject<string[]>();
 
             Assert.Equal(new[] { "burst", "skill" }, order);
@@ -39,7 +39,7 @@ namespace InventoryKamera.Tests
         [Fact]
         public void BuildManequinEntry_DefaultsToSwordWeaponType()
         {
-            var entry = GenshinProcesor.BuildManequinEntry("manequin1");
+            var entry = GameDataSnapshotFactory.BuildManequinEntry("manequin1");
             Assert.Equal(0, (int)entry["WeaponType"]);
         }
     }

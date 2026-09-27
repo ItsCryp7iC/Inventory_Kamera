@@ -32,9 +32,6 @@ namespace InventoryKamera
         {
             if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
 
-            // The legacy compatibility surface is also one snapshot reference, so callers can never
-            // observe Characters from one load and Weapons/Artifacts from another.
-            GenshinProcesor.InstallCompatibilitySnapshot(snapshot);
             Interlocked.Exchange(ref current, snapshot);
         }
 

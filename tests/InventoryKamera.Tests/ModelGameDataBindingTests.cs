@@ -6,7 +6,6 @@ using Xunit;
 
 namespace InventoryKamera.Tests
 {
-    [Collection(GameDataProviderCollection.Name)]
     public class ModelGameDataBindingTests
     {
         [Fact]
@@ -33,91 +32,72 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
-        public void MissingLookupDependencyThrowsInsteadOfReadingCompatibilitySnapshot()
+        public void MissingLookupDependencyFailsDeterministically()
         {
-            GameDataSnapshot original = GenshinProcesor.CompatibilitySnapshot;
-            try
-            {
-                // Every value below is valid in this installed compatibility snapshot. If any model
-                // still falls back globally, these calls would succeed instead of throwing.
-                GenshinProcesor.InstallCompatibilitySnapshot(CreateSnapshotA());
-                Character character = CreateCharacter(null, "Diluc", "Pyro");
-                Weapon weapon = CreateWeapon(null, "OldBlade", "Diluc");
-                Artifact artifact = CreateArtifact(
-                    null,
-                    "GladiatorsFinale",
-                    "flower",
-                    "hp",
-                    "critRate_",
-                    "Diluc");
+            Character character = CreateCharacter(null, "Diluc", "Pyro");
+            Weapon weapon = CreateWeapon(null, "OldBlade", "Diluc");
+            Artifact artifact = CreateArtifact(
+                null,
+                "GladiatorsFinale",
+                "flower",
+                "hp",
+                "critRate_",
+                "Diluc");
 
-                Assert.False(character.HasGameData);
-                AssertMissingLookup(() => { _ = character.WeaponType; });
-                AssertMissingLookup(() => character.HasValidName());
-                AssertMissingLookup(() => character.HasValidElement());
+            Assert.False(character.HasGameData);
+            AssertMissingLookup(() => { _ = character.WeaponType; });
+            AssertMissingLookup(() => character.HasValidName());
+            AssertMissingLookup(() => character.HasValidElement());
 
-                Assert.False(weapon.HasGameData);
-                AssertMissingLookup(() => weapon.HasValidWeaponName());
-                AssertMissingLookup(() => weapon.HasValidEquippedCharacter());
+            Assert.False(weapon.HasGameData);
+            AssertMissingLookup(() => weapon.HasValidWeaponName());
+            AssertMissingLookup(() => weapon.HasValidEquippedCharacter());
 
-                Assert.False(artifact.HasGameData);
-                AssertMissingLookup(() => artifact.HasValidSlot());
-                AssertMissingLookup(() => artifact.HasValidSetName());
-                AssertMissingLookup(() => artifact.HasValidMainStat());
-                AssertMissingLookup(() => artifact.HasValidSubStats());
-                AssertMissingLookup(() => artifact.HasValidEquippedCharacter());
-            }
-            finally
-            {
-                GenshinProcesor.InstallCompatibilitySnapshot(original);
-            }
+            Assert.False(artifact.HasGameData);
+            AssertMissingLookup(() => artifact.HasValidSlot());
+            AssertMissingLookup(() => artifact.HasValidSetName());
+            AssertMissingLookup(() => artifact.HasValidMainStat());
+            AssertMissingLookup(() => artifact.HasValidSubStats());
+            AssertMissingLookup(() => artifact.HasValidEquippedCharacter());
         }
 
         [Fact]
         public void ModelsBoundToSnapshotARemainIsolatedAfterApplicationMovesToSnapshotB()
         {
-            GameDataSnapshot original = GenshinProcesor.CompatibilitySnapshot;
-            try
-            {
-                GameDataSnapshot snapshotA = CreateSnapshotA();
-                GameDataSnapshot snapshotB = CreateSnapshotB();
-                Character characterA = CreateCharacter(snapshotA, "Diluc", "Pyro");
-                Weapon weaponA = CreateWeapon(snapshotA, "OldBlade", "Diluc");
-                Artifact artifactA = CreateArtifact(
-                    snapshotA,
-                    "GladiatorsFinale",
-                    "flower",
-                    "hp",
-                    "critRate_",
-                    "Diluc");
+            GameDataSnapshot snapshotA = CreateSnapshotA();
+            GameDataSnapshot snapshotB = CreateSnapshotB();
+            Character characterA = CreateCharacter(snapshotA, "Diluc", "Pyro");
+            Weapon weaponA = CreateWeapon(snapshotA, "OldBlade", "Diluc");
+            Artifact artifactA = CreateArtifact(
+                snapshotA,
+                "GladiatorsFinale",
+                "flower",
+                "hp",
+                "critRate_",
+                "Diluc");
 
-                var provider = new GameDataSnapshotProvider(snapshotA);
-                provider.Replace(snapshotB);
+            var provider = new GameDataSnapshotProvider(snapshotA);
+            provider.Replace(snapshotB);
 
-                Character characterB = CreateCharacter(provider.Current, "Jean", "Anemo");
-                Weapon weaponB = CreateWeapon(provider.Current, "NewBow", "Jean");
-                Artifact artifactB = CreateArtifact(
-                    provider.Current,
-                    "ViridescentVenerer",
-                    "plume",
-                    "atk",
-                    "atk_",
-                    "Jean");
+            Character characterB = CreateCharacter(provider.Current, "Jean", "Anemo");
+            Weapon weaponB = CreateWeapon(provider.Current, "NewBow", "Jean");
+            Artifact artifactB = CreateArtifact(
+                provider.Current,
+                "ViridescentVenerer",
+                "plume",
+                "atk",
+                "atk_",
+                "Jean");
 
-                Assert.Equal(WeaponType.Sword, characterA.WeaponType);
-                Assert.True(characterA.IsValid());
-                Assert.True(weaponA.IsValid());
-                Assert.True(artifactA.IsValid());
+            Assert.Equal(WeaponType.Sword, characterA.WeaponType);
+            Assert.True(characterA.IsValid());
+            Assert.True(weaponA.IsValid());
+            Assert.True(artifactA.IsValid());
 
-                Assert.Equal(WeaponType.Bow, characterB.WeaponType);
-                Assert.True(characterB.IsValid());
-                Assert.True(weaponB.IsValid());
-                Assert.True(artifactB.IsValid());
-            }
-            finally
-            {
-                GenshinProcesor.InstallCompatibilitySnapshot(original);
-            }
+            Assert.Equal(WeaponType.Bow, characterB.WeaponType);
+            Assert.True(characterB.IsValid());
+            Assert.True(weaponB.IsValid());
+            Assert.True(artifactB.IsValid());
         }
 
         [Fact]

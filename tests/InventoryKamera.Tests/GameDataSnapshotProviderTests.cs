@@ -6,124 +6,99 @@ using Xunit;
 
 namespace InventoryKamera.Tests
 {
-    [CollectionDefinition(Name, DisableParallelization = true)]
-    public sealed class GameDataProviderCollection
-    {
-        public const string Name = "Game data provider compatibility state";
-    }
-
-    [Collection(GameDataProviderCollection.Name)]
     public class GameDataSnapshotProviderTests
     {
         [Fact]
         public void InitialSnapshotIsAvailable()
         {
-            WithRestoredCompatibility(() =>
-            {
-                GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
+            GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
 
-                var provider = new GameDataSnapshotProvider(first);
+            var provider = new GameDataSnapshotProvider(first);
 
-                Assert.Same(first, provider.Current);
-            });
+            Assert.Same(first, provider.Current);
         }
 
         [Fact]
         public void LoaderInitializesAndReloadsCompleteSnapshots()
         {
-            WithRestoredCompatibility(() =>
-            {
-                GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
-                GameDataSnapshot second = CreateSnapshot("newblade", "NewBlade", "jean");
-                var snapshots = new Queue<GameDataSnapshot>(new[] { first, second });
-                var provider = new GameDataSnapshotProvider(() => snapshots.Dequeue());
+            GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
+            GameDataSnapshot second = CreateSnapshot("newblade", "NewBlade", "jean");
+            var snapshots = new Queue<GameDataSnapshot>(new[] { first, second });
+            var provider = new GameDataSnapshotProvider(() => snapshots.Dequeue());
 
-                bool reloaded = provider.TryReload(out Exception error);
+            bool reloaded = provider.TryReload(out Exception error);
 
-                Assert.Null(error);
-                Assert.True(reloaded);
-                Assert.Same(second, provider.Current);
-            });
+            Assert.Null(error);
+            Assert.True(reloaded);
+            Assert.Same(second, provider.Current);
         }
 
         [Fact]
         public void ReplaceMakesNewSnapshotCurrentWithoutMutatingPreviousSnapshot()
         {
-            WithRestoredCompatibility(() =>
-            {
-                GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
-                GameDataSnapshot second = CreateSnapshot("newblade", "NewBlade", "jean");
-                var provider = new GameDataSnapshotProvider(first);
-                GameDataSnapshot captured = provider.Current;
+            GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
+            GameDataSnapshot second = CreateSnapshot("newblade", "NewBlade", "jean");
+            var provider = new GameDataSnapshotProvider(first);
+            GameDataSnapshot captured = provider.Current;
 
-                provider.Replace(second);
+            provider.Replace(second);
 
-                Assert.Same(second, provider.Current);
-                Assert.Same(first, captured);
-                Assert.True(captured.Weapons.ContainsKey("oldblade"));
-                Assert.False(captured.Weapons.ContainsKey("newblade"));
-            });
+            Assert.Same(second, provider.Current);
+            Assert.Same(first, captured);
+            Assert.True(captured.Weapons.ContainsKey("oldblade"));
+            Assert.False(captured.Weapons.ContainsKey("newblade"));
         }
 
         [Fact]
-        public void SequentialReplacementsInstallCompleteSnapshots()
+        public void SequentialReplacementsPublishCompleteSnapshots()
         {
-            WithRestoredCompatibility(() =>
-            {
-                GameDataSnapshot first = CreateSnapshot("first", "First", "diluc");
-                GameDataSnapshot second = CreateSnapshot("second", "Second", "jean");
-                GameDataSnapshot third = CreateSnapshot("third", "Third", "gaming");
-                var provider = new GameDataSnapshotProvider(first);
+            GameDataSnapshot first = CreateSnapshot("first", "First", "diluc");
+            GameDataSnapshot second = CreateSnapshot("second", "Second", "jean");
+            GameDataSnapshot third = CreateSnapshot("third", "Third", "gaming");
+            var provider = new GameDataSnapshotProvider(first);
 
-                provider.Replace(second);
-                provider.Replace(third);
+            provider.Replace(second);
+            provider.Replace(third);
 
-                Assert.Same(third, provider.Current);
-                Assert.True(provider.Current.Weapons.ContainsKey("third"));
-                Assert.False(provider.Current.Characters.ContainsKey("jean"));
-            });
+            Assert.Same(third, provider.Current);
+            Assert.True(provider.Current.Weapons.ContainsKey("third"));
+            Assert.False(provider.Current.Characters.ContainsKey("jean"));
         }
 
         [Fact]
         public void FailedReloadRetainsCurrentSnapshot()
         {
-            WithRestoredCompatibility(() =>
-            {
-                GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
-                var provider = new GameDataSnapshotProvider(
-                    first,
-                    () => throw new InvalidOperationException("invalid updated files"));
+            GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
+            var provider = new GameDataSnapshotProvider(
+                first,
+                () => throw new InvalidOperationException("invalid updated files"));
 
-                bool reloaded = provider.TryReload(out Exception error);
+            bool reloaded = provider.TryReload(out Exception error);
 
-                Assert.False(reloaded);
-                Assert.Equal("invalid updated files", error.Message);
-                Assert.Same(first, provider.Current);
-            });
+            Assert.False(reloaded);
+            Assert.Equal("invalid updated files", error.Message);
+            Assert.Same(first, provider.Current);
         }
 
         [Fact]
         public void ExistingScanKeepsCapturedSnapshotAndNewScanReceivesReplacement()
         {
-            WithRestoredCompatibility(() =>
-            {
-                GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
-                GameDataSnapshot second = CreateSnapshot("newblade", "NewBlade", "jean");
-                var provider = new GameDataSnapshotProvider(first);
-                var owner = new ScanRunOwner();
+            GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
+            GameDataSnapshot second = CreateSnapshot("newblade", "NewBlade", "jean");
+            var provider = new GameDataSnapshotProvider(first);
+            var owner = new ScanRunOwner();
 
-                Assert.True(owner.TryCreate(new ScanViewModel(), out ScanRun firstRun));
-                GameScanner firstScanner = firstRun.InitializeScanner(provider.Current);
-                provider.Replace(second);
-                owner.Complete(firstRun);
+            Assert.True(owner.TryCreate(new ScanViewModel(), out ScanRun firstRun));
+            GameScanner firstScanner = firstRun.InitializeScanner(provider.Current);
+            provider.Replace(second);
+            owner.Complete(firstRun);
 
-                Assert.True(owner.TryCreate(new ScanViewModel(), out ScanRun secondRun));
-                GameScanner secondScanner = secondRun.InitializeScanner(provider.Current);
+            Assert.True(owner.TryCreate(new ScanViewModel(), out ScanRun secondRun));
+            GameScanner secondScanner = secondRun.InitializeScanner(provider.Current);
 
-                Assert.Same(first, firstScanner.GameData);
-                Assert.Same(second, secondScanner.GameData);
-                owner.Complete(secondRun);
-            });
+            Assert.Same(first, firstScanner.GameData);
+            Assert.Same(second, secondScanner.GameData);
+            owner.Complete(secondRun);
         }
 
         [Fact]
@@ -138,54 +113,17 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
-        public void CompatibilitySurfaceChangesAsOneSnapshotReference()
+        public void UnboundCharacterRequiresExplicitProviderSnapshotAttachment()
         {
-            WithRestoredCompatibility(() =>
-            {
-                GameDataSnapshot first = CreateSnapshot("oldblade", "OldBlade", "diluc");
-                GameDataSnapshot second = CreateSnapshot("newblade", "NewBlade", "jean");
-                var provider = new GameDataSnapshotProvider(first);
+            GameDataSnapshot snapshot = CreateSnapshot("newblade", "NewBlade", "jean");
+            var provider = new GameDataSnapshotProvider(snapshot);
+            var character = new Character { NameGOOD = "Jean" };
 
-                provider.Replace(second);
-                GameDataSnapshot compatibility = GenshinProcesor.CompatibilitySnapshot;
+            Assert.False(character.HasGameData);
+            Assert.Throws<InvalidOperationException>(() => character.WeaponType);
 
-                Assert.Same(second, compatibility);
-                Assert.True(compatibility.Weapons.ContainsKey("newblade"));
-                Assert.True(compatibility.Characters.ContainsKey("jean"));
-                Assert.False(compatibility.Weapons.ContainsKey("oldblade"));
-                Assert.False(compatibility.Characters.ContainsKey("diluc"));
-            });
-        }
-
-        [Fact]
-        public void UnboundCharacterDoesNotReadInstalledCompatibilitySnapshot()
-        {
-            WithRestoredCompatibility(() =>
-            {
-                GameDataSnapshot snapshot = CreateSnapshot("newblade", "NewBlade", "jean");
-                var provider = new GameDataSnapshotProvider(snapshot);
-                var character = new Character { NameGOOD = "Jean" };
-
-                Assert.Same(snapshot, GenshinProcesor.CompatibilitySnapshot);
-                Assert.False(character.HasGameData);
-                Assert.Throws<InvalidOperationException>(() => character.WeaponType);
-
-                character.AttachGameData(snapshot);
-                Assert.Equal(WeaponType.Sword, character.WeaponType);
-            });
-        }
-
-        private static void WithRestoredCompatibility(Action test)
-        {
-            GameDataSnapshot original = GenshinProcesor.CompatibilitySnapshot;
-            try
-            {
-                test();
-            }
-            finally
-            {
-                GenshinProcesor.InstallCompatibilitySnapshot(original);
-            }
+            character.AttachGameData(provider.Current);
+            Assert.Equal(WeaponType.Sword, character.WeaponType);
         }
 
         private static GameDataSnapshot CreateSnapshot(
