@@ -206,12 +206,11 @@ namespace InventoryKamera
 					}
 
 					bool ascended = false;
-					int level = ScanLevel(characterTiming, ref ascended);
+					int level = ScanLevel(characterTiming, name, ref ascended);
 					if (level == -1)
 					{
-						progressReporter.AddError($"Could not determine {name}'s level. Setting to 1.");
-						level = 1;
-						ascended = false;
+						progressReporter.AddError($"Could not determine {name}'s level safely. The character was skipped.");
+						Logger.Warn("Skipping {0}: every character-level OCR attempt was invalid.", name);
 					}
 
 					// Log the Attributes screen here -- after name/element/level are read but before the
@@ -222,7 +221,7 @@ namespace InventoryKamera
 					LogCharacterScreenshot(name, "attributes", NameElementRegion());
 					LogCharacterWindow(name, "attributes");
 
-					if (!scanned.Contains(name))
+					if (level != -1 && !scanned.Contains(name))
 					{
 						var character = new Character(gameData)
 						{
@@ -861,10 +860,8 @@ namespace InventoryKamera
 		/// shared across aspect ratios, so only the y position branches -- the window is letterboxed
 		/// vertically, but the horizontal axis and the box's dimensions don't change.
 		/// </summary>
-		private int ScanLevel(CharacterNavigationTiming timing, ref bool ascended)
+		private int ScanLevel(CharacterNavigationTiming timing, string characterName, ref bool ascended)
 		{
-            int attempt = 0;
-
 			// Shared x/width/height; only the y position shifts by aspect ratio (see doc comment).
 			Rectangle region = new Rectangle(
 				x:      (int)( 0.7626 * Navigation.GetWidth() ),
@@ -872,48 +869,95 @@ namespace InventoryKamera
 				width:  (int)( 0.1209 * Navigation.GetWidth() ),
 				height: (int)( 0.0352 * Navigation.GetHeight() ));
 
-			do
+			const int maxAttempts = 20; // reduced from 50 per user (2026-07-05), matching ScanNameAndElement's cap
+			Bitmap currentBitmap = null;
+			Bitmap currentOcrBitmap = null;
+			var rejectedCaptures = new List<Bitmap>();
+
+			try
 			{
-				Bitmap bm = Navigation.CaptureRegion(region);
+				CharacterLevelParseResult result = CharacterLevelParser.ReadFirstPlausible(
+					maxAttempts,
+					attempt =>
+					{
+						using (Bitmap captured = Navigation.CaptureRegion(region))
+							currentBitmap = GenshinProcesor.ResizeImage(captured, captured.Width * 2, captured.Height * 2);
 
-				bm = GenshinProcesor.ResizeImage(bm, bm.Width * 2, bm.Height * 2);
-				Bitmap n = imagePreprocessor.ConvertToGrayscale(bm);
-				imagePreprocessor.SetInvert(ref n);
-				// Bug fix (2026-07-05): contrast was being applied to `bm` (the display-only copy
-				// passed to progressReporter.SetCharacter_Level below), not `n` (what's actually fed
-				// to Tesseract) -- the contrast boost never reached the OCR input at all, likely
-				// contributing to level misreads.
-				imagePreprocessor.SetContrast(30.0, ref n);
+						currentOcrBitmap = imagePreprocessor.ConvertToGrayscale(currentBitmap);
+						imagePreprocessor.SetInvert(ref currentOcrBitmap);
+						// Bug fix (2026-07-05): contrast must be applied to the image passed to
+						// Tesseract, not only the display copy.
+						imagePreprocessor.SetContrast(30.0, ref currentOcrBitmap);
 
-				string text = ocrService.AnalyzeText(n).Trim();
-				Logger.Debug("Scanned character level as {0}", text);
+						return ocrService.AnalyzeText(currentOcrBitmap).Trim();
+					},
+					(attempt, rejected) =>
+					{
+						Logger.Debug(
+							"Rejected character level attempt {0}/{1}: raw=\"{2}\"; filtered=\"{3}\"; level={4}; maxLevel={5}; reason={6}",
+							attempt,
+							maxAttempts,
+							rejected.RawText,
+							rejected.FilteredText,
+							rejected.Level?.ToString() ?? "(unparsed)",
+							rejected.MaxLevel?.ToString() ?? "(unparsed)",
+							rejected.RejectionReason);
 
-				text = Regex.Replace(text, @"(?![0-9/]).", string.Empty);
-				Logger.Debug("Filtered scanned text to {0}", text);
-				if (text.Contains("/"))
+						rejectedCaptures.Add((Bitmap)currentBitmap.Clone());
+						currentOcrBitmap.Dispose();
+						currentOcrBitmap = null;
+						currentBitmap.Dispose();
+						currentBitmap = null;
+						Thread.Sleep(timing.Scale(100));
+					});
+
+				if (!result.Success)
 				{
-					var values = text.Split('/');
-                    if (int.TryParse(values[0], out int level) && int.TryParse(values[1], out int maxLevel))
-                    {
-                        maxLevel = (int)Math.Round(maxLevel / 10.0, MidpointRounding.AwayFromZero) * 10;
-                        ascended = 20 <= level && level < maxLevel;
-                        progressReporter.SetCharacter_Level(bm, level, maxLevel);
-                        n.Dispose();
-                        bm.Dispose();
-                        Logger.Debug("Parsed character level as {0}", level);
-                        return level;
-                    }
+					SaveLevelFailureDiagnostics(characterName, rejectedCaptures);
+					return -1;
 				}
-				Logger.Debug("Failed to parse character level and ascension from {0} (text), retrying", text);
 
-				attempt++;
+				ascended = result.Ascended;
+				progressReporter.SetCharacter_Level(currentBitmap, result.Level.Value, result.MaxLevel.Value);
+				Logger.Debug(
+					"Accepted character level: raw=\"{0}\"; filtered=\"{1}\"; level={2}; maxLevel={3}; ascended={4}",
+					result.RawText,
+					result.FilteredText,
+					result.Level.Value,
+					result.MaxLevel.Value,
+					result.Ascended);
+				return result.Level.Value;
+			}
+			finally
+			{
+				currentOcrBitmap?.Dispose();
+				currentBitmap?.Dispose();
+				foreach (Bitmap capture in rejectedCaptures) capture.Dispose();
+			}
+		}
 
-                n.Dispose();
-                bm.Dispose();
-                Thread.Sleep(timing.Scale(100));
-			} while (attempt < 20); // reduced from 50 per user (2026-07-05), matching ScanNameAndElement's cap
+		private static void SaveLevelFailureDiagnostics(string characterName, IReadOnlyList<Bitmap> attempts)
+		{
+			try
+			{
+				string safeName = GameDataSnapshot.NormalizeKey(characterName);
+				if (string.IsNullOrWhiteSpace(safeName)) safeName = "unknown";
+				string directory = Path.Combine(
+					".",
+					"logging",
+					"character_level",
+					$"{safeName}_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{Guid.NewGuid():N}");
+				Directory.CreateDirectory(directory);
 
-			return -1;
+				for (int i = 0; i < attempts.Count; i++)
+					attempts[i].Save(Path.Combine(directory, $"attempt_{i + 1:00}_crop.png"));
+
+				Logger.Warn("Saved {0} failed character-level OCR crop(s) to {1}", attempts.Count, directory);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Unable to save character-level OCR failure diagnostics.");
+			}
 		}
 
 		/// <summary>
