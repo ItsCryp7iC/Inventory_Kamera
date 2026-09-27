@@ -1338,13 +1338,14 @@ namespace InventoryKamera
 		/// Controller-mode talent scan. Per user (2026-07-05, live-tested), the Talents sub-tab
 		/// already displays every talent's level simultaneously as "Lv. XX" rows (plus other
 		/// descriptive text sharing the same region) -- no per-icon click/capture loop is needed the
-		/// way the mouse path requires. Parses every "Lv. XX" match out of the single captured region,
-		/// in on-screen top-to-bottom order, and assigns the first three as auto/skill/burst.
+		/// way the mouse path requires. Parses every "Lv. XX" match out of each freshly captured region,
+		/// in on-screen top-to-bottom order, and treats the first three as auto/skill/burst. A complete
+		/// triplet is accepted only after the exact same values appear on two fresh captures; partial
+		/// frames are never combined because their row identities cannot be established safely.
 		/// Per user (2026-07-05): the mouse path's Mona/Ayaka movement-talent row skip does not apply
 		/// here -- removed after a live test got stuck retrying (found 3 "Lv. XX" rows, wanted 4)
-		/// rather than just taking the 3 that were actually there. Retries (matching the mouse path's
-		/// per-icon retry loop) until at least 3 "Lv. XX" rows are found. Region measured (2026-07-05)
-		/// with <c>ui/CoordinatePickerForm.cs</c>.
+		/// rather than just taking the 3 that were actually there. Region measured (2026-07-05) with
+		/// <c>ui/CoordinatePickerForm.cs</c>.
 		/// </summary>
 		private Dictionary<string, int> ScanTalents(
 			Character character,
@@ -1358,62 +1359,135 @@ namespace InventoryKamera
 				Right:  (int)( 0.8743 * Navigation.GetWidth() ),
 				Bottom: (int)( 0.5687 * Navigation.GetHeight() ));
 
-			const int requiredRows = 3;
-			int attempt = 0;
+			var diagnosticFrames = new List<TalentScanDiagnosticFrame>();
+			int acceptedAttempt = 0;
 
-			while (attempt < 20) // reduced from 50 per user (2026-07-05), matching ScanNameAndElement/ScanLevel's cap
+			try
 			{
-				Bitmap bm = Navigation.CaptureRegion(region);
-				Bitmap resized = GenshinProcesor.ResizeImage(bm, bm.Width * 2, bm.Height * 2);
-				Bitmap n = imagePreprocessor.ConvertToGrayscale(resized);
-				imagePreprocessor.SetContrast(60, ref n);
-				imagePreprocessor.SetInvert(ref n);
+				bool accepted = TalentReadConsensus.TryRead(
+					TalentReadConsensus.MaximumAttempts,
+					attemptNumber =>
+					{
+						Bitmap capture = Navigation.CaptureRegion(region);
+						Bitmap processed = null;
+						try
+						{
+							using (Bitmap resized = GenshinProcesor.ResizeImage(
+								capture,
+								capture.Width * 2,
+								capture.Height * 2))
+							{
+								processed = imagePreprocessor.ConvertToGrayscale(resized);
+							}
+							imagePreprocessor.SetContrast(60, ref processed);
+							imagePreprocessor.SetInvert(ref processed);
 
-				var lines = ocrService.AnalyzeText(n, Tesseract.PageSegMode.SingleBlock).Trim().Split('\n');
+							string rawText = ocrService.AnalyzeText(
+								processed,
+								Tesseract.PageSegMode.SingleBlock).Trim();
+							diagnosticFrames.Add(new TalentScanDiagnosticFrame(capture, processed));
+							return rawText;
+						}
+						catch
+						{
+							capture.Dispose();
+							processed?.Dispose();
+							throw;
+						}
+					},
+					(attemptNumber, observation) =>
+					{
+						Logger.Debug(
+							"Character talent OCR: character={0}; attempt={1}/{2}; raw=\"{3}\"; " +
+							"parsedRows=[{4}]; triplet={5}; valid={6}; candidateCount={7}; " +
+							"candidates={8}; accepted={9}; reason={10}",
+							character.NameGOOD,
+							attemptNumber,
+							TalentReadConsensus.MaximumAttempts,
+							ForDiagnosticLog(observation.RawText),
+							string.Join(",", observation.ParsedRows),
+							observation.Triplet?.ToString() ?? "(none)",
+							observation.HasCompleteValidTriplet,
+							observation.CandidateCount,
+							observation.CandidateSummary,
+							observation.Accepted,
+							observation.Reason);
+						if (observation.Accepted) acceptedAttempt = attemptNumber;
+					},
+					() => Thread.Sleep(timing.Scale(100)),
+					out TalentLevelTriplet acceptedTriplet);
 
-				var levels = new List<int>();
-				foreach (var line in lines)
+				if (accepted)
 				{
-					var match = Regex.Match(line, @"[Ll][Vv]\.?\s*(\d+)");
-					if (match.Success && int.TryParse(match.Groups[1].Value, out int lvl) && lvl >= 1 && lvl <= 15)
-						levels.Add(lvl);
-				}
-
-				if (levels.Count >= requiredRows)
-				{
-					talents["auto"] = levels[0];
-					talents["skill"] = levels[1];
-					talents["burst"] = levels[2];
-
-					progressReporter.SetCharacter_Talent(bm, talents["auto"].ToString(), 0);
-					progressReporter.SetCharacter_Talent(bm, talents["skill"].ToString(), 1);
-					progressReporter.SetCharacter_Talent(bm, talents["burst"].ToString(), 2);
+					talents = acceptedTriplet.ToDictionary();
+					Bitmap acceptedCapture = diagnosticFrames[acceptedAttempt - 1].Capture;
+					progressReporter.SetCharacter_Talent(acceptedCapture, talents["auto"].ToString(), 0);
+					progressReporter.SetCharacter_Talent(acceptedCapture, talents["skill"].ToString(), 1);
+					progressReporter.SetCharacter_Talent(acceptedCapture, talents["burst"].ToString(), 2);
 					LogCharacterScreenshot(character.NameGOOD, "talents", region);
 					LogCharacterWindow(character.NameGOOD, "talents");
-
-					n.Dispose();
-					bm.Dispose();
-					break;
+				}
+				else
+				{
+					progressReporter.AddError($"Could not determine {character.NameGOOD}'s talents with agreement across fresh captures.");
+					SaveTalentConsensusDiagnostics(character, diagnosticFrames);
 				}
 
-				Logger.Debug("Controller talent scan: found {0}/{1} \"Lv. XX\" rows, retrying", levels.Count, requiredRows);
-				n.Dispose();
-				bm.Dispose();
-				attempt++;
-				Thread.Sleep(timing.Scale(100));
+				return talents;
 			}
-
-			// The loop only sets all three talents together (on a successful read) then breaks; if it
-			// exhausted every attempt without that, they're still -1. Surface it (previously silent --
-			// the character just came back with -1/-1/-1 talents) and force-save the talent region so
-			// the failure is diagnosable even with LogScreenshots off.
-			if (talents["auto"] < 1 || talents["skill"] < 1 || talents["burst"] < 1)
+			finally
 			{
-				progressReporter.AddError($"Could not determine {character.NameGOOD}'s talents.");
-				LogCharacterScreenshot(character.NameGOOD, "talents_unconfirmed", region, force: true);
+				foreach (TalentScanDiagnosticFrame frame in diagnosticFrames)
+					frame.Dispose();
+			}
+		}
+
+		private void SaveTalentConsensusDiagnostics(
+			Character character,
+			IReadOnlyList<TalentScanDiagnosticFrame> frames)
+		{
+			string folderName = string.Format(
+				"{0}_{1}_{2}",
+				SafeDiagnosticName(character.CanonicalName),
+				DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff"),
+				Guid.NewGuid().ToString("N").Substring(0, 8));
+			string folder = Path.Combine(".", "logging", "talent_verification", folderName);
+
+			try
+			{
+				Directory.CreateDirectory(folder);
+				for (int i = 0; i < frames.Count; i++)
+				{
+					frames[i].Capture.Save(Path.Combine(folder, $"attempt_{i + 1:00}_crop.png"));
+					frames[i].Processed.Save(Path.Combine(folder, $"attempt_{i + 1:00}_processed.png"));
+				}
+
+				using (Bitmap full = Navigation.CaptureWindow())
+					full.Save(Path.Combine(folder, "failure_full.png"));
+				Logger.Warn("Saved character talent consensus diagnostics to {0}", folder);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save character talent consensus diagnostics to {0}", folder);
+			}
+		}
+
+		private sealed class TalentScanDiagnosticFrame : IDisposable
+		{
+			internal TalentScanDiagnosticFrame(Bitmap capture, Bitmap processed)
+			{
+				Capture = capture ?? throw new ArgumentNullException(nameof(capture));
+				Processed = processed ?? throw new ArgumentNullException(nameof(processed));
 			}
 
-			return talents;
+			internal Bitmap Capture { get; }
+			internal Bitmap Processed { get; }
+
+			public void Dispose()
+			{
+				Capture.Dispose();
+				Processed.Dispose();
+			}
 		}
 	}
 }

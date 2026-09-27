@@ -46,12 +46,23 @@ namespace InventoryKamera.Tests
             Character zhongli = CharacterWithAttributes("Zhongli", "Geo");
             zhongli.Constellation = 0;
             zhongli.MarkConstellationScanSucceeded();
+            bool consensusReached = TalentReadConsensus.TryRead(
+                2,
+                attempt => attempt == 1
+                    ? "Lv. 1\nLv. 10\nLv. 9"
+                    : "Lv. 1\nLv. 10",
+                null,
+                null,
+                out _);
             bool talentsSucceeded = CharacterScraper.TrySetScannedTalents(
                 zhongli,
-                CharacterScraper.UnavailableTalents());
+                consensusReached
+                    ? throw new InvalidOperationException("The test input must not reach consensus.")
+                    : CharacterScraper.UnavailableTalents());
 
             var good = Export(new[] { zhongli });
 
+            Assert.False(consensusReached);
             Assert.False(talentsSucceeded);
             Assert.Equal(CharacterScanPhaseStatus.Failed, zhongli.TalentScanStatus);
             Assert.Null(good.Characters);
