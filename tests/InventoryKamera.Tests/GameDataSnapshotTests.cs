@@ -83,7 +83,7 @@ namespace InventoryKamera.Tests
         public void CharacterRarityElementAndWeaponTypeUseSuppliedSnapshot()
         {
             GameDataSnapshot snapshot = CreateSnapshot("oldblade", "OldBlade", "gaming", "Gaming", rarity: 4);
-            var character = new Character
+            var character = new Character(snapshot)
             {
                 NameGOOD = "Gaming",
                 Element = "Pyro",
@@ -93,8 +93,6 @@ namespace InventoryKamera.Tests
             character.Talents["auto"] = 1;
             character.Talents["skill"] = 1;
             character.Talents["burst"] = 1;
-            character.UseGameData(snapshot);
-
             Assert.True(LookupService.IsFourStarCharacter("Gaming", snapshot));
             Assert.True(LookupService.CharacterMatchesElement("gaming", "Pyro", snapshot));
             Assert.Equal(WeaponType.Sword, character.WeaponType);

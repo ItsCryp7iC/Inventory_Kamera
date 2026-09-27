@@ -9,7 +9,7 @@ namespace InventoryKamera
 	[Serializable]
 	public class Artifact
 	{
-		private readonly GameDataSnapshot gameData;
+		private GameDataSnapshot gameData;
 		[JsonProperty("setKey")]
 		public string SetName { get; private set; }
 
@@ -39,6 +39,9 @@ namespace InventoryKamera
 
         [JsonProperty("id")]
 		public int Id { get; private set; }
+
+		[JsonIgnore]
+		public bool HasGameData => gameData != null;
 		
 		public Artifact()
 		{
@@ -56,7 +59,7 @@ namespace InventoryKamera
 
 		public Artifact(string _setName, int _rarity, int _level, string _gearSlot, string _mainStat, List<SubStat> _subStats, List<SubStat> _unactivatedSubStats, string _equippedCharacter = null, int _id = 0, bool _Lock = false, GameDataSnapshot gameData = null)
 		{
-			this.gameData = gameData;
+			if (gameData != null) AttachGameData(gameData);
 			GearSlot = string.IsNullOrWhiteSpace(_gearSlot) ? "" : _gearSlot;
 			Rarity = _rarity;
 			MainStat = string.IsNullOrWhiteSpace(_mainStat) ? "" : _mainStat;
@@ -76,6 +79,18 @@ namespace InventoryKamera
 		/// </summary>
 		internal void UpdateSetName(string setName) => SetName = string.IsNullOrWhiteSpace(setName) ? "" : setName;
 
+		/// <summary>
+		/// Explicitly binds lookup data after parameterless construction or deserialization.
+		/// A model cannot be rebound to a different snapshot after lookup data is attached.
+		/// </summary>
+		public void AttachGameData(GameDataSnapshot data)
+		{
+			if (data == null) throw new ArgumentNullException(nameof(data));
+			if (gameData != null && !ReferenceEquals(gameData, data))
+				throw new InvalidOperationException("Artifact game data is already attached.");
+			gameData = data;
+		}
+
 		public bool IsValid()
 		{
 			return HasValidLevel() && HasValidRarity() && HasValidSlot() && HasValidSetName() && HasValidMainStat() && HasValidSubStats() && HasValidEquippedCharacter();
@@ -93,35 +108,28 @@ namespace InventoryKamera
 
 		public bool HasValidSlot()
 		{
-			return gameData == null
-				? GenshinProcesor.IsValidSlot(GearSlot)
-				: LookupService.IsValidSlot(GearSlot, gameData);
+			return LookupService.IsValidSlot(GearSlot, RequireGameData());
 		}
 
 		public bool HasValidSetName()
 		{
-			return gameData == null
-				? GenshinProcesor.IsValidSetName(SetName)
-				: LookupService.IsValidSetName(SetName, gameData);
+			return LookupService.IsValidSetName(SetName, RequireGameData());
 		}
 
 		public bool HasValidMainStat()
 		{
-			return gameData == null
-				? GenshinProcesor.IsValidStat(MainStat)
-				: LookupService.IsValidStat(MainStat, gameData);
+			return LookupService.IsValidStat(MainStat, RequireGameData());
 		}
 
 		public bool HasValidSubStats()
 		{
+			GameDataSnapshot data = RequireGameData();
 			bool valid = true;
 
 			SubStats.ForEach(s =>
 			{
                 if (!string.IsNullOrWhiteSpace(s.stat) &&
-                    (!(gameData == null
-						? GenshinProcesor.IsValidStat(s.stat)
-						: LookupService.IsValidStat(s.stat, gameData)) || s.value == (decimal)(-1.0)))
+					(!LookupService.IsValidStat(s.stat, data) || s.value == (decimal)(-1.0)))
                 {
                     valid = false;
                 }
@@ -132,10 +140,13 @@ namespace InventoryKamera
 
 		public bool HasValidEquippedCharacter()
 		{
-			return string.IsNullOrWhiteSpace(EquippedCharacter) || (gameData == null
-				? GenshinProcesor.IsValidCharacter(EquippedCharacter)
-				: LookupService.IsValidCharacter(EquippedCharacter, gameData));
+			return string.IsNullOrWhiteSpace(EquippedCharacter) ||
+				LookupService.IsValidCharacter(EquippedCharacter, RequireGameData());
 		}
+
+		private GameDataSnapshot RequireGameData() => gameData ??
+			throw new InvalidOperationException(
+				"Artifact lookup data is not attached. Call AttachGameData before using lookup-dependent validation.");
 
 		[Serializable]
 		public struct SubStat

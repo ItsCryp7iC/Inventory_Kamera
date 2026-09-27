@@ -224,14 +224,13 @@ namespace InventoryKamera
 
 					if (!scanned.Contains(name))
 					{
-						var character = new Character
+						var character = new Character(gameData)
 						{
 							NameGOOD = name,
 							Element = element,
 							Level = level,
 							Ascended = ascended
 						};
-						character.UseGameData(gameData);
 						Characters.Add(character);
 						gapsBeforeEach.Add(gapSinceLastRecorded);
 						gapSinceLastRecorded = 0;

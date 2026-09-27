@@ -54,12 +54,11 @@ namespace InventoryKamera
         public Dictionary<string, Artifact> Artifacts { get; internal set; }
 
         [JsonIgnore]
+        public bool HasGameData => gameData != null;
+
+        [JsonIgnore]
         public WeaponType WeaponType { 
-            
-            // Scanner-created characters always receive explicit gameData. The compatibility snapshot
-            // remains only for deserialized/externally-created legacy models.
-            get => (gameData ?? GenshinProcesor.CompatibilitySnapshot)
-                .Characters[_nameKey.ToLower()]["WeaponType"].ToObject<WeaponType>();
+            get => RequireGameData().Characters[_nameKey.ToLower()]["WeaponType"].ToObject<WeaponType>();
             
             internal set { WeaponType = value; } 
         }
@@ -73,6 +72,11 @@ namespace InventoryKamera
                 ["burst"] = 0
             };
             Artifacts = new Dictionary<string, Artifact>();
+        }
+
+        public Character(GameDataSnapshot gameData) : this()
+        {
+            AttachGameData(gameData);
         }
 
         public Character(string _name, string _element, int _level, bool _ascension, int _experience, int _constellation, int[] _talents) : this()
@@ -99,9 +103,8 @@ namespace InventoryKamera
 
         public bool HasValidName()
         {
-            return !string.IsNullOrWhiteSpace(NameGOOD) && (gameData == null
-                ? GenshinProcesor.IsValidCharacter(NameGOOD)
-                : LookupService.IsValidCharacter(NameGOOD, gameData));
+            return !string.IsNullOrWhiteSpace(NameGOOD) &&
+                LookupService.IsValidCharacter(NameGOOD, RequireGameData());
         }
 
         public bool HasValidLevel()
@@ -111,9 +114,8 @@ namespace InventoryKamera
 
         public bool HasValidElement()
         {
-            return !string.IsNullOrWhiteSpace(Element) && (gameData == null
-                ? GenshinProcesor.IsValidElement(Element)
-                : LookupService.IsValidElement(Element, gameData));
+            return !string.IsNullOrWhiteSpace(Element) &&
+                LookupService.IsValidElement(Element, RequireGameData());
         }
 
         public bool HasValidConstellation()
@@ -135,7 +137,21 @@ namespace InventoryKamera
             Weapon = newWeapon;
         }
 
-        internal void UseGameData(GameDataSnapshot data) => gameData = data;
+        /// <summary>
+        /// Explicitly binds lookup data after parameterless construction or deserialization.
+        /// A model cannot be rebound to a different snapshot after lookup data is attached.
+        /// </summary>
+        public void AttachGameData(GameDataSnapshot data)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (gameData != null && !ReferenceEquals(gameData, data))
+                throw new InvalidOperationException("Character game data is already attached.");
+            gameData = data;
+        }
+
+        private GameDataSnapshot RequireGameData() => gameData ??
+            throw new InvalidOperationException(
+                "Character lookup data is not attached. Call AttachGameData before using lookup-dependent properties or validation.");
 
         public void AssignArtifact(Artifact artifact)
         {

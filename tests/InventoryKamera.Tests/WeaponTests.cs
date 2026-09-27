@@ -8,9 +8,8 @@ namespace InventoryKamera.Tests
     /// <summary>
     /// Characterization tests for the Weapon model. These pin the ascension-tier mapping,
     /// validation ranges, default-weapon naming, and GOOD serialization shape so the model can be
-    /// refactored (and moved to typed export logic) safely in later phases. Validators that reach
-    /// into GenshinProcesor's loaded lookup tables (name/character validity) are intentionally not
-    /// exercised here to keep the tests deterministic and disk-free.
+    /// refactored (and moved to typed export logic) safely in later phases. Snapshot-dependent
+    /// name/character validation is exercised separately with synthetic lookup data.
     /// </summary>
     public class WeaponTests
     {

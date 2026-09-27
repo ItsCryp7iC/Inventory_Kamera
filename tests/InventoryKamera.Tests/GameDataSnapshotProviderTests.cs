@@ -158,7 +158,7 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
-        public void LegacyCharacterFallbackUsesInstalledCompatibilitySnapshot()
+        public void UnboundCharacterDoesNotReadInstalledCompatibilitySnapshot()
         {
             WithRestoredCompatibility(() =>
             {
@@ -167,6 +167,10 @@ namespace InventoryKamera.Tests
                 var character = new Character { NameGOOD = "Jean" };
 
                 Assert.Same(snapshot, GenshinProcesor.CompatibilitySnapshot);
+                Assert.False(character.HasGameData);
+                Assert.Throws<InvalidOperationException>(() => character.WeaponType);
+
+                character.AttachGameData(snapshot);
                 Assert.Equal(WeaponType.Sword, character.WeaponType);
             });
         }

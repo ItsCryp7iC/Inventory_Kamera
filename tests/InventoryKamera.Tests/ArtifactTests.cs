@@ -8,9 +8,8 @@ namespace InventoryKamera.Tests
 {
     /// <summary>
     /// Characterization tests for the Artifact model. These pin the substat-filtering rule,
-    /// validation ranges, substat formatting, and GOOD serialization shape. Validators that reach
-    /// into GenshinProcesor's loaded lookup tables (set/slot/stat/character validity) are
-    /// intentionally not exercised here to keep the tests deterministic and disk-free.
+    /// validation ranges, substat formatting, and GOOD serialization shape. Snapshot-dependent
+    /// set/slot/stat/character validation is exercised separately with synthetic lookup data.
     /// </summary>
     public class ArtifactTests
     {
