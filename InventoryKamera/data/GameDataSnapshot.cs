@@ -157,13 +157,36 @@ namespace InventoryKamera
             // mutates its source JObjects nor rewrites characters.json.
             var normalized = new Dictionary<string, JObject>(characters);
             if (normalized.TryGetValue("traveler", out JObject traveler))
-                normalized["traveler"] = WithRequiredElement(traveler, "cryo");
+                normalized["traveler"] = NormalizeTravelerMetadata(traveler);
 
             foreach (string key in ManequinKeys)
             {
                 normalized[key] = normalized.TryGetValue(key, out JObject existing)
                     ? WithRequiredElement(existing, "cryo")
                     : BuildManequinEntry(key);
+            }
+
+            return normalized;
+        }
+
+        internal static JObject NormalizeTravelerMetadata(JObject source)
+        {
+            JObject normalized = WithRequiredElement(source, "cryo");
+            if (!(normalized["ConstellationOrder"] is JObject elementOrders))
+            {
+                elementOrders = new JObject();
+                normalized["ConstellationOrder"] = elementOrders;
+            }
+
+            // Current game data: Cryo Traveler C3 raises Burst and C5 raises Skill.
+            // Repair persisted/downloaded records locally so scans do not depend on a database
+            // refresh, while preserving every existing non-Cryo element order verbatim.
+            if (!(elementOrders["cryo"] is JArray cryoOrder)
+                || cryoOrder.Count != 2
+                || !string.Equals((string)cryoOrder[0], "burst", StringComparison.Ordinal)
+                || !string.Equals((string)cryoOrder[1], "skill", StringComparison.Ordinal))
+            {
+                elementOrders["cryo"] = new JArray("burst", "skill");
             }
 
             return normalized;

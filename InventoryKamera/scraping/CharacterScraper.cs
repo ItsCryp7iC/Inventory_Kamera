@@ -689,18 +689,30 @@ namespace InventoryKamera
 
 				string talentLeveledAtConst3 = (string)order[0];
 				string talentLeveledAtConst5 = (string)order[1];
+				ApplyConstellationTalentAdjustments(
+					character,
+					talentLeveledAtConst3,
+					talentLeveledAtConst5);
+			}
+		}
 
-				if (character.Constellation >= 3)
-				{
-					Logger.Info("{0} constellation 3+, adjusting scanned {1} level", character.NameGOOD, talentLeveledAtConst3);
-					character.Talents[talentLeveledAtConst3] -= 3;
-				}
+		internal static void ApplyConstellationTalentAdjustments(
+			Character character,
+			string talentLeveledAtConst3,
+			string talentLeveledAtConst5)
+		{
+			if (character == null) throw new ArgumentNullException(nameof(character));
 
-				if (character.Constellation >= 5)
-				{
-					Logger.Info("{0} constellation 5+, adjusting scanned {1} level", character.NameGOOD, talentLeveledAtConst5);
-					character.Talents[talentLeveledAtConst5] -= 3;
-				}
+			if (character.Constellation >= 3)
+			{
+				Logger.Info("{0} constellation 3+, adjusting scanned {1} level", character.NameGOOD, talentLeveledAtConst3);
+				character.Talents[talentLeveledAtConst3] -= 3;
+			}
+
+			if (character.Constellation >= 5)
+			{
+				Logger.Info("{0} constellation 5+, adjusting scanned {1} level", character.NameGOOD, talentLeveledAtConst5);
+				character.Talents[talentLeveledAtConst5] -= 3;
 			}
 		}
 

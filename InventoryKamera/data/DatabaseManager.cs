@@ -446,7 +446,8 @@ namespace InventoryKamera
                                     { "Grass", "dendro" },
                                     { "Rock", "geo"},
                                     { "Water", "hydro"},
-                                    { "Wind", "anemo"}
+                                    { "Wind", "anemo"},
+                                    { "Ice", "cryo"}
                                 };
 
                                 value.Add("Element", new JArray(playerElements.Values));
@@ -628,6 +629,14 @@ namespace InventoryKamera
                 if (preservedTravelerConstellationOrder != null && newData.TryGetValue("traveler", out var travelerEntry))
                 {
                     travelerEntry["ConstellationOrder"] = preservedTravelerConstellationOrder;
+                }
+
+                // Persist the same authoritative Cryo metadata repair used when snapshots are
+                // constructed. This also repairs an older preserved order that predates Cryo,
+                // while leaving every existing non-Cryo order unchanged.
+                if (newData.TryGetValue("traveler", out travelerEntry))
+                {
+                    newData["traveler"] = GameDataSnapshotFactory.NormalizeTravelerMetadata(travelerEntry);
                 }
             }
             catch (Exception ex)

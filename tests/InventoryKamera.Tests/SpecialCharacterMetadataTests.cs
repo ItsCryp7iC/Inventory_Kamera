@@ -20,6 +20,9 @@ namespace InventoryKamera.Tests
                 GameDataSnapshotFactory.NormalizeSpecialCharacterMetadata(source);
 
             Assert.Contains("cryo", Elements(normalized["traveler"]));
+            Assert.Equal(
+                new[] { "burst", "skill" },
+                normalized["traveler"]["ConstellationOrder"]["cryo"].Values<string>().ToArray());
             Assert.DoesNotContain("cryo", Elements(traveler));
             Assert.NotSame(traveler, normalized["traveler"]);
         }
