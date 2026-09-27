@@ -654,7 +654,7 @@ namespace InventoryKamera
 			{
 				foreach (Character character in Characters)
 				{
-					if (artifact.EquippedCharacter == character.NameGOOD)
+					if (artifact.EquippedCharacter == character.CanonicalName)
 					{
 						character.AssignArtifact(artifact); // Do we even need to do this?
 						Logger.Debug("Assigned {0} to {1}", artifact.GearSlot, character.NameGOOD);
@@ -670,7 +670,7 @@ namespace InventoryKamera
 			{
 				foreach (Weapon weapon in equippedWeapons)
 				{
-					if (weapon.EquippedCharacter == character.NameGOOD)
+					if (weapon.EquippedCharacter == character.CanonicalName)
 					{
 						character.AssignWeapon(weapon);
 						Logger.Debug("Assigned {0} to {1}", weapon.Name, character.NameGOOD);

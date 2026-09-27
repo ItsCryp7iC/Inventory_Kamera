@@ -314,14 +314,15 @@ namespace InventoryKamera
 				// Verify the roster cursor is actually on this character before pressing B -- on a
 				// manequin (no constellation page) B closes the whole Character menu and derails the
 				// scan. See VerifyOnExpectedCharacter.
-				if (!VerifyOnExpectedCharacter(characterTiming, character, "Constellation")) return;
-
-				// Per user (2026-07-05): greedy (C6-first, read backward) mode only for 4-star
-				// characters so far -- see IsFourStarCharacter/ScanConstellationsGreedy.
-				character.Constellation = IsFourStarCharacter(character)
-					? ScanConstellationsGreedy(navigator, character, characterTiming)
-					: ScanConstellations(navigator, character, characterTiming);
-				Logger.Info("{0} Constellation: {1}", character.NameGOOD, character.Constellation);
+				VerifyOnExpectedCharacter(characterTiming, character, "Constellation", () =>
+				{
+					// Per user (2026-07-05): greedy (C6-first, read backward) mode only for 4-star
+					// characters so far -- see IsFourStarCharacter/ScanConstellationsGreedy.
+					character.Constellation = IsFourStarCharacter(character)
+						? ScanConstellationsGreedy(navigator, character, characterTiming)
+						: ScanConstellations(navigator, character, characterTiming);
+					Logger.Info("{0} Constellation: {1}", character.NameGOOD, character.Constellation);
+				});
 			}
 
 			// Per user (2026-07-05): no rewind step -- a full scan's cursor is already sitting on the
@@ -356,12 +357,13 @@ namespace InventoryKamera
 				// Same identity check as the constellation pass: confirm the cursor is on this
 				// character before reading talents, so a drifted cursor doesn't record a manequin's or
 				// the wrong character's talent levels.
-				if (!VerifyOnExpectedCharacter(characterTiming, character, "Talent")) return;
+				VerifyOnExpectedCharacter(characterTiming, character, "Talent", () =>
+				{
+					character.Talents = ScanTalents(character, characterTiming);
+					Logger.Info("{0} Talents: {1}", character.NameGOOD, "{" + string.Join(", ", character.Talents.Select(kv => kv.Key + "=" + kv.Value).ToArray()) + "}");
 
-				character.Talents = ScanTalents(character, characterTiming);
-				Logger.Info("{0} Talents: {1}", character.NameGOOD, "{" + string.Join(", ", character.Talents.Select(kv => kv.Key + "=" + kv.Value).ToArray()) + "}");
-
-				ApplyConstellationTalentScaling(character);
+					ApplyConstellationTalentScaling(character);
+				});
 			});
 
 			ApplyTartagliaFix(Characters);
@@ -527,15 +529,30 @@ namespace InventoryKamera
 		private bool VerifyOnExpectedCharacter(
 			CharacterNavigationTiming timing,
 			Character character,
-			string phaseLabel)
+			string phaseLabel,
+			Action verifiedAction)
 		{
 			string currentName = null, currentElement = null;
 			ScanNameAndElement(timing, ref currentName, ref currentElement, maxAttempts: 5);
-			if (currentName == character.NameGOOD) return true;
+			if (TryRunVerifiedCharacterAction(currentName, character, verifiedAction)) return true;
 
 			Logger.Warn("{0} scan expected \"{1}\" but the selected slot reads \"{2}\" -- skipping this character.",
-				phaseLabel, character.NameGOOD, currentName ?? "(unreadable)");
+				phaseLabel, character.CanonicalName, currentName ?? "(unreadable)");
 			return false;
+		}
+
+		internal static bool TryRunVerifiedCharacterAction(
+			string currentCanonicalName,
+			Character expectedCharacter,
+			Action verifiedAction)
+		{
+			if (expectedCharacter == null) throw new ArgumentNullException(nameof(expectedCharacter));
+			if (verifiedAction == null) throw new ArgumentNullException(nameof(verifiedAction));
+			if (!string.Equals(currentCanonicalName, expectedCharacter.CanonicalName, StringComparison.Ordinal))
+				return false;
+
+			verifiedAction();
+			return true;
 		}
 
 		/// <summary>

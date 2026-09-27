@@ -25,6 +25,9 @@ namespace InventoryKamera
             }
         }
 
+        [JsonIgnore]
+        internal string CanonicalName => _nameKey;
+
         [JsonProperty("level")]
         public int Level { get; internal set; }
 
