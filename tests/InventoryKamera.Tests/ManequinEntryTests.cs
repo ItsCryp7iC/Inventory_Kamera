@@ -19,12 +19,12 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
-        public void BuildManequinEntry_HasAllSixElements()
+        public void BuildManequinEntry_HasAllSevenElements()
         {
             var entry = GenshinProcesor.BuildManequinEntry("manequin1");
             var elements = entry["Element"].ToObject<string[]>();
 
-            Assert.Equal(new[] { "electro", "pyro", "dendro", "geo", "hydro", "anemo" }, elements);
+            Assert.Equal(new[] { "electro", "pyro", "dendro", "geo", "hydro", "anemo", "cryo" }, elements);
         }
 
         [Fact]

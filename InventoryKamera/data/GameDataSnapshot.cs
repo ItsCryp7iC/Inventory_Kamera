@@ -1,10 +1,8 @@
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 
@@ -103,7 +101,6 @@ namespace InventoryKamera
     /// </summary>
     internal sealed class GameDataSnapshotFactory
     {
-        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
         private static readonly string[] ManequinKeys = { "manequin1", "manequin2" };
         private readonly DatabaseManager databaseManager;
 
@@ -115,8 +112,7 @@ namespace InventoryKamera
         internal GameDataSnapshot Load()
         {
             DatabaseManager manager = databaseManager;
-            Dictionary<string, JObject> characters = manager.LoadCharacters();
-            EnsureManequinEntriesExist(characters, manager.ListsDir);
+            Dictionary<string, JObject> characters = NormalizeSpecialCharacterMetadata(manager.LoadCharacters());
 
             return new GameDataSnapshot(
                 characters,
@@ -146,28 +142,51 @@ namespace InventoryKamera
                 ["ConstellationName"] = new JArray(
                     "Support entry to omit manequins during scanning; GOOD does not support manequins."),
                 ["ConstellationOrder"] = new JArray("burst", "skill"),
-                ["Element"] = new JArray("electro", "pyro", "dendro", "geo", "hydro", "anemo"),
+                ["Element"] = new JArray("electro", "pyro", "dendro", "geo", "hydro", "anemo", "cryo"),
                 ["WeaponType"] = 0,
             };
         }
 
-        private static void EnsureManequinEntriesExist(Dictionary<string, JObject> characters, string listsDir)
+        internal static Dictionary<string, JObject> NormalizeSpecialCharacterMetadata(
+            IReadOnlyDictionary<string, JObject> characters)
         {
-            bool added = false;
+            if (characters == null) throw new ArgumentNullException(nameof(characters));
+
+            // These records can lag behind newly available special-character elements in downloaded
+            // or persisted data. Clone only the affected values so snapshot construction neither
+            // mutates its source JObjects nor rewrites characters.json.
+            var normalized = new Dictionary<string, JObject>(characters);
+            if (normalized.TryGetValue("traveler", out JObject traveler))
+                normalized["traveler"] = WithRequiredElement(traveler, "cryo");
+
             foreach (string key in ManequinKeys)
             {
-                if (characters.ContainsKey(key)) continue;
-                characters[key] = BuildManequinEntry(key);
-                added = true;
+                normalized[key] = normalized.TryGetValue(key, out JObject existing)
+                    ? WithRequiredElement(existing, "cryo")
+                    : BuildManequinEntry(key);
             }
 
-            if (!added) return;
-            File.WriteAllText(
-                Path.Combine(listsDir, "characters.json"),
-                JsonConvert.SerializeObject(
-                    new SortedDictionary<string, JObject>(characters),
-                    Formatting.Indented));
-            Logger.Info("Added missing manequin entries to characters.json");
+            return normalized;
+        }
+
+        private static JObject WithRequiredElement(JObject source, string requiredElement)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+
+            var normalized = (JObject)source.DeepClone();
+            if (!(normalized["Element"] is JArray elements))
+            {
+                elements = new JArray();
+                normalized["Element"] = elements;
+            }
+
+            if (!elements.Values<string>().Any(element =>
+                string.Equals(element, requiredElement, StringComparison.OrdinalIgnoreCase)))
+            {
+                elements.Add(requiredElement);
+            }
+
+            return normalized;
         }
 
         private static Dictionary<string, string> CreateStats()

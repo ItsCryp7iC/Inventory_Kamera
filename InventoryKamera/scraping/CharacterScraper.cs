@@ -191,7 +191,7 @@ namespace InventoryKamera
 				string name = null, element = null;
 				string rawRead = ScanNameAndElement(characterTiming, ref name, ref element);
 
-				bool isManequin = name == "Manequin1" || name == "Manequin2";
+				bool isManequin = IsManequinPlaceholder(name);
 				bool hasValidNameAndElement = !isManequin && !string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(element);
 
 				if (hasValidNameAndElement)
@@ -389,6 +389,9 @@ namespace InventoryKamera
 				Thread.Sleep(timing.Scale(100));
 			}
 		}
+
+		internal static bool IsManequinPlaceholder(string name) =>
+			name == "Manequin1" || name == "Manequin2";
 
 		/// <summary>
 		/// Runs <paramref name="scanCharacter"/> once per character in <paramref name="characters"/>,
