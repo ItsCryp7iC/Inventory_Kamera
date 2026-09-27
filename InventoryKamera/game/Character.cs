@@ -4,6 +4,13 @@ using Newtonsoft.Json;
 
 namespace InventoryKamera
 {
+    internal enum CharacterScanPhaseStatus
+    {
+        NotAttempted,
+        Succeeded,
+        Failed,
+    }
+
     [Serializable]
     public class Character
     {
@@ -27,6 +34,12 @@ namespace InventoryKamera
 
         [JsonIgnore]
         internal string CanonicalName => _nameKey;
+
+        [JsonIgnore]
+        internal CharacterScanPhaseStatus ConstellationScanStatus { get; private set; }
+
+        [JsonIgnore]
+        internal CharacterScanPhaseStatus TalentScanStatus { get; private set; }
 
         [JsonProperty("level")]
         public int Level { get; internal set; }
@@ -132,6 +145,58 @@ namespace InventoryKamera
 
             foreach (var value in Talents.Values) if (value < 1 || value > 15) return false;
 
+            return true;
+        }
+
+        internal void MarkConstellationScanSucceeded()
+        {
+            if (!HasValidConstellation())
+                throw new InvalidOperationException("A successful constellation scan must contain a value from 0 through 6.");
+            ConstellationScanStatus = CharacterScanPhaseStatus.Succeeded;
+        }
+
+        internal void MarkConstellationScanFailed() =>
+            ConstellationScanStatus = CharacterScanPhaseStatus.Failed;
+
+        internal void MarkTalentScanSucceeded()
+        {
+            if (!HasValidTalents())
+                throw new InvalidOperationException("A successful talent scan must contain three talent levels from 1 through 15.");
+            TalentScanStatus = CharacterScanPhaseStatus.Succeeded;
+        }
+
+        internal void MarkTalentScanFailed() =>
+            TalentScanStatus = CharacterScanPhaseStatus.Failed;
+
+        internal bool IsExportableToGood(out string reason)
+        {
+            if (ConstellationScanStatus != CharacterScanPhaseStatus.Succeeded)
+            {
+                reason = $"constellation scan status is {ConstellationScanStatus}";
+                return false;
+            }
+
+            if (TalentScanStatus != CharacterScanPhaseStatus.Succeeded)
+            {
+                reason = $"talent scan status is {TalentScanStatus}";
+                return false;
+            }
+
+            try
+            {
+                if (!IsValid())
+                {
+                    reason = "character model validation failed";
+                    return false;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                reason = $"character model validation could not run: {ex.Message}";
+                return false;
+            }
+
+            reason = null;
             return true;
         }
 

@@ -58,15 +58,15 @@ namespace InventoryKamera
 					{
 						for (int j = 0; j < 4; j++)
 						{
-							Characters[j].Talents["auto"] -= 1;
-							Logger.Info("Applied Tartaglia auto attack fix to {0} at position {1}.", Characters[j].NameGOOD, j);
+							if (TryApplyTalentAdjustment(Characters[j], "auto", -1))
+								Logger.Info("Applied Tartaglia auto attack fix to {0} at position {1}.", Characters[j].NameGOOD, j);
 						}
 						break;
 					}
 					else
 					{
-						Characters[i].Talents["auto"] -= 1;
-						Logger.Info("Applied Tartaglia auto attack fix to self only.");
+						if (TryApplyTalentAdjustment(Characters[i], "auto", -1))
+							Logger.Info("Applied Tartaglia auto attack fix to self only.");
 						break;
 					}
 				}
@@ -99,9 +99,22 @@ namespace InventoryKamera
 			Logger.Info("Skirk found on an all-Hydro/Cryo team -- applying team Skill buff correction.");
 			for (int j = 0; j < 4; j++)
 			{
-				Characters[j].Talents["skill"] -= 1;
-				Logger.Info("Applied Skirk skill fix to {0} at position {1}.", Characters[j].NameGOOD, j);
+				if (TryApplyTalentAdjustment(Characters[j], "skill", -1))
+					Logger.Info("Applied Skirk skill fix to {0} at position {1}.", Characters[j].NameGOOD, j);
 			}
+		}
+
+		internal static bool TryApplyTalentAdjustment(
+			Character character,
+			string talent,
+			int adjustment)
+		{
+			if (character == null) throw new ArgumentNullException(nameof(character));
+			if (character.TalentScanStatus != CharacterScanPhaseStatus.Succeeded)
+				return false;
+
+			character.Talents[talent] += adjustment;
+			return true;
 		}
 
 		/// <summary>
@@ -313,15 +326,19 @@ namespace InventoryKamera
 				// Verify the roster cursor is actually on this character before pressing B -- on a
 				// manequin (no constellation page) B closes the whole Character menu and derails the
 				// scan. See VerifyOnExpectedCharacter.
-				VerifyOnExpectedCharacter(characterTiming, character, "Constellation", () =>
+				if (!VerifyOnExpectedCharacter(characterTiming, character, CharacterVerificationPhase.Constellation, () =>
 				{
 					// Per user (2026-07-05): greedy (C6-first, read backward) mode only for 4-star
 					// characters so far -- see IsFourStarCharacter/ScanConstellationsGreedy.
 					character.Constellation = IsFourStarCharacter(character)
 						? ScanConstellationsGreedy(navigator, character, characterTiming)
 						: ScanConstellations(navigator, character, characterTiming);
+					character.MarkConstellationScanSucceeded();
 					Logger.Info("{0} Constellation: {1}", character.NameGOOD, character.Constellation);
-				});
+				}))
+				{
+					MarkCharacterPhaseUnavailable(character, CharacterVerificationPhase.Constellation);
+				}
 			}
 
 			// Per user (2026-07-05): no rewind step -- a full scan's cursor is already sitting on the
@@ -350,19 +367,24 @@ namespace InventoryKamera
 			navigator.Move(GameNavigator.MenuDirection.Down, 1,
 				holdMs: characterTiming.Scale(150),
 				settleMs: characterTiming.Scale(150));
-
 			ScanRosterForward(navigator, characterTiming, characterList, gapsBeforeEach, null, character =>
 			{
 				// Same identity check as the constellation pass: confirm the cursor is on this
 				// character before reading talents, so a drifted cursor doesn't record a manequin's or
 				// the wrong character's talent levels.
-				VerifyOnExpectedCharacter(characterTiming, character, "Talent", () =>
+				if (!VerifyOnExpectedCharacter(characterTiming, character, CharacterVerificationPhase.Talent, () =>
 				{
-					character.Talents = ScanTalents(character, characterTiming);
+					bool talentScanSucceeded = TrySetScannedTalents(
+						character,
+						ScanTalents(character, characterTiming));
 					Logger.Info("{0} Talents: {1}", character.NameGOOD, "{" + string.Join(", ", character.Talents.Select(kv => kv.Key + "=" + kv.Value).ToArray()) + "}");
 
-					ApplyConstellationTalentScaling(character);
-				});
+					if (talentScanSucceeded)
+						ApplyConstellationTalentScaling(character);
+				}))
+				{
+					MarkCharacterPhaseUnavailable(character, CharacterVerificationPhase.Talent);
+				}
 			});
 
 			ApplyTartagliaFix(Characters);
@@ -522,22 +544,189 @@ namespace InventoryKamera
 		/// the wrong slot -- pressing confirm on a manequin closes the whole Character menu, and reading
 		/// a wrong slot records another character's constellation/talent data. Returns false (and logs)
 		/// on any mismatch or unreadable slot, so the caller skips that character rather than corrupting
-		/// it. Uses a small retry budget (fails fast on a wrong slot); the name/element header is shown
-		/// on every Character sub-tab, so it reads the same region as Phase 1's Attributes read.
+		/// it. Uses a small retry budget and independently resolves the existing block and single-line
+		/// OCR readings on each fresh capture; the name/element header is shown on every Character
+		/// sub-tab, so it reads the same region and uses the same preprocessing as Phase 1.
 		/// </summary>
 		private bool VerifyOnExpectedCharacter(
 			CharacterNavigationTiming timing,
 			Character character,
-			string phaseLabel,
+			CharacterVerificationPhase phase,
 			Action verifiedAction)
 		{
-			string currentName = null, currentElement = null;
-			ScanNameAndElement(timing, ref currentName, ref currentElement, maxAttempts: 5);
-			if (TryRunVerifiedCharacterAction(currentName, character, verifiedAction)) return true;
+			const int maxAttempts = 5;
+			Rectangle region = NameElementRegion();
+			var diagnosticFrames = new List<CharacterVerificationDiagnosticFrame>();
 
-			Logger.Warn("{0} scan expected \"{1}\" but the selected slot reads \"{2}\" -- skipping this character.",
-				phaseLabel, character.CanonicalName, currentName ?? "(unreadable)");
-			return false;
+			try
+			{
+				bool verified = ExpectedCharacterVerifier.TryVerify(
+					character,
+					maxAttempts,
+					attemptNumber =>
+					{
+						Bitmap header = Navigation.CaptureRegion(region);
+						Bitmap processed = imagePreprocessor.ConvertToGrayscale(header);
+						imagePreprocessor.SetThreshold(110, ref processed);
+						imagePreprocessor.SetInvert(ref processed);
+
+						Bitmap resized = GenshinProcesor.ResizeImage(
+							processed,
+							processed.Width * 2,
+							processed.Height * 2);
+						processed.Dispose();
+						processed = resized;
+
+						string block = ocrService.AnalyzeText(processed, Tesseract.PageSegMode.Auto).Trim();
+						string line = ocrService.AnalyzeText(processed, Tesseract.PageSegMode.SingleLine).Trim();
+						var frame = new CharacterVerificationDiagnosticFrame(header, processed);
+						diagnosticFrames.Add(frame);
+						return ExpectedCharacterVerifier.ResolveAttempt(block, line, gameData);
+					},
+					(attemptNumber, attempt, decision) =>
+					{
+						Logger.Debug(
+							"Character verification: phase={0}; expected={1}; attempt={2}/{3}; " +
+							"blockRaw=\"{4}\"; blockCanonical={5}; blockElement={6}; " +
+							"lineRaw=\"{7}\"; lineCanonical={8}; lineElement={9}; accepted={10}; reason={11}",
+							phase,
+							character.CanonicalName,
+							attemptNumber,
+							maxAttempts,
+							ForDiagnosticLog(attempt.Block.RawText),
+							attempt.Block.CanonicalName ?? "(unresolved)",
+							attempt.Block.Element ?? "(unresolved)",
+							ForDiagnosticLog(attempt.Line.RawText),
+							attempt.Line.CanonicalName ?? "(unresolved)",
+							attempt.Line.Element ?? "(unresolved)",
+							decision.Accepted,
+							decision.Reason);
+
+						if (decision.Accepted)
+						{
+							CharacterVerificationDiagnosticFrame frame = diagnosticFrames[attemptNumber - 1];
+							progressReporter.SetCharacter_NameAndElement(
+								frame.Header,
+								decision.CanonicalName,
+								decision.Element);
+						}
+					},
+					() => Thread.Sleep(timing.Scale(200)),
+					verifiedAction);
+
+				if (verified) return true;
+
+				Logger.Warn(
+					"{0} scan could not positively verify expected character \"{1}\" after {2} fresh capture(s) -- skipping this character.",
+					phase,
+					character.CanonicalName,
+					maxAttempts);
+				SaveCharacterVerificationDiagnostics(character, phase, diagnosticFrames);
+				return false;
+			}
+			finally
+			{
+				foreach (CharacterVerificationDiagnosticFrame frame in diagnosticFrames)
+					frame.Dispose();
+			}
+		}
+
+		internal static void MarkCharacterPhaseUnavailable(
+			Character character,
+			CharacterVerificationPhase phase)
+		{
+			if (character == null) throw new ArgumentNullException(nameof(character));
+
+			if (phase == CharacterVerificationPhase.Constellation)
+			{
+				character.Constellation = -1;
+				character.MarkConstellationScanFailed();
+				return;
+			}
+
+			character.Talents = UnavailableTalents();
+			character.MarkTalentScanFailed();
+		}
+
+		internal static bool TrySetScannedTalents(
+			Character character,
+			Dictionary<string, int> talents)
+		{
+			if (character == null) throw new ArgumentNullException(nameof(character));
+
+			character.Talents = talents ?? UnavailableTalents();
+			if (!character.HasValidTalents())
+			{
+				character.MarkTalentScanFailed();
+				return false;
+			}
+
+			character.MarkTalentScanSucceeded();
+			return true;
+		}
+
+		internal static Dictionary<string, int> UnavailableTalents() =>
+			new Dictionary<string, int>
+			{
+				{ "auto", -1 },
+				{ "skill", -1 },
+				{ "burst", -1 },
+			};
+
+		private static string ForDiagnosticLog(string text) =>
+			(text ?? string.Empty).Replace("\r", "\\r").Replace("\n", "\\n");
+
+		private static string SafeDiagnosticName(string name) =>
+			Regex.Replace(name ?? "unknown", @"[^a-zA-Z0-9_-]", "_");
+
+		private void SaveCharacterVerificationDiagnostics(
+			Character character,
+			CharacterVerificationPhase phase,
+			IReadOnlyList<CharacterVerificationDiagnosticFrame> frames)
+		{
+			string folderName = string.Format(
+				"{0}_{1}_{2}_{3}",
+				SafeDiagnosticName(character.CanonicalName),
+				phase.ToString().ToLowerInvariant(),
+				DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff"),
+				Guid.NewGuid().ToString("N").Substring(0, 8));
+			string folder = Path.Combine(".", "logging", "character_verification", folderName);
+
+			try
+			{
+				Directory.CreateDirectory(folder);
+				for (int i = 0; i < frames.Count; i++)
+				{
+					frames[i].Header.Save(Path.Combine(folder, $"attempt_{i + 1:00}_header.png"));
+					frames[i].Processed.Save(Path.Combine(folder, $"attempt_{i + 1:00}_processed.png"));
+				}
+
+				using (Bitmap full = Navigation.CaptureWindow())
+					full.Save(Path.Combine(folder, "failure_full.png"));
+				Logger.Warn("Saved character verification diagnostics to {0}", folder);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save character verification diagnostics to {0}", folder);
+			}
+		}
+
+		private sealed class CharacterVerificationDiagnosticFrame : IDisposable
+		{
+			internal CharacterVerificationDiagnosticFrame(Bitmap header, Bitmap processed)
+			{
+				Header = header ?? throw new ArgumentNullException(nameof(header));
+				Processed = processed ?? throw new ArgumentNullException(nameof(processed));
+			}
+
+			internal Bitmap Header { get; }
+			internal Bitmap Processed { get; }
+
+			public void Dispose()
+			{
+				Header.Dispose();
+				Processed.Dispose();
+			}
 		}
 
 		internal static bool TryRunVerifiedCharacterAction(
@@ -1161,12 +1350,7 @@ namespace InventoryKamera
 			Character character,
 			CharacterNavigationTiming timing)
 		{
-			var talents = new Dictionary<string, int>
-			{
-				{ "auto" , -1 },
-				{ "skill", -1 },
-				{ "burst", -1 }
-			};
+			var talents = UnavailableTalents();
 
 			Rectangle region = new RECT(
 				Left:   (int)( 0.8290 * Navigation.GetWidth() ),

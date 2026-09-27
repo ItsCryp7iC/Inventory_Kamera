@@ -10,6 +10,8 @@ namespace InventoryKamera
 {
     public class GOOD
     {
+        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+
         [JsonProperty("format")]
         public string Format { get; private set; }
 
@@ -41,8 +43,29 @@ namespace InventoryKamera
             Source = "NOT FILLED";
         }
 
-        public GOOD(GameScanner genshinData) : this()
+        public GOOD(GameScanner genshinData) : this(
+            genshinData?.Characters,
+            genshinData?.Inventory?.Weapons,
+            genshinData?.Inventory?.Artifacts,
+            genshinData?.Inventory?.AllMaterials,
+            Properties.Settings.Default.EquipWeapons,
+            Properties.Settings.Default.EquipArtifacts)
         {
+        }
+
+        internal GOOD(
+            IEnumerable<Character> characters,
+            IEnumerable<Weapon> weapons,
+            IEnumerable<Artifact> artifacts,
+            IEnumerable<Material> materials,
+            bool equipWeapons,
+            bool equipArtifacts) : this()
+        {
+            if (characters == null) throw new ArgumentNullException(nameof(characters));
+            if (weapons == null) throw new ArgumentNullException(nameof(weapons));
+            if (artifacts == null) throw new ArgumentNullException(nameof(artifacts));
+            if (materials == null) throw new ArgumentNullException(nameof(materials));
+
             // Get rid of VS warning since we are converting this class to JSON
             Format = "GOOD";
             Version = 3;
@@ -50,11 +73,27 @@ namespace InventoryKamera
             Source = "Inventory_Kamera";
 
             // Assign Characters
-            if (genshinData.Characters.Count > 0)
+            var exportableCharacters = new List<Character>();
+            foreach (Character character in characters)
             {
-                Characters = new List<Character>(genshinData.Characters);
+                if (character.IsExportableToGood(out string reason))
+                {
+                    exportableCharacters.Add(character);
+                }
+                else
+                {
+                    Logger.Warn(
+                        "Omitting character {0} from GOOD export: {1}.",
+                        character.NameGOOD ?? "(unnamed)",
+                        reason);
+                }
+            }
 
-                if (!Properties.Settings.Default.EquipWeapons)
+            if (exportableCharacters.Count > 0)
+            {
+                Characters = exportableCharacters;
+
+                if (!equipWeapons)
                 {
                     foreach (Character character in Characters) character.Weapon = null;
                 }
@@ -63,30 +102,33 @@ namespace InventoryKamera
 
 
             // Assign Weapons
-            if (genshinData.Inventory.Weapons.Count > 0)
+            var exportedWeapons = weapons.ToList();
+            if (exportedWeapons.Count > 0)
             {
-                Weapons = new List<Weapon>(genshinData.Inventory.Weapons);
+                Weapons = exportedWeapons;
 
-                if (!Properties.Settings.Default.EquipWeapons)
+                if (!equipWeapons)
                 {
                     foreach (Weapon weapon in Weapons) weapon.EquippedCharacter = "";
                 }
             }
 
             // Assign Artifacts
-            if (genshinData.Inventory.Artifacts.Count > 0)
+            var exportedArtifacts = artifacts.ToList();
+            if (exportedArtifacts.Count > 0)
             {
-                Artifacts = new List<Artifact>(genshinData.Inventory.Artifacts);
+                Artifacts = exportedArtifacts;
 
-                if (!Properties.Settings.Default.EquipArtifacts)
+                if (!equipArtifacts)
                 {
                     foreach (Artifact artifact in Artifacts) artifact.EquippedCharacter = "";
                 }
             }
 
             // Assign materials
-            if (genshinData.Inventory.AllMaterials.Count > 0) Materials = new Dictionary<string, int>();
-            genshinData.Inventory.AllMaterials.ToList().ForEach(material => Materials.Add(material.name, material.count));
+            var exportedMaterials = materials.ToList();
+            if (exportedMaterials.Count > 0) Materials = new Dictionary<string, int>();
+            exportedMaterials.ForEach(material => Materials.Add(material.name, material.count));
         }
 
         internal void WriteToJSON(string outputDirectory, IScanProgressReporter progressReporter)

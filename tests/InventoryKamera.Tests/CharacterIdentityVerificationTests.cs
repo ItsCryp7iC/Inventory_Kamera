@@ -1,4 +1,7 @@
+using Newtonsoft.Json.Linq;
 using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
 using Xunit;
 
 namespace InventoryKamera.Tests
@@ -159,10 +162,372 @@ namespace InventoryKamera.Tests
             Assert.True(CharacterScraper.IsManequinPlaceholder(manequin.CanonicalName));
         }
 
+        [Fact]
+        public void OrdinaryCharacterIsVerifiedOnFirstAttempt()
+        {
+            Character jean = CreateCharacter("Jean", "Anemo");
+            int reads = 0;
+            int callbacks = 0;
+
+            bool verified = ExpectedCharacterVerifier.TryVerify(
+                jean,
+                maxAttempts: 5,
+                _ =>
+                {
+                    reads++;
+                    return Attempt(Resolved("Jean", "Anemo"), Unresolved());
+                },
+                observeAttempt: null,
+                waitAfterRejectedAttempt: null,
+                verifiedAction: () => callbacks++);
+
+            Assert.True(verified);
+            Assert.Equal(1, reads);
+            Assert.Equal(1, callbacks);
+        }
+
+        [Fact]
+        public void RejectedAttemptsRequestFreshReadsUntilLaterAttemptSucceeds()
+        {
+            Character jean = CreateCharacter("Jean", "Anemo");
+            var attempts = new Queue<ExpectedCharacterVerificationAttempt>(new[]
+            {
+                Attempt(Unresolved("first"), Unresolved("first")),
+                Attempt(Unresolved("second"), Unresolved("second")),
+                Attempt(Resolved("Jean", "Anemo"), Resolved("Jean", "Anemo")),
+            });
+            int reads = 0;
+            int waits = 0;
+            bool callbackRan = false;
+
+            bool verified = ExpectedCharacterVerifier.TryVerify(
+                jean,
+                maxAttempts: 5,
+                _ =>
+                {
+                    reads++;
+                    return attempts.Dequeue();
+                },
+                observeAttempt: null,
+                waitAfterRejectedAttempt: () => waits++,
+                verifiedAction: () => callbackRan = true);
+
+            Assert.True(verified);
+            Assert.Equal(3, reads);
+            Assert.Equal(2, waits);
+            Assert.True(callbackRan);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void OneUnreadableOcrPathDoesNotHideAValidIndependentSignal(bool blockSucceeds)
+        {
+            ExpectedCharacterVerificationAttempt attempt = blockSucceeds
+                ? Attempt(Resolved("Jean", "Anemo"), Unresolved("noise"))
+                : Attempt(Unresolved("noise"), Resolved("Jean", "Anemo"));
+
+            ExpectedCharacterVerificationDecision result = ExpectedCharacterVerifier.Evaluate("Jean", attempt);
+
+            Assert.True(result.Accepted);
+            Assert.Equal("Jean", result.CanonicalName);
+            Assert.Equal("Anemo", result.Element);
+        }
+
+        [Fact]
+        public void MatchingBlockAndLineSignalsAreAccepted()
+        {
+            ExpectedCharacterVerificationDecision result = ExpectedCharacterVerifier.Evaluate(
+                "Jean",
+                Attempt(Resolved("Jean", "Anemo"), Resolved("Jean", "Anemo")));
+
+            Assert.True(result.Accepted);
+            Assert.Contains("agree", result.Reason);
+        }
+
+        [Fact]
+        public void RawHeaderPathsAreResolvedIndependentlyWithExistingNormalization()
+        {
+            GameDataSnapshot snapshot = CreateVerificationSnapshot();
+
+            ExpectedCharacterVerificationAttempt attempt = ExpectedCharacterVerifier.ResolveAttempt(
+                "Anemo / Jean",
+                "unreadable particles",
+                snapshot);
+            ExpectedCharacterVerificationDecision result = ExpectedCharacterVerifier.Evaluate("Jean", attempt);
+
+            Assert.True(attempt.Block.IsResolved);
+            Assert.False(attempt.Line.IsResolved);
+            Assert.True(result.Accepted);
+        }
+
+        [Fact]
+        public void BothUnreadablePathsExhaustBoundedAttemptsWithoutCallback()
+        {
+            Character jean = CreateCharacter("Jean", "Anemo");
+            int reads = 0;
+            int callbackCount = 0;
+
+            bool verified = ExpectedCharacterVerifier.TryVerify(
+                jean,
+                maxAttempts: 5,
+                _ =>
+                {
+                    reads++;
+                    return Attempt(Unresolved("noise"), Unresolved("noise"));
+                },
+                observeAttempt: null,
+                waitAfterRejectedAttempt: null,
+                verifiedAction: () => callbackCount++);
+
+            Assert.False(verified);
+            Assert.Equal(5, reads);
+            Assert.Equal(0, callbackCount);
+        }
+
+        [Fact]
+        public void WrongCharacterWithSameElementIsRejected()
+        {
+            ExpectedCharacterVerificationDecision result = ExpectedCharacterVerifier.Evaluate(
+                "Jean",
+                Attempt(Resolved("Venti", "Anemo"), Unresolved()));
+
+            Assert.False(result.Accepted);
+            Assert.Equal("Venti", result.CanonicalName);
+        }
+
+        [Fact]
+        public void ConflictingCanonicalIdentitiesAreRejectedEvenWhenOneMatchesExpected()
+        {
+            ExpectedCharacterVerificationDecision result = ExpectedCharacterVerifier.Evaluate(
+                "Jean",
+                Attempt(Resolved("Jean", "Anemo"), Resolved("Skirk", "Cryo")));
+
+            Assert.False(result.Accepted);
+            Assert.Contains("conflicting", result.Reason);
+        }
+
+        [Fact]
+        public void NameThatDidNotResolveIsRejectedEvenWhenElementDid()
+        {
+            ExpectedCharacterVerificationDecision result = ExpectedCharacterVerifier.Evaluate(
+                "Jean",
+                Attempt(new CharacterIdentitySignal("Anemo / ???", null, "Anemo"), Unresolved()));
+
+            Assert.False(result.Accepted);
+            Assert.Contains("unresolved", result.Reason);
+        }
+
+        [Fact]
+        public void TravelerUsesCanonicalIdentityWhileKeepingElementSpecificGoodKey()
+        {
+            Character traveler = CreateCharacter("Traveler", "Cryo");
+            bool callbackRan = false;
+
+            bool verified = ExpectedCharacterVerifier.TryVerify(
+                traveler,
+                maxAttempts: 1,
+                _ => Attempt(Resolved("Traveler", "Cryo"), Unresolved()),
+                observeAttempt: null,
+                waitAfterRejectedAttempt: null,
+                verifiedAction: () => callbackRan = true);
+
+            Assert.True(verified);
+            Assert.True(callbackRan);
+            Assert.Equal("TravelerCryo", traveler.NameGOOD);
+        }
+
+        [Theory]
+        [InlineData("Manequin1")]
+        [InlineData("Manequin2")]
+        public void ManequinCanonicalVerificationBehaviorIsUnchanged(string canonicalName)
+        {
+            Character manequin = CreateCharacter(canonicalName, "Cryo");
+            bool callbackRan = false;
+
+            bool verified = ExpectedCharacterVerifier.TryVerify(
+                manequin,
+                maxAttempts: 1,
+                _ => Attempt(Resolved(canonicalName, "Cryo"), Unresolved()),
+                observeAttempt: null,
+                waitAfterRejectedAttempt: null,
+                verifiedAction: () => callbackRan = true);
+
+            Assert.True(verified);
+            Assert.True(callbackRan);
+            Assert.Equal(canonicalName, manequin.NameGOOD);
+            Assert.Equal(CharacterScanPhaseStatus.NotAttempted, manequin.ConstellationScanStatus);
+            Assert.Equal(CharacterScanPhaseStatus.NotAttempted, manequin.TalentScanStatus);
+        }
+
+        [Fact]
+        public void TalentVerificationFailureMarksPhaseFailedAndKeepsInternalSentinel()
+        {
+            Character character = CreateCharacter("Albedo", "Geo");
+
+            CharacterScraper.MarkCharacterPhaseUnavailable(character, CharacterVerificationPhase.Talent);
+
+            Assert.Equal(CharacterScanPhaseStatus.Failed, character.TalentScanStatus);
+            Assert.Equal(-1, character.Talents["auto"]);
+            Assert.Equal(-1, character.Talents["skill"]);
+            Assert.Equal(-1, character.Talents["burst"]);
+        }
+
+        [Fact]
+        public void ConstellationVerificationFailureMarksPhaseFailedAndKeepsInternalSentinel()
+        {
+            Character character = CreateCharacter("Albedo", "Geo");
+
+            CharacterScraper.MarkCharacterPhaseUnavailable(character, CharacterVerificationPhase.Constellation);
+
+            Assert.Equal(CharacterScanPhaseStatus.Failed, character.ConstellationScanStatus);
+            Assert.Equal(-1, character.Constellation);
+        }
+
+        [Fact]
+        public void TalentOcrFailureMarksPhaseFailed()
+        {
+            Character character = CreateCharacter("Albedo", "Geo");
+
+            bool succeeded = CharacterScraper.TrySetScannedTalents(
+                character,
+                CharacterScraper.UnavailableTalents());
+
+            Assert.False(succeeded);
+            Assert.Equal(CharacterScanPhaseStatus.Failed, character.TalentScanStatus);
+        }
+
+        [Fact]
+        public void FailedTalentResultCannotBeMutatedByPostProcessing()
+        {
+            Character character = CreateCharacter("Albedo", "Geo");
+            CharacterScraper.MarkCharacterPhaseUnavailable(character, CharacterVerificationPhase.Talent);
+
+            bool adjusted = CharacterScraper.TryApplyTalentAdjustment(character, "auto", -1);
+
+            Assert.False(adjusted);
+            Assert.Equal(-1, character.Talents["auto"]);
+        }
+
+        [Fact]
+        public void ValidTalentResultMarksPhaseSucceeded()
+        {
+            Character character = CreateCharacter("Jean", "Anemo");
+
+            bool succeeded = CharacterScraper.TrySetScannedTalents(
+                character,
+                new Dictionary<string, int>
+                {
+                    ["auto"] = 6,
+                    ["skill"] = 9,
+                    ["burst"] = 10,
+                });
+
+            Assert.True(succeeded);
+            Assert.Equal(CharacterScanPhaseStatus.Succeeded, character.TalentScanStatus);
+        }
+
+        [Fact]
+        public void PhaseStatusesAreInternalOnly()
+        {
+            Character character = CreateCharacter("Jean", "Anemo");
+            character.Constellation = 0;
+            character.MarkConstellationScanSucceeded();
+            CharacterScraper.TrySetScannedTalents(
+                character,
+                new Dictionary<string, int>
+                {
+                    ["auto"] = 6,
+                    ["skill"] = 9,
+                    ["burst"] = 10,
+                });
+
+            string json = JsonConvert.SerializeObject(character);
+
+            Assert.DoesNotContain("ConstellationScanStatus", json);
+            Assert.DoesNotContain("TalentScanStatus", json);
+        }
+
+        [Fact]
+        public void SuccessfulVerificationDoesNotReplaceValidTalentValues()
+        {
+            Character character = CreateCharacter("Jean", "Anemo");
+            character.Talents = new Dictionary<string, int>
+            {
+                ["auto"] = 6,
+                ["skill"] = 9,
+                ["burst"] = 10,
+            };
+
+            bool verified = ExpectedCharacterVerifier.TryVerify(
+                character,
+                maxAttempts: 1,
+                _ => Attempt(Resolved("Jean", "Anemo"), Unresolved()),
+                observeAttempt: null,
+                waitAfterRejectedAttempt: null,
+                verifiedAction: () => { });
+
+            Assert.True(verified);
+            Assert.Equal(6, character.Talents["auto"]);
+            Assert.Equal(9, character.Talents["skill"]);
+            Assert.Equal(10, character.Talents["burst"]);
+        }
+
         private static Character CreateCharacter(string canonicalName, string element) => new Character
         {
             NameGOOD = canonicalName,
             Element = element,
+        };
+
+        private static CharacterIdentitySignal Resolved(string name, string element) =>
+            new CharacterIdentitySignal($"{element} / {name}", name, element);
+
+        private static CharacterIdentitySignal Unresolved(string raw = "") =>
+            new CharacterIdentitySignal(raw, null, null);
+
+        private static ExpectedCharacterVerificationAttempt Attempt(
+            CharacterIdentitySignal block,
+            CharacterIdentitySignal line) =>
+            new ExpectedCharacterVerificationAttempt(block, line);
+
+        private static GameDataSnapshot CreateVerificationSnapshot()
+        {
+            var characters = new Dictionary<string, JObject>
+            {
+                ["jean"] = CharacterData("Jean", "anemo"),
+                ["venti"] = CharacterData("Venti", "anemo"),
+                ["skirk"] = CharacterData("Skirk", "cryo"),
+                ["traveler"] = CharacterData(
+                    "Traveler",
+                    "anemo",
+                    "geo",
+                    "electro",
+                    "dendro",
+                    "hydro",
+                    "pyro",
+                    "cryo"),
+            };
+
+            return new GameDataSnapshot(
+                characters,
+                new Dictionary<string, JObject>(),
+                new Dictionary<string, string>(),
+                new Dictionary<string, string>(),
+                new Dictionary<string, string>(),
+                new Dictionary<string, string>(),
+                new Dictionary<string, string>
+                {
+                    ["anemo"] = "Anemo",
+                    ["cryo"] = "Cryo",
+                },
+                Array.Empty<string>(),
+                Array.Empty<string>());
+        }
+
+        private static JObject CharacterData(string goodName, params string[] elements) => new JObject
+        {
+            ["GOOD"] = goodName,
+            ["Element"] = new JArray(elements),
         };
     }
 }
