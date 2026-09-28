@@ -330,11 +330,23 @@ namespace InventoryKamera
 				{
 					// Per user (2026-07-05): greedy (C6-first, read backward) mode only for 4-star
 					// characters so far -- see IsFourStarCharacter/ScanConstellationsGreedy.
-					character.Constellation = IsFourStarCharacter(character)
+					ConstellationScanResult result = IsFourStarCharacter(character)
 						? ScanConstellationsGreedy(navigator, character, characterTiming)
 						: ScanConstellations(navigator, character, characterTiming);
-					character.MarkConstellationScanSucceeded();
-					Logger.Info("{0} Constellation: {1}", character.NameGOOD, character.Constellation);
+
+					if (TrySetScannedConstellation(character, result))
+					{
+						Logger.Info("{0} Constellation: {1}", character.NameGOOD, character.Constellation);
+					}
+					else
+					{
+						progressReporter.AddError(
+							$"Could not determine {character.NameGOOD}'s constellation: {result.Reason}.");
+						Logger.Warn(
+							"{0} constellation scan failed safely: {1}",
+							character.NameGOOD,
+							result.Reason);
+					}
 				}))
 				{
 					MarkCharacterPhaseUnavailable(character, CharacterVerificationPhase.Constellation);
@@ -662,6 +674,23 @@ namespace InventoryKamera
 			}
 
 			character.MarkTalentScanSucceeded();
+			return true;
+		}
+
+		internal static bool TrySetScannedConstellation(
+			Character character,
+			ConstellationScanResult result)
+		{
+			if (character == null) throw new ArgumentNullException(nameof(character));
+
+			if (!result.Success)
+			{
+				MarkCharacterPhaseUnavailable(character, CharacterVerificationPhase.Constellation);
+				return false;
+			}
+
+			character.Constellation = result.Constellation;
+			character.MarkConstellationScanSucceeded();
 			return true;
 		}
 
@@ -1156,31 +1185,28 @@ namespace InventoryKamera
 		/// constellation already focused), then a single left-stick Down step advances focus to the
 		/// next constellation -- the same fixed on-screen region always shows whichever constellation
 		/// is currently focused, so there is no per-node capture-region math like the mouse path
-		/// needed. Unlock state is read via OCR for the literal word "Activated" (a locked
-		/// constellation instead prompts "Activate", per user) rather than the mouse path's
-		/// white-background color sample. Exits via cancel (A) once done or once a locked
-		/// constellation is found. Region measured (2026-07-05) with <c>ui/CoordinatePickerForm.cs</c>.
+		/// needed. Unlock state is read through separate OCR evidence regions for the literal word
+		/// "Activated" and the locked-panel phrase "Activate required", rather than the mouse path's
+		/// white-background color sample. Exits via cancel (A) once done, once a locked
+		/// constellation is found, or once a node remains unresolved after bounded retries. Region
+		/// measured (2026-07-05) with <c>ui/CoordinatePickerForm.cs</c>.
 		/// </summary>
-		private int ScanConstellations(
+		private ConstellationScanResult ScanConstellations(
 			GameNavigator navigator,
 			Character character,
 			CharacterNavigationTiming timing)
 		{
-			Rectangle activatedRegion = new RECT(
-				Left:   (int)( 0.1574 * Navigation.GetWidth() ),
-				Top:    (int)( 0.8323 * Navigation.GetHeight() ),
-				Right:  (int)( 0.2241 * Navigation.GetWidth() ),
-				Bottom: (int)( 0.8777 * Navigation.GetHeight() ));
-
-			int constellation;
+			Rectangle activatedRegion = ConstellationCaptureRegions.Activated(
+				new Size(Navigation.GetWidth(), Navigation.GetHeight()));
 
 			navigator.TapConfirm(timing.Scale(300));
 			Thread.Sleep(timing.Scale(600)); // set to 600 per user (2026-07-05)
 
 			Bitmap constellationShot = null;
-			for (constellation = 0; constellation < 6; constellation++)
+			var states = new List<ConstellationNodeState>();
+			for (int node = 1; node <= ConstellationSequenceEvaluator.NodeCount; node++)
 			{
-				if (constellation > 0)
+				if (node > 1)
 				{
 					// Per user (2026-07-05): settleMs already sleeps after the stick releases
 					// (GameNavigator.MoveStep), so a separate Thread.Sleep on top of it was a
@@ -1190,66 +1216,239 @@ namespace InventoryKamera
 						settleMs: timing.Scale(400));
 				}
 
-				LogCharacterScreenshot(character.NameGOOD, $"constellations/constellation_{constellation + 1}", activatedRegion);
-				LogCharacterWindow(character.NameGOOD, $"constellations/constellation_{constellation + 1}");
+				LogCharacterScreenshot(character.NameGOOD, $"constellations/constellation_{node}", activatedRegion);
+				LogCharacterWindow(character.NameGOOD, $"constellations/constellation_{node}");
 
-				bool activated = ReadConstellationActivated(activatedRegion, timing);
-
-				// Capture the constellation region to show in the UI: keep the last ACTIVATED node,
-				// falling back to the first node examined so a C0 character still shows something.
-				if (activated || constellationShot == null)
+				var diagnosticFrames = new List<ConstellationNodeDiagnosticFrame>();
+				try
 				{
-					constellationShot?.Dispose();
-					constellationShot = Navigation.CaptureRegion(activatedRegion);
-				}
+					bool resolved = ReadConstellationNode(
+						character,
+						node,
+						timing,
+						diagnosticFrames,
+						out ConstellationNodeObservation observation);
+					states.Add(resolved ? observation.State : ConstellationNodeState.Unresolved);
 
-				if (!activated) break;
+					if (!resolved)
+					{
+						SaveConstellationFailureDiagnostics(character, diagnosticFrames);
+						break;
+					}
+
+					// Capture the constellation region to show in the UI: keep the last ACTIVATED node,
+					// falling back to the first resolved node so a C0 character still shows something.
+					if (observation.State == ConstellationNodeState.Activated || constellationShot == null)
+					{
+						constellationShot?.Dispose();
+						constellationShot = Navigation.CaptureRegion(activatedRegion);
+					}
+
+					if (observation.State == ConstellationNodeState.Locked) break;
+				}
+				finally
+				{
+					foreach (ConstellationNodeDiagnosticFrame frame in diagnosticFrames)
+						frame.Dispose();
+				}
 			}
+
+			ConstellationScanResult result = ConstellationSequenceEvaluator.EvaluateForward(states);
 
 			navigator.TapBack(timing.Scale(300));
 			Thread.Sleep(timing.Scale(250)); // lowered from 400 per user (2026-07-05)
 
-			progressReporter.SetCharacter_Constellation(constellationShot, constellation);
+			if (result.Success)
+				progressReporter.SetCharacter_Constellation(constellationShot, result.Constellation);
 			constellationShot?.Dispose();
-			return constellation;
+			return result;
 		}
 
 		/// <summary>
-		/// Reads the currently-focused constellation node's unlock state, retrying up to 3 times
+		/// Reads the currently-focused constellation node's tri-state unlock state, retrying up to 3 times
 		/// (re-capturing a fresh screenshot each time, not just re-OCRing the same bitmap -- a miss is
 		/// more likely the node-move animation not having settled yet than a deterministic misread) --
-		/// see <see cref="ScanConstellations"/>'s doc comment history for why. Reads via
-		/// OCR for the literal word "Activated" (a locked constellation instead prompts "Activate").
-		/// Preprocessing is gamma+invert+grayscale (2026-07-05): a live screenshot showed "Activated"
-		/// as bold orange/gold text on a blue-green gradient background, the same pattern that broke
-		/// contrast-based preprocessing for the weapon card nameplate (see
-		/// WeaponScraper/ScanMainCharacterName's doc comments); gamma correction is the proven fix for
-		/// that exact text/background combination in this codebase. Shared by
+		/// see <see cref="ScanConstellations"/>'s doc comment history for why. Each fresh full-window
+		/// frame supplies both evidence regions. The compact Activated region is OCRed through a small
+		/// fixed set of local preprocessing variants, including a gold-text mask that rejects the
+		/// white/cyan constellation animation; the broader left-description region is accepted
+		/// as Locked only when it contains the exact normalized phrase "activate required". Any absent,
+		/// unrelated, or conflicting evidence remains unresolved. Shared by
 		/// <see cref="ScanConstellations"/> and <see cref="ScanConstellationsGreedy"/>.
 		/// </summary>
-		private bool ReadConstellationActivated(
-			Rectangle activatedRegion,
-			CharacterNavigationTiming timing)
+		private bool ReadConstellationNode(
+			Character character,
+			int node,
+			CharacterNavigationTiming timing,
+			ICollection<ConstellationNodeDiagnosticFrame> diagnosticFrames,
+			out ConstellationNodeObservation resolvedObservation)
 		{
-			for (int readAttempt = 0; readAttempt < 3; readAttempt++)
+			if (diagnosticFrames == null) throw new ArgumentNullException(nameof(diagnosticFrames));
+
+			return ConstellationNodeRetry.TryResolve(
+				ConstellationNodeRetry.MaximumAttempts,
+				attempt =>
+				{
+					Bitmap full = Navigation.CaptureWindow();
+					Bitmap rawActivated = null;
+					Bitmap rawLocked = null;
+					Bitmap processedLocked = null;
+					List<ConstellationActivatedDiagnosticVariant> activatedVariants =
+						new List<ConstellationActivatedDiagnosticVariant>();
+					try
+					{
+						Rectangle activatedRegion = ConstellationCaptureRegions.ActivatedText(full.Size);
+						Rectangle lockedRegion = ConstellationCaptureRegions.LockedDescription(full.Size);
+						rawActivated = full.Clone(activatedRegion, full.PixelFormat);
+						rawLocked = full.Clone(lockedRegion, full.PixelFormat);
+
+						AddActivatedVariant(
+							activatedVariants,
+							"legacy_gamma_invert_grayscale",
+							CreateLegacyConstellationActivatedVariant(rawActivated));
+						AddActivatedVariant(
+							activatedVariants,
+							"grayscale_inverted",
+							CreateGrayscaleInvertedVariant(rawActivated, applyThreshold: false));
+						AddActivatedVariant(
+							activatedVariants,
+							"grayscale_inverted_threshold110",
+							CreateGrayscaleInvertedVariant(rawActivated, applyThreshold: true));
+						AddActivatedVariant(
+							activatedVariants,
+							"gold_text_mask_2x",
+							ConstellationActivatedTextPreprocessor.CreateGoldTextMask(rawActivated));
+
+						processedLocked = imagePreprocessor.ConvertToGrayscale(rawLocked);
+						imagePreprocessor.SetContrast(60.0, ref processedLocked);
+						imagePreprocessor.SetInvert(ref processedLocked);
+						(string lockedText, float lockedConfidence) =
+							ocrService.AnalyzeTextWithConfidence(
+								processedLocked,
+								Tesseract.PageSegMode.SingleBlock);
+						var lockedRead = new ConstellationOcrRead(
+							"locked_description",
+							lockedText?.Trim(),
+							lockedConfidence);
+						ConstellationNodeObservation observation = ConstellationNodeStateResolver.Resolve(
+							activatedVariants.Select(variant => variant.Read).ToList(),
+							lockedRead);
+
+						diagnosticFrames.Add(new ConstellationNodeDiagnosticFrame(
+							node,
+							attempt,
+							full,
+							rawActivated,
+							activatedVariants,
+							rawLocked,
+							processedLocked));
+						full = null;
+						rawActivated = null;
+						activatedVariants = null;
+						rawLocked = null;
+						processedLocked = null;
+						return observation;
+					}
+					finally
+					{
+						full?.Dispose();
+						rawActivated?.Dispose();
+						if (activatedVariants != null)
+						{
+							foreach (ConstellationActivatedDiagnosticVariant variant in activatedVariants)
+								variant.Dispose();
+						}
+						rawLocked?.Dispose();
+						processedLocked?.Dispose();
+					}
+				},
+				(attempt, observation) => Logger.Debug(
+					"Constellation OCR: character={0}; node={1}; attempt={2}/{3}; " +
+					"activatedVariants=[{4}]; lockedRaw=\"{5}\"; lockedNormalized=\"{6}\"; " +
+					"lockedConfidence={7:0.0}%; activatedEvidence={8}; lockedEvidence={9}; " +
+					"state={10}; reason={11}",
+					character.NameGOOD,
+					node,
+					attempt,
+					ConstellationNodeRetry.MaximumAttempts,
+					FormatActivatedReads(observation.ActivatedReads),
+					ForDiagnosticLog(observation.LockedRead.RawText),
+					observation.LockedRead.NormalizedText,
+					observation.LockedRead.Confidence * 100f,
+					observation.ActivatedEvidence,
+					observation.LockedEvidence,
+					observation.State,
+					observation.Reason),
+				() => Thread.Sleep(timing.Scale(200)),
+				out resolvedObservation);
+		}
+
+		private void AddActivatedVariant(
+			ICollection<ConstellationActivatedDiagnosticVariant> variants,
+			string name,
+			Bitmap processed)
+		{
+			try
 			{
-				if (readAttempt > 0)
-					Thread.Sleep(timing.Scale(200));
-
-				Bitmap bm = Navigation.CaptureRegion(activatedRegion);
-				GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref bm);
-				imagePreprocessor.SetInvert(ref bm);
-				Bitmap n = imagePreprocessor.ConvertToGrayscale(bm);
-
-				string text = ocrService.AnalyzeText(n, Tesseract.PageSegMode.SingleBlock).Trim();
-				bool activated = text.ToLower().Contains("activated");
-
-				n.Dispose();
-				bm.Dispose();
-
-				if (activated) return true;
+				(string text, float confidence) = ocrService.AnalyzeTextWithConfidence(
+					processed,
+					Tesseract.PageSegMode.SingleBlock);
+				variants.Add(new ConstellationActivatedDiagnosticVariant(
+					new ConstellationOcrRead(name, text?.Trim(), confidence),
+					processed));
+				processed = null;
 			}
-			return false;
+			finally
+			{
+				processed?.Dispose();
+			}
+		}
+
+		private Bitmap CreateLegacyConstellationActivatedVariant(Bitmap raw)
+		{
+			Bitmap gammaProcessed = (Bitmap)raw.Clone();
+			try
+			{
+				Bitmap gammaSource = gammaProcessed;
+				GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref gammaProcessed);
+				if (!ReferenceEquals(gammaSource, gammaProcessed)) gammaSource.Dispose();
+				imagePreprocessor.SetInvert(ref gammaProcessed);
+				return imagePreprocessor.ConvertToGrayscale(gammaProcessed);
+			}
+			finally
+			{
+				gammaProcessed.Dispose();
+			}
+		}
+
+		private Bitmap CreateGrayscaleInvertedVariant(Bitmap raw, bool applyThreshold)
+		{
+			Bitmap processed = imagePreprocessor.ConvertToGrayscale(raw);
+			try
+			{
+				imagePreprocessor.SetInvert(ref processed);
+				if (applyThreshold)
+					imagePreprocessor.SetThreshold(110, ref processed);
+				Bitmap result = processed;
+				processed = null;
+				return result;
+			}
+			finally
+			{
+				processed?.Dispose();
+			}
+		}
+
+		private static string FormatActivatedReads(IReadOnlyList<ConstellationOcrRead> reads)
+		{
+			return string.Join(
+				"; ",
+				reads.Select(read => string.Format(
+					"{0}:raw=\"{1}\",normalized=\"{2}\",confidence={3:0.0}%",
+					read.Source,
+					ForDiagnosticLog(read.RawText),
+					read.NormalizedText,
+					read.Confidence * 100f)));
 		}
 
 		/// <summary>
@@ -1263,20 +1462,16 @@ namespace InventoryKamera
 		/// 4-star characters for now (<see cref="IsFourStarCharacter"/>) since those are commonly
 		/// fully-conned, making the C6-first check likely to pay off; 5-stars stay on the forward scan
 		/// where a full-con check failing fast (locked at C1) is the more common case.
-		/// NOT YET LIVE-VERIFIED: the circular-scroll-wraps-in-one-Up-move assumption for the
-		/// constellation list specifically (confirmed only for the Character screen's own sub-tab row
-		/// so far).
+		/// Live verification (2026-09-29) confirmed that the single Up move selects C6; the retained
+		/// failure capture for Kaeya explicitly showed "Constellation Lv. 6" and the C6 highlight.
 		/// </summary>
-		private int ScanConstellationsGreedy(
+		private ConstellationScanResult ScanConstellationsGreedy(
 			GameNavigator navigator,
 			Character character,
 			CharacterNavigationTiming timing)
 		{
-			Rectangle activatedRegion = new RECT(
-				Left:   (int)( 0.1574 * Navigation.GetWidth() ),
-				Top:    (int)( 0.8323 * Navigation.GetHeight() ),
-				Right:  (int)( 0.2241 * Navigation.GetWidth() ),
-				Bottom: (int)( 0.8777 * Navigation.GetHeight() ));
+			Rectangle activatedRegion = ConstellationCaptureRegions.Activated(
+				new Size(Navigation.GetWidth(), Navigation.GetHeight()));
 
 			navigator.TapConfirm(timing.Scale(300));
 			Thread.Sleep(timing.Scale(600));
@@ -1286,25 +1481,42 @@ namespace InventoryKamera
 				settleMs: timing.Scale(400));
 
 			Bitmap constellationShot = null;
-			int constellation = 0;
+			var states = new List<ConstellationNodeState>();
 			for (int node = 5; node >= 0; node--)
 			{
 				LogCharacterScreenshot(character.NameGOOD, $"constellations/constellation_greedy_{node + 1}", activatedRegion);
 
-				bool activated = ReadConstellationActivated(activatedRegion, timing);
-
-				// Capture the constellation region for the UI: the activated node found, or the first
-				// node examined as a fallback if none are activated (C0).
-				if (activated || constellationShot == null)
+				var diagnosticFrames = new List<ConstellationNodeDiagnosticFrame>();
+				try
 				{
-					constellationShot?.Dispose();
-					constellationShot = Navigation.CaptureRegion(activatedRegion);
+					bool resolved = ReadConstellationNode(
+						character,
+						node + 1,
+						timing,
+						diagnosticFrames,
+						out ConstellationNodeObservation observation);
+					states.Add(resolved ? observation.State : ConstellationNodeState.Unresolved);
+
+					if (!resolved)
+					{
+						SaveConstellationFailureDiagnostics(character, diagnosticFrames);
+						break;
+					}
+
+					// Capture the constellation region for the UI: the activated node found, or the first
+					// resolved node examined as a fallback if the character is C0.
+					if (observation.State == ConstellationNodeState.Activated || constellationShot == null)
+					{
+						constellationShot?.Dispose();
+						constellationShot = Navigation.CaptureRegion(activatedRegion);
+					}
+
+					if (observation.State == ConstellationNodeState.Activated) break;
 				}
-
-				if (activated)
+				finally
 				{
-					constellation = node + 1;
-					break;
+					foreach (ConstellationNodeDiagnosticFrame frame in diagnosticFrames)
+						frame.Dispose();
 				}
 
 				if (node > 0)
@@ -1315,12 +1527,110 @@ namespace InventoryKamera
 				}
 			}
 
+			ConstellationScanResult result = ConstellationSequenceEvaluator.EvaluateGreedy(states);
+
 			navigator.TapBack(timing.Scale(300));
 			Thread.Sleep(timing.Scale(250));
 
-			progressReporter.SetCharacter_Constellation(constellationShot, constellation);
+			if (result.Success)
+				progressReporter.SetCharacter_Constellation(constellationShot, result.Constellation);
 			constellationShot?.Dispose();
-			return constellation;
+			return result;
+		}
+
+		private void SaveConstellationFailureDiagnostics(
+			Character character,
+			IReadOnlyList<ConstellationNodeDiagnosticFrame> frames)
+		{
+			string folderName = string.Format(
+				"{0}_{1}_{2}",
+				SafeDiagnosticName(character.CanonicalName),
+				DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff"),
+				Guid.NewGuid().ToString("N").Substring(0, 8));
+			string folder = Path.Combine(".", "logging", "constellation_verification", folderName);
+
+			try
+			{
+				Directory.CreateDirectory(folder);
+				foreach (ConstellationNodeDiagnosticFrame frame in frames)
+				{
+					string prefix = $"node_{frame.Node:00}_attempt_{frame.Attempt:00}";
+					frame.Full.Save(Path.Combine(folder, prefix + "_full.png"));
+					frame.RawActivated.Save(Path.Combine(folder, prefix + "_activated_raw.png"));
+					foreach (ConstellationActivatedDiagnosticVariant variant in frame.ActivatedVariants)
+					{
+						variant.Processed.Save(Path.Combine(
+							folder,
+							prefix + "_activated_" + variant.Read.Source + ".png"));
+					}
+					frame.RawLocked.Save(Path.Combine(folder, prefix + "_locked_raw.png"));
+					frame.ProcessedLocked.Save(Path.Combine(folder, prefix + "_locked_processed.png"));
+				}
+
+				if (frames.Count > 0)
+					frames[frames.Count - 1].Full.Save(Path.Combine(folder, "failure_full.png"));
+				Logger.Warn("Saved constellation verification diagnostics to {0}", folder);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save constellation verification diagnostics to {0}", folder);
+			}
+		}
+
+		private sealed class ConstellationNodeDiagnosticFrame : IDisposable
+		{
+			internal ConstellationNodeDiagnosticFrame(
+				int node,
+				int attempt,
+				Bitmap full,
+				Bitmap rawActivated,
+				IReadOnlyList<ConstellationActivatedDiagnosticVariant> activatedVariants,
+				Bitmap rawLocked,
+				Bitmap processedLocked)
+			{
+				Node = node;
+				Attempt = attempt;
+				Full = full ?? throw new ArgumentNullException(nameof(full));
+				RawActivated = rawActivated ?? throw new ArgumentNullException(nameof(rawActivated));
+				ActivatedVariants = activatedVariants ??
+					throw new ArgumentNullException(nameof(activatedVariants));
+				RawLocked = rawLocked ?? throw new ArgumentNullException(nameof(rawLocked));
+				ProcessedLocked = processedLocked ?? throw new ArgumentNullException(nameof(processedLocked));
+			}
+
+			internal int Node { get; }
+			internal int Attempt { get; }
+			internal Bitmap Full { get; }
+			internal Bitmap RawActivated { get; }
+			internal IReadOnlyList<ConstellationActivatedDiagnosticVariant> ActivatedVariants { get; }
+			internal Bitmap RawLocked { get; }
+			internal Bitmap ProcessedLocked { get; }
+
+			public void Dispose()
+			{
+				Full.Dispose();
+				RawActivated.Dispose();
+				foreach (ConstellationActivatedDiagnosticVariant variant in ActivatedVariants)
+					variant.Dispose();
+				RawLocked.Dispose();
+				ProcessedLocked.Dispose();
+			}
+		}
+
+		private sealed class ConstellationActivatedDiagnosticVariant : IDisposable
+		{
+			internal ConstellationActivatedDiagnosticVariant(
+				ConstellationOcrRead read,
+				Bitmap processed)
+			{
+				Read = read ?? throw new ArgumentNullException(nameof(read));
+				Processed = processed ?? throw new ArgumentNullException(nameof(processed));
+			}
+
+			internal ConstellationOcrRead Read { get; }
+			internal Bitmap Processed { get; }
+
+			public void Dispose() => Processed.Dispose();
 		}
 
 		/// <summary>

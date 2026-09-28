@@ -41,6 +41,23 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void UnresolvedConstellationSequenceIsOmittedFromGood()
+        {
+            Character zhongli = CompleteCharacter("Zhongli", "Geo");
+            ConstellationScanResult unresolved = ConstellationSequenceEvaluator.EvaluateForward(
+                new[] { ConstellationNodeState.Unresolved });
+
+            bool constellationSucceeded =
+                CharacterScraper.TrySetScannedConstellation(zhongli, unresolved);
+            var good = Export(new[] { zhongli });
+
+            Assert.False(constellationSucceeded);
+            Assert.Equal(CharacterScanPhaseStatus.Failed, zhongli.ConstellationScanStatus);
+            Assert.Equal(CharacterScanPhaseStatus.Succeeded, zhongli.TalentScanStatus);
+            Assert.Null(good.Characters);
+        }
+
+        [Fact]
         public void TalentOcrFailureIsOmittedFromGood()
         {
             Character zhongli = CharacterWithAttributes("Zhongli", "Geo");
