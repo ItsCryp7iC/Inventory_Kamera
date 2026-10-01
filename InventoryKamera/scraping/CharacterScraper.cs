@@ -47,8 +47,10 @@ namespace InventoryKamera
 		/// reflect. Used by the controller-driven batched path (<see cref="ScanCharacters"/>)
 		/// since it only needs the final assembled roster, not how it was scanned.
 		/// </summary>
-		private void ApplyTartagliaFix(List<Character> Characters)
+		internal static void ApplyTartagliaFix(List<Character> Characters)
 		{
+			if (Characters == null) throw new ArgumentNullException(nameof(Characters));
+
 			for (int i = 0; i < Characters.Count; i++)
 			{
 				if (Characters[i].NameGOOD.ToLower() == "tartaglia" && Characters[i].Ascension >= 4)
@@ -56,7 +58,8 @@ namespace InventoryKamera
 					Logger.Info("Ascension 4+ Tartaglia found at position {0}.", i);
 					if (i < 4)
 					{
-						for (int j = 0; j < 4; j++)
+						int availablePartyMembers = Math.Min(4, Characters.Count);
+						for (int j = 0; j < availablePartyMembers; j++)
 						{
 							if (TryApplyTalentAdjustment(Characters[j], "auto", -1))
 								Logger.Info("Applied Tartaglia auto attack fix to {0} at position {1}.", Characters[j].NameGOOD, j);
@@ -84,8 +87,9 @@ namespace InventoryKamera
 		/// additively with any other active team buff on the same talent (only Tartaglia's exists
 		/// today, and it targets a different talent, "auto", so there's no actual overlap yet).
 		/// </summary>
-		private void ApplySkirkFix(List<Character> Characters)
+		internal static void ApplySkirkFix(List<Character> Characters)
 		{
+			if (Characters == null) throw new ArgumentNullException(nameof(Characters));
 			if (Characters.Count < 4) return;
 
 			int skirkIndex = Characters.FindIndex(c => c.NameGOOD.ToLower() == "skirk");
@@ -830,6 +834,23 @@ namespace InventoryKamera
 		/// </summary>
 		private void ApplyConstellationTalentScaling(Character character)
 		{
+			if (TryApplyConstellationTalentScaling(character, gameData, out string failureReason))
+				return;
+
+			progressReporter.AddError(failureReason);
+			Logger.Warn("{0} talent post-processing failed safely: {1}", character.NameGOOD, failureReason);
+		}
+
+		internal static bool TryApplyConstellationTalentScaling(
+			Character character,
+			GameDataSnapshot gameData,
+			out string failureReason)
+		{
+			if (character == null) throw new ArgumentNullException(nameof(character));
+			if (gameData == null) throw new ArgumentNullException(nameof(gameData));
+
+			failureReason = null;
+
 			// Pyro Traveler's own constellation scan can't be trusted (per user, 2026-07-05): the
 			// secondary constellations that grant +3 to a talent are visually embedded in the same 6
 			// nodes as the base unlocks, so ScanConstellations can misreport a
@@ -862,55 +883,74 @@ namespace InventoryKamera
 				Logger.Info("{0} (Pyro): constellation corrected from scanned {1} to inferred {2}.",
 					character.NameGOOD, character.Constellation, constellation);
 				character.Constellation = constellation;
-				return;
+				return true;
 			}
 
-			if (character.Constellation < 3) return;
+			if (character.Constellation < 3) return true;
 
 			string lookupKey = character.NameGOOD.Contains("Traveler") ? "traveler" : character.NameGOOD.ToLower();
 
-			if (gameData.Characters.TryGetValue(lookupKey, out var characterData))
+			if (!gameData.Characters.TryGetValue(lookupKey, out var characterData))
 			{
-				if (characterData["ConstellationOrder"] == null)
-				{
-					// Every character in the database should have this field -- its absence
-					// means the character data failed to fully download/parse, not that this
-					// character legitimately lacks constellation-order data.
-					progressReporter.AddError($"{character.NameGOOD}: missing ConstellationOrder data. Talent levels were not adjusted for constellation bonuses.");
-					return;
-				}
-
-				// For the Traveler the order is keyed by element (a JObject); every other
-				// character stores a flat [const3Talent, const5Talent] JArray. Resolve to that
-				// two-element array up front and validate it. A Traveler whose per-element entry
-				// is missing or malformed (an incomplete auto-build, or a legacy nested
-				// characters.json) would otherwise index into null here and throw a
-				// NullReferenceException that aborts the entire character scan.
-				JToken constellationOrder;
-				if (character.NameGOOD.Contains("Traveler"))
-				{
-					constellationOrder = characterData["ConstellationOrder"] is JObject elementOrders && character.Element != null
-						? elementOrders[character.Element.ToLower()]
-						: null;
-				}
-				else
-				{
-					constellationOrder = characterData["ConstellationOrder"];
-				}
-
-				if (!(constellationOrder is JArray order) || order.Count < 2)
-				{
-					progressReporter.AddError($"{character.NameGOOD}: missing or malformed ConstellationOrder data. Talent levels were not adjusted for constellation bonuses.");
-					return;
-				}
-
-				string talentLeveledAtConst3 = (string)order[0];
-				string talentLeveledAtConst5 = (string)order[1];
-				ApplyConstellationTalentAdjustments(
+				return FailTalentPostProcessing(
 					character,
-					talentLeveledAtConst3,
-					talentLeveledAtConst5);
+					$"{character.NameGOOD}: character metadata was unavailable, so constellation talent bonuses could not be adjusted.",
+					out failureReason);
 			}
+
+			// For the Traveler the order is keyed by element (a JObject); every other
+			// character stores a flat [const3Talent, const5Talent] JArray. Resolve to that
+			// two-element array up front and validate it. A Traveler whose per-element entry
+			// is missing or malformed cannot be exported safely because the raw displayed
+			// talent levels may include a constellation-granted +3 bonus.
+			JToken constellationOrder;
+			if (character.NameGOOD.Contains("Traveler"))
+			{
+				constellationOrder = characterData["ConstellationOrder"] is JObject elementOrders && character.Element != null
+					? elementOrders[character.Element.ToLower()]
+					: null;
+			}
+			else
+			{
+				constellationOrder = characterData["ConstellationOrder"];
+			}
+
+			if (!(constellationOrder is JArray order) || order.Count < 2)
+			{
+				return FailTalentPostProcessing(
+					character,
+					$"{character.NameGOOD}: missing or malformed ConstellationOrder data. Talent levels could not be adjusted for constellation bonuses.",
+					out failureReason);
+			}
+
+			string talentLeveledAtConst3 = (string)order[0];
+			string talentLeveledAtConst5 = (string)order[1];
+			if (string.IsNullOrWhiteSpace(talentLeveledAtConst3)
+				|| string.IsNullOrWhiteSpace(talentLeveledAtConst5)
+				|| !character.Talents.ContainsKey(talentLeveledAtConst3)
+				|| !character.Talents.ContainsKey(talentLeveledAtConst5))
+			{
+				return FailTalentPostProcessing(
+					character,
+					$"{character.NameGOOD}: ConstellationOrder contained an unsupported talent key. Talent levels could not be adjusted safely.",
+					out failureReason);
+			}
+
+			ApplyConstellationTalentAdjustments(
+				character,
+				talentLeveledAtConst3,
+				talentLeveledAtConst5);
+			return true;
+		}
+
+		private static bool FailTalentPostProcessing(
+			Character character,
+			string reason,
+			out string failureReason)
+		{
+			character.MarkTalentScanFailed();
+			failureReason = reason;
+			return false;
 		}
 
 		internal static void ApplyConstellationTalentAdjustments(
