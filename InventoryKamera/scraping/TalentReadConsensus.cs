@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace InventoryKamera
 {
@@ -133,23 +134,46 @@ namespace InventoryKamera
 			Action waitAfterRejectedAttempt,
 			out TalentLevelTriplet acceptedTriplet)
 		{
+			return TryRead(
+				maxAttempts,
+				readFreshCapture,
+				observeAttempt,
+				waitAfterRejectedAttempt,
+				CancellationToken.None,
+				out acceptedTriplet);
+		}
+
+		internal static bool TryRead(
+			int maxAttempts,
+			Func<int, string> readFreshCapture,
+			Action<int, TalentReadObservation> observeAttempt,
+			Action waitAfterRejectedAttempt,
+			CancellationToken cancellationToken,
+			out TalentLevelTriplet acceptedTriplet)
+		{
 			if (maxAttempts < 1) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
 			if (readFreshCapture == null) throw new ArgumentNullException(nameof(readFreshCapture));
 
 			var consensus = new TalentReadConsensus();
 			for (int attempt = 1; attempt <= maxAttempts; attempt++)
 			{
-				TalentReadObservation observation = consensus.Observe(readFreshCapture(attempt));
+				cancellationToken.ThrowIfCancellationRequested();
+				string rawText = readFreshCapture(attempt);
+				cancellationToken.ThrowIfCancellationRequested();
+				TalentReadObservation observation = consensus.Observe(rawText);
 				observeAttempt?.Invoke(attempt, observation);
+				cancellationToken.ThrowIfCancellationRequested();
 				if (observation.Accepted)
 				{
 					acceptedTriplet = observation.Triplet.Value;
 					return true;
 				}
 
-				// Preserve ScanTalents' existing scaled delay after every rejected attempt,
-				// including the final bounded attempt.
-				waitAfterRejectedAttempt?.Invoke();
+				if (attempt < maxAttempts)
+				{
+					waitAfterRejectedAttempt?.Invoke();
+					cancellationToken.ThrowIfCancellationRequested();
+				}
 			}
 
 			acceptedTriplet = default;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace InventoryKamera
 {
@@ -85,15 +86,40 @@ namespace InventoryKamera
             Func<int, string> readAttempt,
             Action<int, CharacterLevelParseResult> rejectedAttempt = null)
         {
+            return ReadFirstPlausible(
+                maxAttempts,
+                readAttempt,
+                rejectedAttempt,
+                waitBeforeRetry: null,
+                CancellationToken.None);
+        }
+
+        internal static CharacterLevelParseResult ReadFirstPlausible(
+            int maxAttempts,
+            Func<int, string> readAttempt,
+            Action<int, CharacterLevelParseResult> rejectedAttempt,
+            Action waitBeforeRetry,
+            CancellationToken cancellationToken)
+        {
             if (maxAttempts < 1) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
             if (readAttempt == null) throw new ArgumentNullException(nameof(readAttempt));
 
             CharacterLevelParseResult lastResult = null;
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                lastResult = Parse(readAttempt(attempt));
+                cancellationToken.ThrowIfCancellationRequested();
+                string rawText = readAttempt(attempt);
+                cancellationToken.ThrowIfCancellationRequested();
+                lastResult = Parse(rawText);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (lastResult.Success) return lastResult;
                 rejectedAttempt?.Invoke(attempt, lastResult);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (attempt < maxAttempts)
+                {
+                    waitBeforeRetry?.Invoke();
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
             }
 
             return lastResult;

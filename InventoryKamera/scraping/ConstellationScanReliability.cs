@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace InventoryKamera
 {
@@ -260,15 +261,35 @@ namespace InventoryKamera
 			Action waitBeforeRetry,
 			out ConstellationNodeObservation resolvedObservation)
 		{
+			return TryResolve(
+				maxAttempts,
+				readFreshCapture,
+				observeAttempt,
+				waitBeforeRetry,
+				CancellationToken.None,
+				out resolvedObservation);
+		}
+
+		internal static bool TryResolve(
+			int maxAttempts,
+			Func<int, ConstellationNodeObservation> readFreshCapture,
+			Action<int, ConstellationNodeObservation> observeAttempt,
+			Action waitBeforeRetry,
+			CancellationToken cancellationToken,
+			out ConstellationNodeObservation resolvedObservation)
+		{
 			if (maxAttempts < 1) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
 			if (readFreshCapture == null) throw new ArgumentNullException(nameof(readFreshCapture));
 
 			ConstellationNodeObservation lastObservation = null;
 			for (int attempt = 1; attempt <= maxAttempts; attempt++)
 			{
+				cancellationToken.ThrowIfCancellationRequested();
 				lastObservation = readFreshCapture(attempt) ??
 					throw new InvalidOperationException("Constellation node reader returned no observation.");
+				cancellationToken.ThrowIfCancellationRequested();
 				observeAttempt?.Invoke(attempt, lastObservation);
+				cancellationToken.ThrowIfCancellationRequested();
 
 				if (lastObservation.State != ConstellationNodeState.Unresolved)
 				{
@@ -277,7 +298,10 @@ namespace InventoryKamera
 				}
 
 				if (attempt < maxAttempts)
+				{
 					waitBeforeRetry?.Invoke();
+					cancellationToken.ThrowIfCancellationRequested();
+				}
 			}
 
 			resolvedObservation = lastObservation;

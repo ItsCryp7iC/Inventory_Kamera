@@ -335,11 +335,18 @@ namespace InventoryKamera
 								characterEntrySucceeded = characterScraper.ScanCharacters(
 									navigator, paimonNavigator, ref Characters);
 							}
+							catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
+							{
+								Logger.Info("Character scanning stopped by user cancellation.");
+								characterEntrySucceeded = true;
+							}
 							catch (Exception ex)
 							{
 								progressReporter.AddError(ex.Message + "\n" + ex.StackTrace);
 							}
-							if (characterEntrySucceeded)
+							if (characterEntrySucceeded && scanSession.IsCancellationRequested)
+								Logger.Info("Character scan stopped; required controller cleanup will now run.");
+							else if (characterEntrySucceeded)
 								Logger.Info("Done scanning characters");
 							else
 								Logger.Warn("Character scanning did not continue because Character entry was not verified.");

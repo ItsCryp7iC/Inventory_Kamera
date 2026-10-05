@@ -159,6 +159,25 @@ namespace InventoryKamera
 			PaimonMenuNavigator paimonMenuNavigator,
 			ref List<Character> Characters)
 		{
+			try
+			{
+				return ScanCharactersCore(navigator, paimonMenuNavigator, ref Characters);
+			}
+			catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
+			{
+				Logger.Info("Character scan stopped by user cancellation. Preserving completed character results.");
+				ApplyTartagliaFix(Characters);
+				ApplySkirkFix(Characters);
+				return true;
+			}
+		}
+
+		private bool ScanCharactersCore(
+			GameNavigator navigator,
+			PaimonMenuNavigator paimonMenuNavigator,
+			ref List<Character> Characters)
+		{
+			scanSession.CancellationToken.ThrowIfCancellationRequested();
 			int maxToScan = NumOfCharToScan;
 			if (maxToScan != 0) progressReporter.SetCharacter_Max(maxToScan);
 			progressReporter.ResetCharacterDisplay();
@@ -170,7 +189,11 @@ namespace InventoryKamera
 				characterTiming.EffectiveTier,
 				characterTiming.EffectiveMultiplier);
 
-			if (!EnterCharacterMenu(navigator, paimonMenuNavigator)) return false;
+			if (!EnterCharacterMenu(navigator, paimonMenuNavigator))
+			{
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
+				return false;
+			}
 
 			// Per user (2026-07-05): the Character menu always opens on the Attributes sub-tab
 			// regardless of what was open last time, so no reset-to-known-position step is needed
@@ -205,8 +228,10 @@ namespace InventoryKamera
 
 			while (true)
 			{
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				string name = null, element = null;
 				string rawRead = ScanNameAndElement(characterTiming, ref name, ref element);
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 
 				bool isManequin = IsManequinPlaceholder(name);
 				bool hasValidNameAndElement = !isManequin && !string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(element);
@@ -224,6 +249,7 @@ namespace InventoryKamera
 
 					bool ascended = false;
 					int level = ScanLevel(characterTiming, name, ref ascended);
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
 					if (level == -1)
 					{
 						progressReporter.AddError($"Could not determine {name}'s level safely. The character was skipped.");
@@ -235,7 +261,9 @@ namespace InventoryKamera
 					// any other field) failed to parse. That failing case is exactly what's worth
 					// debugging for a new aspect ratio like 16:10, where a mis-placed region is the reason
 					// the read failed in the first place.
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
 					LogCharacterScreenshot(name, "attributes", NameElementRegion());
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
 					LogCharacterWindow(name, "attributes");
 
 					if (level != -1 && !scanned.Contains(name))
@@ -281,8 +309,9 @@ namespace InventoryKamera
 						screenshot.Save($"./logging/characters/unrecognized_{unrecognizedCount}.png");
 				}
 
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				navigator.TapNextTab(characterTiming.Scale(80));
-				Thread.Sleep(characterTiming.Scale(100));
+				CharacterCancellation.Wait(scanSession.CancellationToken, characterTiming.Scale(100));
 				gapSinceLastRecorded++;
 
 				if (maxToScan != 0 && Characters.Count >= maxToScan) break;
@@ -321,7 +350,7 @@ namespace InventoryKamera
 			// Per user (2026-07-05): the full sub-tab order is Attributes, Weapons, Artifacts,
 			// Constellations, Talents, Profile -- Constellations is 3 stops down from Attributes, not
 			// 1 (Weapons and Artifacts sit between them).
-			navigator.Move(GameNavigator.MenuDirection.Down, 3,
+			MoveWithCancellation(navigator, GameNavigator.MenuDirection.Down, 3,
 				holdMs: characterTiming.Scale(150),
 				settleMs: characterTiming.Scale(150));
 
@@ -338,6 +367,7 @@ namespace InventoryKamera
 						? ScanConstellationsGreedy(navigator, character, characterTiming)
 						: ScanConstellations(navigator, character, characterTiming);
 
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
 					if (TrySetScannedConstellation(character, result))
 					{
 						Logger.Info("{0} Constellation: {1}", character.NameGOOD, character.Constellation);
@@ -380,7 +410,7 @@ namespace InventoryKamera
 			// character (a full lap for the forward read, or the natural endpoint of the backward
 			// read), so this phase can always read forward. No trailing gap needed (null) since this
 			// is the last phase -- nothing follows that needs the cursor back at the start.
-			navigator.Move(GameNavigator.MenuDirection.Down, 1,
+			MoveWithCancellation(navigator, GameNavigator.MenuDirection.Down, 1,
 				holdMs: characterTiming.Scale(150),
 				settleMs: characterTiming.Scale(150));
 			ScanRosterForward(navigator, characterTiming, characterList, gapsBeforeEach, null, character =>
@@ -390,9 +420,9 @@ namespace InventoryKamera
 				// the wrong character's talent levels.
 				if (!VerifyOnExpectedCharacter(characterTiming, character, CharacterVerificationPhase.Talent, () =>
 				{
-					bool talentScanSucceeded = TrySetScannedTalents(
-						character,
-						ScanTalents(character, characterTiming));
+					Dictionary<string, int> scannedTalents = ScanTalents(character, characterTiming);
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
+					bool talentScanSucceeded = TrySetScannedTalents(character, scannedTalents);
 					Logger.Info("{0} Talents: {1}", character.NameGOOD, "{" + string.Join(", ", character.Talents.Select(kv => kv.Key + "=" + kv.Value).ToArray()) + "}");
 
 					if (talentScanSucceeded)
@@ -419,14 +449,27 @@ namespace InventoryKamera
 			bool forward,
 			int taps)
 		{
-			for (int t = 0; t < taps; t++)
+			CharacterCancellation.RunSteps(scanSession.CancellationToken, taps, _ =>
 			{
 				if (forward)
 					navigator.TapNextTab(timing.Scale(80));
 				else
 					navigator.TapPreviousTab(timing.Scale(80));
-				Thread.Sleep(timing.Scale(100));
-			}
+				CharacterCancellation.Wait(scanSession.CancellationToken, timing.Scale(100));
+			});
+		}
+
+		private void MoveWithCancellation(
+			GameNavigator navigator,
+			GameNavigator.MenuDirection direction,
+			int steps,
+			int holdMs,
+			int settleMs)
+		{
+			CharacterCancellation.RunSteps(scanSession.CancellationToken, steps, _ =>
+			{
+				navigator.MoveStep(direction, holdMs, settleMs);
+			});
 		}
 
 		internal static bool IsManequinPlaceholder(string name) =>
@@ -453,6 +496,7 @@ namespace InventoryKamera
 			int count = characters.Count;
 			for (int i = 0; i < count; i++)
 			{
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				scanCharacter(characters[i]);
 
 				// Per user (2026-07-05): a cancel request during Phase 2/3 previously went
@@ -489,8 +533,10 @@ namespace InventoryKamera
 			int count = characters.Count;
 			for (int i = count - 1; i >= 0; i--)
 			{
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				int gap = i == count - 1 ? gapAfterLast : gapsBeforeEach[i + 1];
 				AdvanceRoster(navigator, timing, forward: false, taps: gap);
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				scanCharacter(characters[i]);
 
 				// Per user (2026-07-05): a cancel request during Phase 2/3 previously went
@@ -510,15 +556,22 @@ namespace InventoryKamera
 		/// </summary>
 		private bool EnterCharacterMenu(GameNavigator navigator, PaimonMenuNavigator paimonMenuNavigator)
 		{
+			scanSession.CancellationToken.ThrowIfCancellationRequested();
 			Navigation.sim.Keyboard.KeyPress(Navigation.escapeKey);
 			Navigation.SystemWait(Navigation.Speed.UI);
+			scanSession.CancellationToken.ThrowIfCancellationRequested();
 
 			// Safety net (same idiom as GameNavigator.ExitControllerMode): the previous
 			// controller-driven phase's teardown already backs out of any nested menu, but
 			// EnterControllerMode()'s A-press below assumes a clean free-roam state to avoid
 			// triggering an unwanted in-game action instead of a scheme-switch nudge. Over-pressing
 			// A here is harmless once already at the root (per MashBack's own doc comment).
-			navigator.MashBack();
+			for (int press = 0; press < 6; press++)
+			{
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
+				navigator.TapBack();
+				CharacterCancellation.Wait(scanSession.CancellationToken, 300);
+			}
 
 			// Paimon navigation is already live-verified at the requested global speed. The
 			// Character-specific safe profile begins only after this entry succeeds.
@@ -534,6 +587,7 @@ namespace InventoryKamera
 
 			using (PaimonMenuNavigationResult result = paimonMenuNavigator.OpenCharacter(timing))
 			{
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				if (result.Success)
 				{
 					Logger.Info("State-aware Character entry succeeded. {0}", result.DetectionDetails);
@@ -573,6 +627,7 @@ namespace InventoryKamera
 			const int maxAttempts = 5;
 			Rectangle region = NameElementRegion();
 			var diagnosticFrames = new List<CharacterVerificationDiagnosticFrame>();
+			int currentAttempt = 0;
 
 			try
 			{
@@ -581,23 +636,38 @@ namespace InventoryKamera
 					maxAttempts,
 					attemptNumber =>
 					{
-						Bitmap header = Navigation.CaptureRegion(region);
-						Bitmap processed = imagePreprocessor.ConvertToGrayscale(header);
-						imagePreprocessor.SetThreshold(110, ref processed);
-						imagePreprocessor.SetInvert(ref processed);
+						currentAttempt = attemptNumber;
+						Bitmap header = null;
+						Bitmap processed = null;
+						try
+						{
+							header = Navigation.CaptureRegion(region);
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
+							processed = imagePreprocessor.ConvertToGrayscale(header);
+							imagePreprocessor.SetThreshold(110, ref processed);
+							imagePreprocessor.SetInvert(ref processed);
 
-						Bitmap resized = GenshinProcesor.ResizeImage(
-							processed,
-							processed.Width * 2,
-							processed.Height * 2);
-						processed.Dispose();
-						processed = resized;
+							Bitmap resized = GenshinProcesor.ResizeImage(
+								processed,
+								processed.Width * 2,
+								processed.Height * 2);
+							processed.Dispose();
+							processed = resized;
 
-						string block = ocrService.AnalyzeText(processed, Tesseract.PageSegMode.Auto).Trim();
-						string line = ocrService.AnalyzeText(processed, Tesseract.PageSegMode.SingleLine).Trim();
-						var frame = new CharacterVerificationDiagnosticFrame(header, processed);
-						diagnosticFrames.Add(frame);
-						return ExpectedCharacterVerifier.ResolveAttempt(block, line, gameData);
+							string block = ocrService.AnalyzeText(processed, Tesseract.PageSegMode.Auto).Trim();
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
+							string line = ocrService.AnalyzeText(processed, Tesseract.PageSegMode.SingleLine).Trim();
+							var frame = new CharacterVerificationDiagnosticFrame(header, processed);
+							diagnosticFrames.Add(frame);
+							header = null;
+							processed = null;
+							return ExpectedCharacterVerifier.ResolveAttempt(block, line, gameData);
+						}
+						finally
+						{
+							header?.Dispose();
+							processed?.Dispose();
+						}
 					},
 					(attemptNumber, attempt, decision) =>
 					{
@@ -620,6 +690,7 @@ namespace InventoryKamera
 
 						if (decision.Accepted)
 						{
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
 							CharacterVerificationDiagnosticFrame frame = diagnosticFrames[attemptNumber - 1];
 							progressReporter.SetCharacter_NameAndElement(
 								frame.Header,
@@ -627,9 +698,11 @@ namespace InventoryKamera
 								decision.Element);
 						}
 					},
-					() => Thread.Sleep(timing.Scale(200)),
-					verifiedAction);
+					() => CharacterCancellation.Wait(scanSession.CancellationToken, timing.Scale(200)),
+					verifiedAction,
+					scanSession.CancellationToken);
 
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				if (verified) return true;
 
 				Logger.Warn(
@@ -639,6 +712,16 @@ namespace InventoryKamera
 					maxAttempts);
 				SaveCharacterVerificationDiagnostics(character, phase, diagnosticFrames);
 				return false;
+			}
+			catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
+			{
+				Logger.Info(
+					"Character scan cancellation observed: character={0}; phase={1}; attempt={2}/{3}",
+					character.CanonicalName,
+					phase,
+					Math.Max(1, currentAttempt),
+					maxAttempts);
+				throw;
 			}
 			finally
 			{
@@ -1030,82 +1113,121 @@ namespace InventoryKamera
 			CharacterNavigationTiming timing,
 			ref string name,
 			ref string element,
-			int maxAttempts = 20)
+			int maxAttempts = CharacterNameElementRetry.MaximumAttempts)
 		{
-			int attempts = 0; // reduced from 75 per user (2026-07-05) -- excessive when parsing genuinely fails
+			int currentAttempt = 0;
 			Rectangle region = NameElementRegion();
 			string rawText = "";
+			string scannedName = null;
+			string scannedElement = null;
 
-			do
+			try
 			{
-				using (Bitmap bm = Navigation.CaptureRegion(region))
-				{
-					Bitmap n = imagePreprocessor.ConvertToGrayscale(bm);
-					imagePreprocessor.SetThreshold(110, ref n);
-					imagePreprocessor.SetInvert(ref n);
-
-					n = GenshinProcesor.ResizeImage(n, n.Width * 2, n.Height * 2);
-					string block = ocrService.AnalyzeText(n, Tesseract.PageSegMode.Auto).ToLower().Trim();
-					string line = ocrService.AnalyzeText(n, Tesseract.PageSegMode.SingleLine).ToLower().Trim();
-
-					// Characters with wrapped names will not have a slash
-					string nameAndElement = line.Contains("/") ? line : block;
-					rawText = nameAndElement;
-
-					if (nameAndElement.Contains("/"))
+				bool resolved = CharacterNameElementRetry.TryRead(
+					maxAttempts,
+					attempt =>
 					{
-						var split = nameAndElement.Split('/');
-
-						// Search for element and character name in block
-
-						// Long name characters might look like
-						// <Element>   <First Name>
-						// /           <Last Name>
-						// Per user (2026-07-05, live screenshot): the wrapped case's first line holds
-						// BOTH the element and the first word of the name (e.g. "Anemo Yumemizuki"),
-						// which the element-extraction below already isolated correctly, but the name
-						// search previously used only the text after "/" ("Mizuki"), silently dropping
-						// "Yumemizuki" -- fixed by carrying the leftover first-line text forward into
-						// the name search instead of discarding it.
-						string namePart1 = "";
-						if (!split[0].Contains(" "))
-						{
-							element = TextNormalizer.FindElementByName(split[0].Trim(), gameData);
-						}
-						else
-						{
-							var firstLineWords = split[0].Split(new[] { ' ' }, 2);
-							element = TextNormalizer.FindElementByName(firstLineWords[0].Trim(), gameData);
-							if (firstLineWords.Length > 1) namePart1 = firstLineWords[1];
-						}
-
-						// Find character based on the leftover first-line text (if any) plus the
-						// string after /. Long name characters might search by their last name only
-						// but it'll still work in the non-wrapped case (namePart1 stays empty).
-						name = TextNormalizer.FindClosestCharacterName(Regex.Replace(namePart1 + split[1], @"[\W]", string.Empty), gameData);
-
-						if (!LookupService.CharacterMatchesElement(name, element, gameData)) { name = ""; element = ""; }
-                    }
-					n.Dispose();
-
-					if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(element))
+						currentAttempt = attempt;
+					using (Bitmap bm = Navigation.CaptureRegion(region))
 					{
-						Logger.Debug("Scanned character name as {0} with element {1}", name, element);
-                        progressReporter.SetCharacter_NameAndElement(bm, name, element);
-						return rawText;
+						Bitmap n = null;
+						try
+						{
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
+							n = imagePreprocessor.ConvertToGrayscale(bm);
+							imagePreprocessor.SetThreshold(110, ref n);
+							imagePreprocessor.SetInvert(ref n);
+
+							Bitmap resized = GenshinProcesor.ResizeImage(n, n.Width * 2, n.Height * 2);
+							n.Dispose();
+							n = resized;
+							string block = ocrService.AnalyzeText(n, Tesseract.PageSegMode.Auto).ToLower().Trim();
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
+							string line = ocrService.AnalyzeText(n, Tesseract.PageSegMode.SingleLine).ToLower().Trim();
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
+
+							// Characters with wrapped names will not have a slash
+							string nameAndElement = line.Contains("/") ? line : block;
+							rawText = nameAndElement;
+
+							if (nameAndElement.Contains("/"))
+							{
+								var split = nameAndElement.Split('/');
+
+								// Search for element and character name in block
+
+								// Long name characters might look like
+								// <Element>   <First Name>
+								// /           <Last Name>
+								// Per user (2026-07-05, live screenshot): the wrapped case's first line holds
+								// BOTH the element and the first word of the name (e.g. "Anemo Yumemizuki"),
+								// which the element-extraction below already isolated correctly, but the name
+								// search previously used only the text after "/" ("Mizuki"), silently dropping
+								// "Yumemizuki" -- fixed by carrying the leftover first-line text forward into
+								// the name search instead of discarding it.
+								string namePart1 = "";
+								if (!split[0].Contains(" "))
+								{
+									scannedElement = TextNormalizer.FindElementByName(split[0].Trim(), gameData);
+								}
+								else
+								{
+									var firstLineWords = split[0].Split(new[] { ' ' }, 2);
+									scannedElement = TextNormalizer.FindElementByName(firstLineWords[0].Trim(), gameData);
+									if (firstLineWords.Length > 1) namePart1 = firstLineWords[1];
+								}
+
+								// Find character based on the leftover first-line text (if any) plus the
+								// string after /. Long name characters might search by their last name only
+								// but it'll still work in the non-wrapped case (namePart1 stays empty).
+								scannedName = TextNormalizer.FindClosestCharacterName(Regex.Replace(namePart1 + split[1], @"[\W]", string.Empty), gameData);
+
+								if (!LookupService.CharacterMatchesElement(scannedName, scannedElement, gameData))
+								{
+									scannedName = "";
+									scannedElement = "";
+								}
+							}
+
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
+							if (!string.IsNullOrWhiteSpace(scannedName) && !string.IsNullOrWhiteSpace(scannedElement))
+							{
+								Logger.Debug("Scanned character name as {0} with element {1}", scannedName, scannedElement);
+								progressReporter.SetCharacter_NameAndElement(bm, scannedName, scannedElement);
+								return true;
+							}
+
+							// Per-attempt retry: don't dump a screenshot here -- it used to litter the
+							// top-level ./logging/characters folder with hash-named images (one per failed
+							// attempt, ungated). A single full-window screenshot is saved once by the Phase 1
+							// caller if the character stays unrecognized after all retries (unrecognized_N.png).
+							Logger.Debug("Could not parse character name/element (attempt {0}/{1}). Retrying...", attempt, maxAttempts);
+						}
+						finally
+						{
+							n?.Dispose();
+						}
 					}
-					else
-                    {
-                        // Per-attempt retry: don't dump a screenshot here -- it used to litter the
-                        // top-level ./logging/characters folder with hash-named images (one per failed
-                        // attempt, ungated). A single full-window screenshot is saved once by the Phase 1
-                        // caller if the character stays unrecognized after all retries (unrecognized_N.png).
-                        Logger.Debug("Could not parse character name/element (attempt {0}/{1}). Retrying...", attempts+1, maxAttempts);
-                    }
+						return false;
+					},
+					() => CharacterCancellation.Wait(scanSession.CancellationToken, timing.Scale(200)),
+					scanSession.CancellationToken);
+
+				if (resolved)
+				{
+					name = scannedName;
+					element = scannedElement;
+					return rawText;
 				}
-				attempts++;
-				Thread.Sleep(timing.Scale(200));
-			} while ( attempts < maxAttempts );
+			}
+			catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
+			{
+				Logger.Info(
+					"Character scan cancellation observed: character=(current roster slot); phase=name/element; attempt={0}/{1}",
+					Math.Max(1, currentAttempt),
+					maxAttempts);
+				throw;
+			}
 			name = null;
 			element = null;
 			return rawText;
@@ -1131,6 +1253,7 @@ namespace InventoryKamera
 			Bitmap currentBitmap = null;
 			Bitmap currentOcrBitmap = null;
 			var rejectedCaptures = new List<Bitmap>();
+			int currentAttempt = 0;
 
 			try
 			{
@@ -1138,8 +1261,12 @@ namespace InventoryKamera
 					maxAttempts,
 					attempt =>
 					{
+						currentAttempt = attempt;
 						using (Bitmap captured = Navigation.CaptureRegion(region))
+						{
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
 							currentBitmap = GenshinProcesor.ResizeImage(captured, captured.Width * 2, captured.Height * 2);
+						}
 
 						currentOcrBitmap = imagePreprocessor.ConvertToGrayscale(currentBitmap);
 						imagePreprocessor.SetInvert(ref currentOcrBitmap);
@@ -1166,9 +1293,11 @@ namespace InventoryKamera
 						currentOcrBitmap = null;
 						currentBitmap.Dispose();
 						currentBitmap = null;
-						Thread.Sleep(timing.Scale(100));
-					});
+					},
+					() => CharacterCancellation.Wait(scanSession.CancellationToken, timing.Scale(100)),
+					scanSession.CancellationToken);
 
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				if (!result.Success)
 				{
 					SaveLevelFailureDiagnostics(characterName, rejectedCaptures);
@@ -1176,6 +1305,7 @@ namespace InventoryKamera
 				}
 
 				ascended = result.Ascended;
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				progressReporter.SetCharacter_Level(currentBitmap, result.Level.Value, result.MaxLevel.Value);
 				Logger.Debug(
 					"Accepted character level: raw=\"{0}\"; filtered=\"{1}\"; level={2}; maxLevel={3}; ascended={4}",
@@ -1185,6 +1315,15 @@ namespace InventoryKamera
 					result.MaxLevel.Value,
 					result.Ascended);
 				return result.Level.Value;
+			}
+			catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
+			{
+				Logger.Info(
+					"Character scan cancellation observed: character={0}; phase=level; attempt={1}/{2}",
+					characterName,
+					Math.Max(1, currentAttempt),
+					maxAttempts);
+				throw;
 			}
 			finally
 			{
@@ -1238,70 +1377,89 @@ namespace InventoryKamera
 		{
 			Rectangle activatedRegion = ConstellationCaptureRegions.Activated(
 				new Size(Navigation.GetWidth(), Navigation.GetHeight()));
-
+			scanSession.CancellationToken.ThrowIfCancellationRequested();
 			navigator.TapConfirm(timing.Scale(300));
-			Thread.Sleep(timing.Scale(600)); // set to 600 per user (2026-07-05)
-
+			bool submenuOpened = true;
 			Bitmap constellationShot = null;
-			var states = new List<ConstellationNodeState>();
-			for (int node = 1; node <= ConstellationSequenceEvaluator.NodeCount; node++)
+			try
 			{
-				if (node > 1)
+				CharacterCancellation.Wait(scanSession.CancellationToken, timing.Scale(600)); // set to 600 per user (2026-07-05)
+
+				var states = new List<ConstellationNodeState>();
+				for (int node = 1; node <= ConstellationSequenceEvaluator.NodeCount; node++)
 				{
-					// Per user (2026-07-05): settleMs already sleeps after the stick releases
-					// (GameNavigator.MoveStep), so a separate Thread.Sleep on top of it was a
-					// redundant double-wait -- folded into settleMs directly instead.
-					navigator.MoveStep(GameNavigator.MenuDirection.Down,
-						holdMs: timing.Scale(100),
-						settleMs: timing.Scale(400));
-				}
-
-				LogCharacterScreenshot(character.NameGOOD, $"constellations/constellation_{node}", activatedRegion);
-				LogCharacterWindow(character.NameGOOD, $"constellations/constellation_{node}");
-
-				var diagnosticFrames = new List<ConstellationNodeDiagnosticFrame>();
-				try
-				{
-					bool resolved = ReadConstellationNode(
-						character,
-						node,
-						timing,
-						diagnosticFrames,
-						out ConstellationNodeObservation observation);
-					states.Add(resolved ? observation.State : ConstellationNodeState.Unresolved);
-
-					if (!resolved)
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
+					if (node > 1)
 					{
-						SaveConstellationFailureDiagnostics(character, diagnosticFrames);
-						break;
+						// Per user (2026-07-05): settleMs already sleeps after the stick releases
+						// (GameNavigator.MoveStep), so a separate Thread.Sleep on top of it was a
+						// redundant double-wait -- folded into settleMs directly instead.
+						navigator.MoveStep(GameNavigator.MenuDirection.Down,
+							holdMs: timing.Scale(100),
+							settleMs: timing.Scale(400));
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
 					}
 
-					// Capture the constellation region to show in the UI: keep the last ACTIVATED node,
-					// falling back to the first resolved node so a C0 character still shows something.
-					if (observation.State == ConstellationNodeState.Activated || constellationShot == null)
-					{
-						constellationShot?.Dispose();
-						constellationShot = Navigation.CaptureRegion(activatedRegion);
-					}
+					LogCharacterScreenshot(character.NameGOOD, $"constellations/constellation_{node}", activatedRegion);
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
+					LogCharacterWindow(character.NameGOOD, $"constellations/constellation_{node}");
 
-					if (observation.State == ConstellationNodeState.Locked) break;
+					var diagnosticFrames = new List<ConstellationNodeDiagnosticFrame>();
+					try
+					{
+						bool resolved = ReadConstellationNode(
+							character,
+							node,
+							timing,
+							diagnosticFrames,
+							out ConstellationNodeObservation observation);
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
+						states.Add(resolved ? observation.State : ConstellationNodeState.Unresolved);
+
+						if (!resolved)
+						{
+							SaveConstellationFailureDiagnostics(character, diagnosticFrames);
+							break;
+						}
+
+						// Capture the constellation region to show in the UI: keep the last ACTIVATED node,
+						// falling back to the first resolved node so a C0 character still shows something.
+						if (observation.State == ConstellationNodeState.Activated || constellationShot == null)
+						{
+							Bitmap replacement = Navigation.CaptureRegion(activatedRegion);
+							if (scanSession.IsCancellationRequested)
+							{
+								replacement.Dispose();
+								scanSession.CancellationToken.ThrowIfCancellationRequested();
+							}
+							constellationShot?.Dispose();
+							constellationShot = replacement;
+						}
+
+						if (observation.State == ConstellationNodeState.Locked) break;
+					}
+					finally
+					{
+						foreach (ConstellationNodeDiagnosticFrame frame in diagnosticFrames)
+							frame.Dispose();
+					}
 				}
-				finally
+
+				ConstellationScanResult result = ConstellationSequenceEvaluator.EvaluateForward(states);
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
+				if (result.Success)
+					progressReporter.SetCharacter_Constellation(constellationShot, result.Constellation);
+				return result;
+			}
+			finally
+			{
+				constellationShot?.Dispose();
+				if (submenuOpened)
 				{
-					foreach (ConstellationNodeDiagnosticFrame frame in diagnosticFrames)
-						frame.Dispose();
+					navigator.TapBack(timing.Scale(300));
+					Thread.Sleep(timing.Scale(250)); // required bounded submenu cleanup; do not gate on cancellation
 				}
 			}
-
-			ConstellationScanResult result = ConstellationSequenceEvaluator.EvaluateForward(states);
-
-			navigator.TapBack(timing.Scale(300));
-			Thread.Sleep(timing.Scale(250)); // lowered from 400 per user (2026-07-05)
-
-			if (result.Success)
-				progressReporter.SetCharacter_Constellation(constellationShot, result.Constellation);
-			constellationShot?.Dispose();
-			return result;
 		}
 
 		/// <summary>
@@ -1324,11 +1482,15 @@ namespace InventoryKamera
 			out ConstellationNodeObservation resolvedObservation)
 		{
 			if (diagnosticFrames == null) throw new ArgumentNullException(nameof(diagnosticFrames));
+			int currentAttempt = 0;
 
-			return ConstellationNodeRetry.TryResolve(
+			try
+			{
+				return ConstellationNodeRetry.TryResolve(
 				ConstellationNodeRetry.MaximumAttempts,
 				attempt =>
 				{
+					currentAttempt = attempt;
 					Bitmap full = Navigation.CaptureWindow();
 					Bitmap rawActivated = null;
 					Bitmap rawLocked = null;
@@ -1337,6 +1499,7 @@ namespace InventoryKamera
 						new List<ConstellationActivatedDiagnosticVariant>();
 					try
 					{
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
 						Rectangle activatedRegion = ConstellationCaptureRegions.ActivatedText(full.Size);
 						Rectangle lockedRegion = ConstellationCaptureRegions.LockedDescription(full.Size);
 						rawActivated = full.Clone(activatedRegion, full.PixelFormat);
@@ -1346,18 +1509,22 @@ namespace InventoryKamera
 							activatedVariants,
 							"legacy_gamma_invert_grayscale",
 							CreateLegacyConstellationActivatedVariant(rawActivated));
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
 						AddActivatedVariant(
 							activatedVariants,
 							"grayscale_inverted",
 							CreateGrayscaleInvertedVariant(rawActivated, applyThreshold: false));
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
 						AddActivatedVariant(
 							activatedVariants,
 							"grayscale_inverted_threshold110",
 							CreateGrayscaleInvertedVariant(rawActivated, applyThreshold: true));
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
 						AddActivatedVariant(
 							activatedVariants,
 							"gold_text_mask_2x",
 							ConstellationActivatedTextPreprocessor.CreateGoldTextMask(rawActivated));
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
 
 						processedLocked = imagePreprocessor.ConvertToGrayscale(rawLocked);
 						imagePreprocessor.SetContrast(60.0, ref processedLocked);
@@ -1366,6 +1533,7 @@ namespace InventoryKamera
 							ocrService.AnalyzeTextWithConfidence(
 								processedLocked,
 								Tesseract.PageSegMode.SingleBlock);
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
 						var lockedRead = new ConstellationOcrRead(
 							"locked_description",
 							lockedText?.Trim(),
@@ -1419,8 +1587,20 @@ namespace InventoryKamera
 					observation.LockedEvidence,
 					observation.State,
 					observation.Reason),
-				() => Thread.Sleep(timing.Scale(200)),
+				() => CharacterCancellation.Wait(scanSession.CancellationToken, timing.Scale(200)),
+				scanSession.CancellationToken,
 				out resolvedObservation);
+			}
+			catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
+			{
+				Logger.Info(
+					"Character scan cancellation observed: character={0}; phase=constellation; node={1}; attempt={2}/{3}",
+					character.CanonicalName,
+					node,
+					Math.Max(1, currentAttempt),
+					ConstellationNodeRetry.MaximumAttempts);
+				throw;
+			}
 		}
 
 		private void AddActivatedVariant(
@@ -1512,70 +1692,88 @@ namespace InventoryKamera
 		{
 			Rectangle activatedRegion = ConstellationCaptureRegions.Activated(
 				new Size(Navigation.GetWidth(), Navigation.GetHeight()));
-
+			scanSession.CancellationToken.ThrowIfCancellationRequested();
 			navigator.TapConfirm(timing.Scale(300));
-			Thread.Sleep(timing.Scale(600));
-
-			navigator.MoveStep(GameNavigator.MenuDirection.Up,
-				holdMs: timing.Scale(100),
-				settleMs: timing.Scale(400));
-
+			bool submenuOpened = true;
 			Bitmap constellationShot = null;
-			var states = new List<ConstellationNodeState>();
-			for (int node = 5; node >= 0; node--)
+			try
 			{
-				LogCharacterScreenshot(character.NameGOOD, $"constellations/constellation_greedy_{node + 1}", activatedRegion);
+				CharacterCancellation.Wait(scanSession.CancellationToken, timing.Scale(600));
+				navigator.MoveStep(GameNavigator.MenuDirection.Up,
+					holdMs: timing.Scale(100),
+					settleMs: timing.Scale(400));
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 
-				var diagnosticFrames = new List<ConstellationNodeDiagnosticFrame>();
-				try
+				var states = new List<ConstellationNodeState>();
+				for (int node = 5; node >= 0; node--)
 				{
-					bool resolved = ReadConstellationNode(
-						character,
-						node + 1,
-						timing,
-						diagnosticFrames,
-						out ConstellationNodeObservation observation);
-					states.Add(resolved ? observation.State : ConstellationNodeState.Unresolved);
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
+					LogCharacterScreenshot(character.NameGOOD, $"constellations/constellation_greedy_{node + 1}", activatedRegion);
 
-					if (!resolved)
+					var diagnosticFrames = new List<ConstellationNodeDiagnosticFrame>();
+					try
 					{
-						SaveConstellationFailureDiagnostics(character, diagnosticFrames);
-						break;
+						bool resolved = ReadConstellationNode(
+							character,
+							node + 1,
+							timing,
+							diagnosticFrames,
+							out ConstellationNodeObservation observation);
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
+						states.Add(resolved ? observation.State : ConstellationNodeState.Unresolved);
+
+						if (!resolved)
+						{
+							SaveConstellationFailureDiagnostics(character, diagnosticFrames);
+							break;
+						}
+
+						// Capture the constellation region for the UI: the activated node found, or the first
+						// resolved node examined as a fallback if the character is C0.
+						if (observation.State == ConstellationNodeState.Activated || constellationShot == null)
+						{
+							Bitmap replacement = Navigation.CaptureRegion(activatedRegion);
+							if (scanSession.IsCancellationRequested)
+							{
+								replacement.Dispose();
+								scanSession.CancellationToken.ThrowIfCancellationRequested();
+							}
+							constellationShot?.Dispose();
+							constellationShot = replacement;
+						}
+
+						if (observation.State == ConstellationNodeState.Activated) break;
+					}
+					finally
+					{
+						foreach (ConstellationNodeDiagnosticFrame frame in diagnosticFrames)
+							frame.Dispose();
 					}
 
-					// Capture the constellation region for the UI: the activated node found, or the first
-					// resolved node examined as a fallback if the character is C0.
-					if (observation.State == ConstellationNodeState.Activated || constellationShot == null)
+					if (node > 0)
 					{
-						constellationShot?.Dispose();
-						constellationShot = Navigation.CaptureRegion(activatedRegion);
+						scanSession.CancellationToken.ThrowIfCancellationRequested();
+						navigator.MoveStep(GameNavigator.MenuDirection.Up,
+							holdMs: timing.Scale(100),
+							settleMs: timing.Scale(400));
 					}
-
-					if (observation.State == ConstellationNodeState.Activated) break;
-				}
-				finally
-				{
-					foreach (ConstellationNodeDiagnosticFrame frame in diagnosticFrames)
-						frame.Dispose();
 				}
 
-				if (node > 0)
+				ConstellationScanResult result = ConstellationSequenceEvaluator.EvaluateGreedy(states);
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
+				if (result.Success)
+					progressReporter.SetCharacter_Constellation(constellationShot, result.Constellation);
+				return result;
+			}
+			finally
+			{
+				constellationShot?.Dispose();
+				if (submenuOpened)
 				{
-					navigator.MoveStep(GameNavigator.MenuDirection.Up,
-						holdMs: timing.Scale(100),
-						settleMs: timing.Scale(400));
+					navigator.TapBack(timing.Scale(300));
+					Thread.Sleep(timing.Scale(250));
 				}
 			}
-
-			ConstellationScanResult result = ConstellationSequenceEvaluator.EvaluateGreedy(states);
-
-			navigator.TapBack(timing.Scale(300));
-			Thread.Sleep(timing.Scale(250));
-
-			if (result.Success)
-				progressReporter.SetCharacter_Constellation(constellationShot, result.Constellation);
-			constellationShot?.Dispose();
-			return result;
 		}
 
 		private void SaveConstellationFailureDiagnostics(
@@ -1711,6 +1909,7 @@ namespace InventoryKamera
 
 			var diagnosticFrames = new List<TalentScanDiagnosticFrame>();
 			int acceptedAttempt = 0;
+			int currentAttempt = 0;
 
 			try
 			{
@@ -1718,10 +1917,12 @@ namespace InventoryKamera
 					TalentReadConsensus.MaximumAttempts,
 					attemptNumber =>
 					{
+						currentAttempt = attemptNumber;
 						Bitmap capture = Navigation.CaptureRegion(region);
 						Bitmap processed = null;
 						try
 						{
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
 							using (Bitmap resized = GenshinProcesor.ResizeImage(
 								capture,
 								capture.Width * 2,
@@ -1735,6 +1936,7 @@ namespace InventoryKamera
 							string rawText = ocrService.AnalyzeText(
 								processed,
 								Tesseract.PageSegMode.SingleBlock).Trim();
+							scanSession.CancellationToken.ThrowIfCancellationRequested();
 							diagnosticFrames.Add(new TalentScanDiagnosticFrame(capture, processed));
 							return rawText;
 						}
@@ -1764,17 +1966,22 @@ namespace InventoryKamera
 							observation.Reason);
 						if (observation.Accepted) acceptedAttempt = attemptNumber;
 					},
-					() => Thread.Sleep(timing.Scale(100)),
+					() => CharacterCancellation.Wait(scanSession.CancellationToken, timing.Scale(100)),
+					scanSession.CancellationToken,
 					out TalentLevelTriplet acceptedTriplet);
 
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				if (accepted)
 				{
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
 					talents = acceptedTriplet.ToDictionary();
 					Bitmap acceptedCapture = diagnosticFrames[acceptedAttempt - 1].Capture;
 					progressReporter.SetCharacter_Talent(acceptedCapture, talents["auto"].ToString(), 0);
 					progressReporter.SetCharacter_Talent(acceptedCapture, talents["skill"].ToString(), 1);
 					progressReporter.SetCharacter_Talent(acceptedCapture, talents["burst"].ToString(), 2);
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
 					LogCharacterScreenshot(character.NameGOOD, "talents", region);
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
 					LogCharacterWindow(character.NameGOOD, "talents");
 				}
 				else
@@ -1783,7 +1990,17 @@ namespace InventoryKamera
 					SaveTalentConsensusDiagnostics(character, diagnosticFrames);
 				}
 
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				return talents;
+			}
+			catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
+			{
+				Logger.Info(
+					"Character scan cancellation observed: character={0}; phase=talent; attempt={1}/{2}",
+					character.CanonicalName,
+					Math.Max(1, currentAttempt),
+					TalentReadConsensus.MaximumAttempts);
+				throw;
 			}
 			finally
 			{

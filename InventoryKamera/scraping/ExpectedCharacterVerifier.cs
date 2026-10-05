@@ -1,5 +1,6 @@
 using System;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace InventoryKamera
 {
@@ -157,7 +158,8 @@ namespace InventoryKamera
 			Func<int, ExpectedCharacterVerificationAttempt> readAttempt,
 			Action<int, ExpectedCharacterVerificationAttempt, ExpectedCharacterVerificationDecision> observeAttempt,
 			Action waitAfterRejectedAttempt,
-			Action verifiedAction)
+			Action verifiedAction,
+			CancellationToken cancellationToken = default)
 		{
 			if (expectedCharacter == null) throw new ArgumentNullException(nameof(expectedCharacter));
 			if (maxAttempts < 1) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
@@ -166,18 +168,24 @@ namespace InventoryKamera
 
 			for (int attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++)
 			{
+				cancellationToken.ThrowIfCancellationRequested();
 				ExpectedCharacterVerificationAttempt attempt = readAttempt(attemptNumber);
+				cancellationToken.ThrowIfCancellationRequested();
 				ExpectedCharacterVerificationDecision decision = Evaluate(expectedCharacter.CanonicalName, attempt);
 				observeAttempt?.Invoke(attemptNumber, attempt, decision);
+				cancellationToken.ThrowIfCancellationRequested();
 				if (decision.Accepted)
 				{
 					verifiedAction();
+					cancellationToken.ThrowIfCancellationRequested();
 					return true;
 				}
 
-				// Preserve the verifier's existing scaled wait after every rejected read, including the
-				// last one, while making each retry request a new capture from the caller.
-				waitAfterRejectedAttempt?.Invoke();
+				if (attemptNumber < maxAttempts)
+				{
+					waitAfterRejectedAttempt?.Invoke();
+					cancellationToken.ThrowIfCancellationRequested();
+				}
 			}
 
 			return false;
