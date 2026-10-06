@@ -44,26 +44,37 @@ namespace InventoryKamera
         /// </summary>
         private void QueueScan(Bitmap card, int id)
         {
-            Bitmap name = GetItemNameBitmap(card);
-            Bitmap level = GetLevelBitmap(card);
-            Bitmap refinement = GetRefinementBitmap(card);
-            Bitmap equipped = GetEquippedBitmap(card);
-            Bitmap locked = GetLockedBitmap(card);
-
-            List<Bitmap> weaponImages = new List<Bitmap>
+            var createdImages = new List<Bitmap> { card };
+            OCRImageCollection work = null;
+            bool ownershipTransferred = false;
+            try
             {
-                name, //0
-                level,
-                refinement,
-                locked,
-                equipped,
-                card //5
-            };
+                Bitmap name = GetItemNameBitmap(card);
+                createdImages.Add(name);
+                Bitmap level = GetLevelBitmap(card);
+                createdImages.Add(level);
+                Bitmap refinement = GetRefinementBitmap(card);
+                createdImages.Add(refinement);
+                Bitmap equipped = GetEquippedBitmap(card);
+                createdImages.Add(equipped);
+                Bitmap locked = GetLockedBitmap(card);
+                createdImages.Add(locked);
 
-            bool a = false;
+                var weaponImages = new List<Bitmap>
+                {
+                    name, //0
+                    level,
+                    refinement,
+                    locked,
+                    equipped,
+                    card //5
+                };
+                work = new OCRImageCollection(weaponImages, "weapon", id);
 
-            bool belowRarity = GetQuality(name) < scanSettings.MinimumWeaponRarity;
-            bool belowLevel = ScanLevel(level, ref a) < scanSettings.MinimumWeaponLevel;
+                bool a = false;
+
+                bool belowRarity = GetQuality(name) < scanSettings.MinimumWeaponRarity;
+                bool belowLevel = ScanLevel(level, ref a) < scanSettings.MinimumWeaponLevel;
 
             // Safe as of 2026-07-04: ScanWeapons sorts by level/quality before scanning
             // (SetSortMode, confirmed live-working), so a below-threshold item guarantees
@@ -72,32 +83,48 @@ namespace InventoryKamera
             // SetSortMode actually confirmed the sort; otherwise (e.g. the sort-mode OCR
             // read failed) still filter this one item out below, but keep scanning the rest of the
             // (potentially unsorted) grid instead of assuming everything after it is also below threshold.
-            WeaponFilterDecision filterDecision = WeaponFilterPolicy.Evaluate(
-                sortModeConfirmed,
-                SortByLevel,
-                belowRarity,
-                belowLevel);
-            StopScanning = filterDecision.ShouldStop;
+                WeaponFilterDecision filterDecision = WeaponFilterPolicy.Evaluate(
+                    sortModeConfirmed,
+                    SortByLevel,
+                    belowRarity,
+                    belowLevel);
+                StopScanning = filterDecision.ShouldStop;
 
-            if (filterDecision.ShouldDiscard)
-            {
-                Logger.Info("Weapon scan #{0}: filtered out (belowRarity={1}, belowLevel={2}, stopping={3}).",
-                    id, belowRarity, belowLevel, StopScanning);
-                // Filtered-out items never reached ProcessImageCollectionAsync (GameScanner.cs),
-                // which is the only place that normally saves per-region crops -- without this, a
-                // wrong belowLevel/belowRarity read (e.g. a miscalibrated crop) filtered (or, worse,
-                // via StopScanning, silently ended) a scan with zero visual evidence of what was
-                // actually captured.
-                SaveDebugScreenshot(name, $"weapons/weapon{id}/name/name");
-                SaveDebugScreenshot(level, $"weapons/weapon{id}/level/level");
-                SaveDebugScreenshot(locked, $"weapons/weapon{id}/locked/locked");
-                SaveDebugScreenshot(card, $"weapons/weapon{id}/card");
-                weaponImages.ForEach(i => i.Dispose());
-                return;
+                if (filterDecision.ShouldDiscard)
+                {
+                    Logger.Info("Weapon scan #{0}: filtered out (belowRarity={1}, belowLevel={2}, stopping={3}).",
+                        id, belowRarity, belowLevel, StopScanning);
+                    // Filtered-out items never reached ProcessImageCollectionAsync (GameScanner.cs),
+                    // which is the only place that normally saves per-region crops -- without this, a
+                    // wrong belowLevel/belowRarity read (e.g. a miscalibrated crop) filtered (or, worse,
+                    // via StopScanning, silently ended) a scan with zero visual evidence of what was
+                    // actually captured.
+                    SaveDebugScreenshot(name, $"weapons/weapon{id}/name/name");
+                    SaveDebugScreenshot(level, $"weapons/weapon{id}/level/level");
+                    SaveDebugScreenshot(locked, $"weapons/weapon{id}/locked/locked");
+                    SaveDebugScreenshot(card, $"weapons/weapon{id}/card");
+                    return;
+                }
+
+                Logger.Info("Weapon scan #{0}: queued for cataloguing.", id);
+                scanSession.TryQueueWork(work);
+                ownershipTransferred = true;
             }
-
-            Logger.Info("Weapon scan #{0}: queued for cataloguing.", id);
-            scanSession.TryQueueWork(new OCRImageCollection(weaponImages, "weapon", id));
+            finally
+            {
+                if (!ownershipTransferred)
+                {
+                    if (work != null)
+                    {
+                        work.Dispose();
+                    }
+                    else
+                    {
+                        foreach (Bitmap image in createdImages.Distinct(ReferenceEqualityComparer.Instance))
+                            image?.Dispose();
+                    }
+                }
+            }
         }
 
         /// <summary>

@@ -133,17 +133,26 @@ namespace InventoryKamera
         /// </summary>
         internal (string Text, float ConfidencePercent) ScanItemNameWithConfidence(Bitmap nameplate)
         {
-            GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref nameplate);
-            Bitmap n = imagePreprocessor.ConvertToGrayscale(nameplate);
-            imagePreprocessor.SetInvert(ref n);
+            // The caller retains the source nameplate. SetGamma returns a separate image through
+            // the ref local, which is owned and released here.
+            Bitmap gamma = nameplate;
+            Bitmap n = null;
+            try
+            {
+                GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref gamma);
+                n = imagePreprocessor.ConvertToGrayscale(gamma);
+                imagePreprocessor.SetInvert(ref n);
 
-            // Analyze
-            var (rawText, confidence) = ocrService.AnalyzeTextWithConfidence(n, Tesseract.PageSegMode.SingleBlock);
-            string text = Regex.Replace(rawText.ToLower(), @"[\W]", string.Empty);
-
-            n.Dispose();
-
-            return (text, confidence * 100);
+                // Analyze
+                var (rawText, confidence) = ocrService.AnalyzeTextWithConfidence(n, Tesseract.PageSegMode.SingleBlock);
+                string text = Regex.Replace(rawText.ToLower(), @"[\W]", string.Empty);
+                return (text, confidence * 100);
+            }
+            finally
+            {
+                n?.Dispose();
+                if (!ReferenceEquals(gamma, nameplate)) gamma?.Dispose();
+            }
         }
 
         /// <summary>

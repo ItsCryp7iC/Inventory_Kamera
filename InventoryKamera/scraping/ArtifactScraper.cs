@@ -328,32 +328,46 @@ namespace InventoryKamera
         /// </summary>
         private void QueueScan(Bitmap card, int id)
         {
-            Bitmap name = GetItemNameBitmap(card);
-            Bitmap gearSlot = GetGearSlotBitmap(card);
-            Bitmap mainStat = GetMainStatBitmap(card);
-            Bitmap sanctify = GetSanctifyIconBitmap(card);
-            bool sanctified = DetectSanctifiedFromBitmap(sanctify);
-
-            Bitmap level = GetLevelBitmap(card, sanctified);
-            Bitmap subStats = GetSubstatsBitmap(card, sanctified);
-            Bitmap equipped = GetEquippedBitmap(card);
-            Bitmap locked = GetLockedBitmap(card, sanctified);
-
-            List<Bitmap> artifactImages = new List<Bitmap>
+            var createdImages = new List<Bitmap> { card };
+            OCRImageCollection work = null;
+            bool ownershipTransferred = false;
+            try
             {
-                name, //0
-                gearSlot,
-                mainStat,
-                level,
-                subStats,
-                equipped, //5
-                locked,
-                sanctify,
-                card
-            };
+                Bitmap name = GetItemNameBitmap(card);
+                createdImages.Add(name);
+                Bitmap gearSlot = GetGearSlotBitmap(card);
+                createdImages.Add(gearSlot);
+                Bitmap mainStat = GetMainStatBitmap(card);
+                createdImages.Add(mainStat);
+                Bitmap sanctify = GetSanctifyIconBitmap(card);
+                createdImages.Add(sanctify);
+                bool sanctified = DetectSanctifiedFromBitmap(sanctify);
 
-            bool belowRarity = GetRarity(name) < scanSettings.MinimumArtifactRarity;
-            bool belowLevel = ScanArtifactLevel(level) < scanSettings.MinimumArtifactLevel;
+                Bitmap level = GetLevelBitmap(card, sanctified);
+                createdImages.Add(level);
+                Bitmap subStats = GetSubstatsBitmap(card, sanctified);
+                createdImages.Add(subStats);
+                Bitmap equipped = GetEquippedBitmap(card);
+                createdImages.Add(equipped);
+                Bitmap locked = GetLockedBitmap(card, sanctified);
+                createdImages.Add(locked);
+
+                var artifactImages = new List<Bitmap>
+                {
+                    name, //0
+                    gearSlot,
+                    mainStat,
+                    level,
+                    subStats,
+                    equipped, //5
+                    locked,
+                    sanctify,
+                    card
+                };
+                work = new OCRImageCollection(artifactImages, "artifact", id);
+
+                bool belowRarity = GetRarity(name) < scanSettings.MinimumArtifactRarity;
+                bool belowLevel = ScanArtifactLevel(level) < scanSettings.MinimumArtifactLevel;
 
             // Never sets StopScanning here -- unlike WeaponScraper's controller path, artifact
             // sort-mode selection hasn't been ported (mouse mode's artifact sort, SetSort/
@@ -361,23 +375,39 @@ namespace InventoryKamera
             // hasn't been confirmed reachable via controller at all). Filtering (not queuing) a
             // disqualified item is still safe on an unsorted grid; stopping the whole scan early is
             // not, since it'd risk silently skipping later qualifying artifacts.
-            if (belowRarity || belowLevel)
-            {
-                Logger.Info("Artifact scan #{0}: filtered out (belowRarity={1}, belowLevel={2}, sanctified={3}).",
-                    id, belowRarity, belowLevel, sanctified);
-                // Filtered-out items never reach ProcessImageCollectionAsync (GameScanner.cs),
-                // the only place that normally saves per-region crops -- without this, a wrong
-                // belowLevel/belowRarity read (e.g. a miscalibrated crop) filtered an item with zero
-                // visual evidence of what was actually captured.
-                SaveDebugScreenshot(name, $"artifacts/artifact{id}/name/name");
-                SaveDebugScreenshot(level, $"artifacts/artifact{id}/level/level");
-                SaveDebugScreenshot(card, $"artifacts/artifact{id}/card");
-                artifactImages.ForEach(i => i.Dispose());
-                return;
-            }
+                if (belowRarity || belowLevel)
+                {
+                    Logger.Info("Artifact scan #{0}: filtered out (belowRarity={1}, belowLevel={2}, sanctified={3}).",
+                        id, belowRarity, belowLevel, sanctified);
+                    // Filtered-out items never reach ProcessImageCollectionAsync (GameScanner.cs),
+                    // the only place that normally saves per-region crops -- without this, a wrong
+                    // belowLevel/belowRarity read (e.g. a miscalibrated crop) filtered an item with zero
+                    // visual evidence of what was actually captured.
+                    SaveDebugScreenshot(name, $"artifacts/artifact{id}/name/name");
+                    SaveDebugScreenshot(level, $"artifacts/artifact{id}/level/level");
+                    SaveDebugScreenshot(card, $"artifacts/artifact{id}/card");
+                    return;
+                }
 
-            Logger.Info("Artifact scan #{0}: queued for cataloguing (sanctified={1}).", id, sanctified);
-            scanSession.TryQueueWork(new OCRImageCollection(artifactImages, "artifact", id));
+                Logger.Info("Artifact scan #{0}: queued for cataloguing (sanctified={1}).", id, sanctified);
+                scanSession.TryQueueWork(work);
+                ownershipTransferred = true;
+            }
+            finally
+            {
+                if (!ownershipTransferred)
+                {
+                    if (work != null)
+                    {
+                        work.Dispose();
+                    }
+                    else
+                    {
+                        foreach (Bitmap image in createdImages.Distinct(ReferenceEqualityComparer.Instance))
+                            image?.Dispose();
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -536,7 +566,7 @@ namespace InventoryKamera
 		{
 			RECT reference = Navigation.GetAspectRatio() == new Size(16, 9) ?
 				new RECT(new Rectangle(862, 80, 327, 560)) : (RECT)new Rectangle(862, 80, 328, 640);
-			Bitmap nameBitmap = card.Clone(new RECT(
+			using Bitmap nameBitmap = card.Clone(new RECT(
 				Left: 0,
 				Top: 0,
 				Right: card.Width,
@@ -547,16 +577,23 @@ namespace InventoryKamera
 
 		private string ScanEnhancementMaterialName(Bitmap bm)
 		{
-			GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref bm);
-			Bitmap n = imagePreprocessor.ConvertToGrayscale(bm);
-			imagePreprocessor.SetInvert(ref n);
+			Bitmap gamma = bm;
+			Bitmap n = null;
+			try
+			{
+				GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref gamma);
+				n = imagePreprocessor.ConvertToGrayscale(gamma);
+				imagePreprocessor.SetInvert(ref n);
 
-			// Analyze
-			string name = Regex.Replace(ocrService.AnalyzeText(n).ToLower(), @"[\W]", string.Empty);
-			name = TextNormalizer.FindClosestMaterialName(name, gameData);
-			n.Dispose();
-
-			return name;
+				// Analyze
+				string name = Regex.Replace(ocrService.AnalyzeText(n).ToLower(), @"[\W]", string.Empty);
+				return TextNormalizer.FindClosestMaterialName(name, gameData);
+			}
+			finally
+			{
+				n?.Dispose();
+				if (!ReferenceEquals(gamma, bm)) gamma?.Dispose();
+			}
 		}
 
 		#region Task Methods
@@ -639,13 +676,22 @@ namespace InventoryKamera
 			List<SubStat> substats = new List<SubStat>();
 			List<SubStat> unactivated = new List<SubStat>();
 			string text;
-            GenshinProcesor.SetBrightness(-30, ref bm);
-            imagePreprocessor.SetContrast(85, ref bm);
-			bool hasUnactivated = false;
-			using (var n = imagePreprocessor.ConvertToGrayscale(bm))
+			try
 			{
-				text = ocrService.AnalyzeText(n, Tesseract.PageSegMode.Auto).ToLower();
+				Bitmap brightnessSource = bm;
+				GenshinProcesor.SetBrightness(-30, ref bm);
+				if (!ReferenceEquals(brightnessSource, bm)) brightnessSource.Dispose();
+				imagePreprocessor.SetContrast(85, ref bm);
+				using (var n = imagePreprocessor.ConvertToGrayscale(bm))
+				{
+					text = ocrService.AnalyzeText(n, Tesseract.PageSegMode.Auto).ToLower();
+				}
 			}
+			finally
+			{
+				bm?.Dispose();
+			}
+			bool hasUnactivated = false;
 
 			if(text.Contains("(unactivated)"))
 			{
@@ -663,8 +709,6 @@ namespace InventoryKamera
 			{
 				lines.RemoveRange(index, lines.Count - index);
 			}
-
-            bm.Dispose();
 			for (int i = 0; i < lines.Count; i++)
 			{
 				var line = Regex.Replace(lines[i], @"(?:^[^a-zA-Z]*)", string.Empty).Replace(" ", string.Empty);
@@ -753,13 +797,16 @@ namespace InventoryKamera
 
 		private (string setName, PendingNameCorrection pending) ScanArtifactSetDeferred(Bitmap itemName)
         {
-            GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref itemName);
-            Bitmap grayscale = imagePreprocessor.ConvertToGrayscale(itemName);
-            imagePreprocessor.SetInvert(ref grayscale);
-
-            // Analyze
-            using (Bitmap padded = new Bitmap((int)(grayscale.Width + grayscale.Width * .1), grayscale.Height + (int)(grayscale.Height * .5)))
+            Bitmap gamma = itemName;
+            Bitmap grayscale = null;
+            try
             {
+                GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref gamma);
+                grayscale = imagePreprocessor.ConvertToGrayscale(gamma);
+                imagePreprocessor.SetInvert(ref grayscale);
+
+                // Analyze
+                using (Bitmap padded = new Bitmap((int)(grayscale.Width + grayscale.Width * .1), grayscale.Height + (int)(grayscale.Height * .5)))
                 using (Graphics g = Graphics.FromImage(padded))
                 {
                     g.Clear(Color.White);
@@ -787,11 +834,14 @@ namespace InventoryKamera
                         });
                     }
 
-					grayscale.Dispose();
-
 					return (setName, pending);
                 }
             }
+			finally
+			{
+				grayscale?.Dispose();
+				if (!ReferenceEquals(gamma, itemName)) gamma?.Dispose();
+			}
         }
 
         #endregion Task Methods

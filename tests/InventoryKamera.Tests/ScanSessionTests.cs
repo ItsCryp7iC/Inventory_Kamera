@@ -116,8 +116,8 @@ namespace InventoryKamera.Tests
             {
                 await foreach (OCRImageCollection work in session.WorkReader.ReadAllAsync(abortToken))
                 {
-                    Interlocked.Increment(ref processed);
-                    foreach (var bitmap in work.Bitmaps) bitmap.Dispose();
+                    using (work)
+                        Interlocked.Increment(ref processed);
                 }
             });
             session.TryQueueWork(new OCRImageCollection(

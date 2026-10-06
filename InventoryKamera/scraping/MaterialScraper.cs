@@ -137,16 +137,22 @@ namespace InventoryKamera
 			// locals (not `using`-declared) since C# disallows passing a using variable by ref, and
 			// each stage's bitmap is disposed explicitly once the next stage's copy exists.
 			Bitmap bm = (Bitmap)nameBitmap.Clone();
-			GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref bm);
-
-			Bitmap n = imagePreprocessor.ConvertToGrayscale(bm);
-			bm.Dispose();
-			imagePreprocessor.SetInvert(ref n);
-
+			Bitmap n = null;
 			string text;
-			using (n)
+			try
 			{
+				Bitmap gammaSource = bm;
+				GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref bm);
+				if (!ReferenceEquals(gammaSource, bm)) gammaSource.Dispose();
+
+				n = imagePreprocessor.ConvertToGrayscale(bm);
+				imagePreprocessor.SetInvert(ref n);
 				text = ocrService.AnalyzeText(n, Tesseract.PageSegMode.Auto);
+			}
+			finally
+			{
+				n?.Dispose();
+				bm?.Dispose();
 			}
 			text = Regex.Replace(text, @"[\W\s]", string.Empty).ToLower();
 

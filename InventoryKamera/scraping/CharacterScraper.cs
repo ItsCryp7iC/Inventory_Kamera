@@ -651,8 +651,7 @@ namespace InventoryKamera
 								processed,
 								processed.Width * 2,
 								processed.Height * 2);
-							processed.Dispose();
-							processed = resized;
+							BitmapOwnership.Replace(ref processed, resized);
 
 							string block = ocrService.AnalyzeText(processed, Tesseract.PageSegMode.Auto).Trim();
 							scanSession.CancellationToken.ThrowIfCancellationRequested();
@@ -1072,31 +1071,39 @@ namespace InventoryKamera
 				Bottom: (int)(60  / yReference * Navigation.GetHeight()));
 
 			Bitmap nameBitmap = Navigation.CaptureRegion(region);
-
-			//Image Operations
-			GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref nameBitmap);
-			imagePreprocessor.SetInvert(ref nameBitmap);
-			Bitmap n = imagePreprocessor.ConvertToGrayscale(nameBitmap);
-
-			progressReporter.SetNavigation_Image(nameBitmap);
-
-			string text = ocrService.AnalyzeText(n).Trim();
-			if (text != "")
+			Bitmap n = null;
+			try
 			{
-				// Only keep a-Z and 0-9
-				text = Regex.Replace(text, @"[\W_]", string.Empty).ToLower();
+				// Image operations. SetGamma returns a new bitmap through the ref parameter;
+				// this method owns the captured source, so release it after replacement.
+				Bitmap gammaSource = nameBitmap;
+				GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref nameBitmap);
+				if (!ReferenceEquals(gammaSource, nameBitmap)) gammaSource.Dispose();
+				imagePreprocessor.SetInvert(ref nameBitmap);
+				n = imagePreprocessor.ConvertToGrayscale(nameBitmap);
 
-				// Only keep text up until first space
-				text = Regex.Replace(text, @"\s+\w*", string.Empty);
+				progressReporter.SetNavigation_Image(nameBitmap);
 
+				string text = ocrService.AnalyzeText(n).Trim();
+				if (text != "")
+				{
+					// Only keep a-Z and 0-9
+					text = Regex.Replace(text, @"[\W_]", string.Empty).ToLower();
+
+					// Only keep text up until first space
+					text = Regex.Replace(text, @"\s+\w*", string.Empty);
+				}
+				else
+				{
+					progressReporter.AddError(text);
+				}
+				return text;
 			}
-			else
+			finally
 			{
-				progressReporter.AddError(text);
+				n?.Dispose();
+				nameBitmap?.Dispose();
 			}
-			n.Dispose();
-			nameBitmap.Dispose();
-			return text;
 		}
 
 		/// <summary>
@@ -1139,8 +1146,7 @@ namespace InventoryKamera
 							imagePreprocessor.SetInvert(ref n);
 
 							Bitmap resized = GenshinProcesor.ResizeImage(n, n.Width * 2, n.Height * 2);
-							n.Dispose();
-							n = resized;
+							BitmapOwnership.Replace(ref n, resized);
 							string block = ocrService.AnalyzeText(n, Tesseract.PageSegMode.Auto).ToLower().Trim();
 							scanSession.CancellationToken.ThrowIfCancellationRequested();
 							string line = ocrService.AnalyzeText(n, Tesseract.PageSegMode.SingleLine).ToLower().Trim();

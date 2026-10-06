@@ -124,9 +124,7 @@ namespace InventoryKamera
 
         private static void DisposeWork(OCRImageCollection work)
         {
-            if (work?.Bitmaps == null) return;
-            foreach (var bitmap in work.Bitmaps)
-                bitmap?.Dispose();
+            work?.Dispose();
         }
 
         private static bool ContainsOnlyCancellation(AggregateException exception)

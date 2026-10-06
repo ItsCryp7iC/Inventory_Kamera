@@ -413,7 +413,9 @@ namespace InventoryKamera
 				{
 					try
 					{
-						await ProcessImageCollectionAsync(imageCollection);
+						await OCRImageCollectionProcessor.ProcessAsync(
+							imageCollection,
+							ProcessImageCollectionAsync);
 					}
 					catch (Exception ex)
 					{
@@ -528,8 +530,6 @@ namespace InventoryKamera
                                     });
                             }
 
-                            // Dispose of everything
-                            imageCollection.Bitmaps.ForEach(b => b.Dispose());
 							break;
 
 						case "artifact":
@@ -633,8 +633,6 @@ namespace InventoryKamera
 									});
 							}
 
-							// Dispose of everything
-							imageCollection.Bitmaps.ForEach(b => b.Dispose());
 							break;
 
 						default:

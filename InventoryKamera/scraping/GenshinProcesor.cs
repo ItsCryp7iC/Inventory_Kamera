@@ -19,29 +19,36 @@ namespace InventoryKamera
 
         #region Image Operations
 
-        internal static Bitmap ResizeImage(System.Drawing.Image image, int width, int height)
+		internal static Bitmap ResizeImage(System.Drawing.Image image, int width, int height)
 		{
 			var destRect = new Rectangle(0, 0, width, height);
 			var destImage = new Bitmap(width, height);
-
-			destImage.SetResolution(image.HorizontalResolution, image.VerticalResolution);
-
-			using (var graphics = Graphics.FromImage(destImage))
+			try
 			{
-				graphics.CompositingMode = CompositingMode.SourceCopy;
-				graphics.CompositingQuality = CompositingQuality.HighQuality;
-				graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-				graphics.SmoothingMode = SmoothingMode.HighQuality;
-				graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+				destImage.SetResolution(image.HorizontalResolution, image.VerticalResolution);
 
-				using (var wrapMode = new ImageAttributes())
+				using (var graphics = Graphics.FromImage(destImage))
 				{
-					wrapMode.SetWrapMode(WrapMode.TileFlipXY);
-					graphics.DrawImage(image, destRect, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, wrapMode);
-				}
-			}
+					graphics.CompositingMode = CompositingMode.SourceCopy;
+					graphics.CompositingQuality = CompositingQuality.HighQuality;
+					graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+					graphics.SmoothingMode = SmoothingMode.HighQuality;
+					graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-			return destImage;
+					using (var wrapMode = new ImageAttributes())
+					{
+						wrapMode.SetWrapMode(WrapMode.TileFlipXY);
+						graphics.DrawImage(image, destRect, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, wrapMode);
+					}
+				}
+
+				return destImage;
+			}
+			catch
+			{
+				destImage.Dispose();
+				throw;
+			}
 		}
 
 		internal static Bitmap ResizeImage(Bitmap image, Size tSize)
@@ -91,22 +98,23 @@ namespace InventoryKamera
 
         internal static void SetGamma(double red, double green, double blue, ref Bitmap bitmap)
 		{
-			Bitmap temp = bitmap;
-			Bitmap bmap = (Bitmap)temp.Clone();
-			Color c;
-			byte[] redGamma = CreateGammaArray(red);
-			byte[] greenGamma = CreateGammaArray(green);
-			byte[] blueGamma = CreateGammaArray(blue);
-			for (int i = 0; i < bmap.Width; i++)
+			using (Bitmap bmap = (Bitmap)bitmap.Clone())
 			{
-				for (int j = 0; j < bmap.Height; j++)
+				Color c;
+				byte[] redGamma = CreateGammaArray(red);
+				byte[] greenGamma = CreateGammaArray(green);
+				byte[] blueGamma = CreateGammaArray(blue);
+				for (int i = 0; i < bmap.Width; i++)
 				{
-					c = bmap.GetPixel(i, j);
-					bmap.SetPixel(i, j, Color.FromArgb(redGamma[c.R],
-					   greenGamma[c.G], blueGamma[c.B]));
+					for (int j = 0; j < bmap.Height; j++)
+					{
+						c = bmap.GetPixel(i, j);
+						bmap.SetPixel(i, j, Color.FromArgb(redGamma[c.R],
+						   greenGamma[c.G], blueGamma[c.B]));
+					}
 				}
+				bitmap = (Bitmap)bmap.Clone();
 			}
-			bitmap = (Bitmap)bmap.Clone();
 		}
 
 		private static byte[] CreateGammaArray(double color)
@@ -172,31 +180,32 @@ namespace InventoryKamera
 			if (brightness < -255) brightness = -255;
 			if (brightness > 255) brightness = 255;
 
-			Bitmap temp = bitmap;
-			Bitmap bmap = (Bitmap)temp.Clone();
-			Color c;
-			for (int i = 0; i < bmap.Width; i++)
+			using (Bitmap bmap = (Bitmap)bitmap.Clone())
 			{
-				for (int j = 0; j < bmap.Height; j++)
+				Color c;
+				for (int i = 0; i < bmap.Width; i++)
 				{
-					c = bmap.GetPixel(i, j);
-					int cR = c.R + brightness;
-					int cG = c.G + brightness;
-					int cB = c.B + brightness;
+					for (int j = 0; j < bmap.Height; j++)
+					{
+						c = bmap.GetPixel(i, j);
+						int cR = c.R + brightness;
+						int cG = c.G + brightness;
+						int cB = c.B + brightness;
 
-					if (cR < 0) cR = 1;
-					if (cR > 255) cR = 255;
+						if (cR < 0) cR = 1;
+						if (cR > 255) cR = 255;
 
-					if (cG < 0) cG = 1;
-					if (cG > 255) cG = 255;
+						if (cG < 0) cG = 1;
+						if (cG > 255) cG = 255;
 
-					if (cB < 0) cB = 1;
-					if (cB > 255) cB = 255;
+						if (cB < 0) cB = 1;
+						if (cB > 255) cB = 255;
 
-					bmap.SetPixel(i, j, Color.FromArgb((byte)cR, (byte)cG, (byte)cB));
+						bmap.SetPixel(i, j, Color.FromArgb((byte)cR, (byte)cG, (byte)cB));
+					}
 				}
+				bitmap = (Bitmap)bmap.Clone();
 			}
-			bitmap = (Bitmap)bmap.Clone();
 		}
 
 		internal static Bitmap CopyBitmap(Bitmap source, Rectangle region)

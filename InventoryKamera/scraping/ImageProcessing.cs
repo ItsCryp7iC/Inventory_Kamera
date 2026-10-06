@@ -35,28 +35,45 @@ namespace InventoryKamera
             var gray = new Bitmap(w, h, PixelFormat.Format8bppIndexed);
             SetGrayscalePalette(gray);
 
-            var src = bitmap.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, bitmap.PixelFormat);
-            var dst = gray.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
+            BitmapData src = null;
+            BitmapData dst = null;
             try
             {
-                byte* srcBase = (byte*)src.Scan0, dstBase = (byte*)dst.Scan0;
-                for (int y = 0; y < h; y++)
+                try
                 {
-                    byte* srow = srcBase + y * src.Stride;
-                    byte* drow = dstBase + y * dst.Stride;
-                    for (int x = 0; x < w; x++)
+                    src = bitmap.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, bitmap.PixelFormat);
+                    dst = gray.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
+                    byte* srcBase = (byte*)src.Scan0, dstBase = (byte*)dst.Scan0;
+                    for (int y = 0; y < h; y++)
                     {
-                        byte* p = srow + x * bpp;           // little-endian BGRA order
-                        drow[x] = (byte)(LumaR * p[2] + LumaG * p[1] + LumaB * p[0]);
+                        byte* srow = srcBase + y * src.Stride;
+                        byte* drow = dstBase + y * dst.Stride;
+                        for (int x = 0; x < w; x++)
+                        {
+                            byte* p = srow + x * bpp;           // little-endian BGRA order
+                            drow[x] = (byte)(LumaR * p[2] + LumaG * p[1] + LumaB * p[0]);
+                        }
                     }
                 }
+                finally
+                {
+                    try
+                    {
+                        if (dst != null) gray.UnlockBits(dst);
+                    }
+                    finally
+                    {
+                        if (src != null) bitmap.UnlockBits(src);
+                    }
+                }
+
+                return gray;
             }
-            finally
+            catch
             {
-                bitmap.UnlockBits(src);
-                gray.UnlockBits(dst);
+                gray.Dispose();
+                throw;
             }
-            return gray;
         }
 
         /// <summary>Invert every intensity/colour channel (255 - value); alpha is left untouched.</summary>
