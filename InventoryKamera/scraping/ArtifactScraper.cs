@@ -23,8 +23,9 @@ namespace InventoryKamera
             IScanSettings scanSettings,
             IScanProgressReporter progressReporter,
             ScanSession scanSession,
-            GameDataSnapshot gameData)
-            : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
+            GameDataSnapshot gameData,
+            FailureDiagnosticStore diagnosticStore = null)
+            : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, diagnosticStore)
 		{
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			inventoryPage = InventoryPage.Artifacts;

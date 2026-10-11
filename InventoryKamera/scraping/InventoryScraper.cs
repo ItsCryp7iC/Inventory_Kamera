@@ -65,6 +65,7 @@ namespace InventoryKamera
         protected readonly IScanSettings scanSettings;
         protected readonly IScanProgressReporter progressReporter;
         protected readonly ScanSession scanSession;
+        protected readonly FailureDiagnosticStore diagnosticStore;
 
         /// <summary>
         /// Shared with every subclass (previously duplicated as a private method on
@@ -86,18 +87,34 @@ namespace InventoryKamera
             bitmap.Save(fullPath);
         }
 
+        protected void SaveFailureScreenshot(Bitmap bitmap, string category, string context, string fileName)
+        {
+            try
+            {
+                FailureDiagnosticScope failure = diagnosticStore.CreateFailure(category, context);
+                failure.SaveBitmap(fileName, bitmap);
+                Logger.Warn("Saved failure diagnostics to {0}.", failure.DirectoryPath);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn(ex, "Could not save {0} failure diagnostics.", category);
+            }
+        }
+
         public InventoryScraper(
             IOcrService ocrService,
             IImagePreprocessor imagePreprocessor,
             IScanSettings scanSettings,
             IScanProgressReporter progressReporter,
-            ScanSession scanSession)
+            ScanSession scanSession,
+            FailureDiagnosticStore diagnosticStore = null)
         {
             this.ocrService = ocrService;
             this.imagePreprocessor = imagePreprocessor;
             this.scanSettings = scanSettings;
             this.progressReporter = progressReporter;
             this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
+            this.diagnosticStore = diagnosticStore ?? FailureDiagnosticStore.CreateDefault();
 
             materialPages = new List<InventoryPage>();
 
@@ -207,11 +224,17 @@ namespace InventoryKamera
                     text = Regex.Replace(corrected ?? string.Empty, @"[^0-9/]", string.Empty);
                 }
 
-                if (string.IsNullOrWhiteSpace(text) || scanSettings.LogScreenshots)
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    SaveItemCountFailure(countBitmap);
+                    throw new FormatException($"Unable to locate {inventoryPage} item count.");
+                }
+
+                if (scanSettings.LogScreenshots)
                 {
                     SaveInventoryBitmap(countBitmap, "ItemCount.png");
-                    SaveInventoryBitmap(Navigation.CaptureWindow(), $"InventoryWindow_{Navigation.GetWidth()}x{Navigation.GetHeight()}.png");
-                    if (string.IsNullOrWhiteSpace(text)) throw new FormatException($"Unable to locate {inventoryPage} item count.");
+                    using (Bitmap full = Navigation.CaptureWindow())
+                        SaveInventoryBitmap(full, $"InventoryWindow_{Navigation.GetWidth()}x{Navigation.GetHeight()}.png");
                 }
 
                 int count;
@@ -374,10 +397,11 @@ namespace InventoryKamera
                         Logger.Error(normalizationError);
                         progressReporter.AddError(normalizationError);
                         if (normalization.DiagnosticScreenshot != null)
-                            SaveDebugScreenshot(
+                            SaveFailureScreenshot(
                                 normalization.DiagnosticScreenshot,
-                                "inventory/tab_normalization_failure",
-                                force: true);
+                                "inventory_tab_normalization",
+                                "weapons",
+                                "failure_full.png");
                         return false;
                     }
                 }
@@ -386,6 +410,7 @@ namespace InventoryKamera
                 Logger.Error(error);
                 progressReporter.AddError(error);
                 DestinationVerificationDiagnostics.Save(
+                    diagnosticStore,
                     result,
                     "inventory",
                     InventoryScreenDetector.CopyDetectionRegion);
@@ -575,6 +600,24 @@ namespace InventoryKamera
             Directory.CreateDirectory(Path.GetDirectoryName(path + filename));
             image.Save(path + filename);
         }
+
+		private void SaveItemCountFailure(Bitmap countBitmap)
+		{
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"inventory_item_count",
+					inventoryPage.ToString());
+				failure.SaveBitmap("count_crop.png", countBitmap);
+				using (Bitmap full = Navigation.CaptureWindow())
+					failure.SaveBitmap("failure_full.png", full);
+				Logger.Warn("Saved inventory item-count diagnostics to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save {0} item-count diagnostics.", inventoryPage);
+			}
+		}
 
     }
 }

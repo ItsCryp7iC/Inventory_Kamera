@@ -3,8 +3,6 @@ using NLog;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -289,24 +287,27 @@ namespace InventoryKamera
     internal sealed class WeaponSortModeDiagnostics : IWeaponSortModeDiagnostics
     {
         private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
+        private readonly FailureDiagnosticStore diagnosticStore;
+
+        internal WeaponSortModeDiagnostics(FailureDiagnosticStore diagnosticStore = null)
+        {
+            this.diagnosticStore = diagnosticStore ?? FailureDiagnosticStore.CreateDefault();
+        }
 
         public void SaveFailure(string phase, IReadOnlyList<Bitmap> attemptCrops)
         {
             if (attemptCrops == null || attemptCrops.Count == 0) return;
 
-            string uniqueName = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture) +
-                "_" + Guid.NewGuid().ToString("N").Substring(0, 8) + "_" + phase;
-            string directory = Path.Combine("./logging", "weapon-sort-mode", uniqueName);
             try
             {
-                Directory.CreateDirectory(directory);
+                FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+                    "weapon_sort_mode",
+                    phase);
                 for (int i = 0; i < attemptCrops.Count; i++)
                 {
-                    attemptCrops[i].Save(Path.Combine(
-                        directory,
-                        $"attempt_{i + 1:00}_crop.png"));
+                    failure.SaveBitmap($"attempt_{i + 1:00}_crop.png", attemptCrops[i]);
                 }
-                Logger.Warn("Weapon sort verification diagnostics saved to {0}.", directory);
+                Logger.Warn("Weapon sort verification diagnostics saved to {0}.", failure.DirectoryPath);
             }
             catch (Exception ex)
             {

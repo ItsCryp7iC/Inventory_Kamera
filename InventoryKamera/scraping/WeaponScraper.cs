@@ -25,13 +25,15 @@ namespace InventoryKamera
             IScanSettings scanSettings,
             IScanProgressReporter progressReporter,
             ScanSession scanSession,
-            GameDataSnapshot gameData)
-            : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
+            GameDataSnapshot gameData,
+            FailureDiagnosticStore diagnosticStore = null)
+            : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, diagnosticStore)
         {
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			sortModeVerifier = new WeaponSortModeVerifier(
 				new NavigationWeaponSortModeCapture(),
-				new WeaponSortModeDetector(ocrService, imagePreprocessor));
+				new WeaponSortModeDetector(ocrService, imagePreprocessor),
+				new WeaponSortModeDiagnostics(this.diagnosticStore));
             inventoryPage = InventoryPage.Weapons;
             SortByLevel = scanSettings.MinimumWeaponLevel > 1;
         }
@@ -183,8 +185,8 @@ namespace InventoryKamera
             sortModeConfirmed = SetSortMode(navigator, SortByLevel ? "Level" : "Quality");
             if (!sortModeConfirmed)
             {
-                Logger.Error("Weapon sort mode could not be confirmed -- early-stop-on-threshold is disabled, so the full weapon grid will be scanned. See ./logging/weapon-sort-mode/ for attempt crops.");
-                progressReporter.AddError("Could not confirm weapon sort mode; scanning all weapons (filter early-stop disabled). See logging/weapon-sort-mode.");
+                Logger.Error("Weapon sort mode could not be confirmed -- early-stop-on-threshold is disabled, so the full weapon grid will be scanned. See ./logging/failures/ for attempt crops.");
+                progressReporter.AddError("Could not confirm weapon sort mode; scanning all weapons (filter early-stop disabled). See logging/failures.");
             }
 
             int weaponCount = count == 0 ? ScanItemCount() : count;

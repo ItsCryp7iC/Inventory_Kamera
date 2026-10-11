@@ -45,8 +45,9 @@ namespace InventoryKamera
 			IScanSettings scanSettings,
 			IScanProgressReporter progressReporter,
 			ScanSession scanSession,
-			GameDataSnapshot gameData)
-			: base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
+			GameDataSnapshot gameData,
+			FailureDiagnosticStore diagnosticStore = null)
+			: base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, diagnosticStore)
 		{
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			inventoryPage = InventoryPage.CharacterDevelopmentItems;
@@ -59,8 +60,9 @@ namespace InventoryKamera
 			IScanProgressReporter progressReporter,
 			ScanSession scanSession,
 			GameDataSnapshot gameData,
-			InventoryPage section)
-			: base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession)
+			InventoryPage section,
+			FailureDiagnosticStore diagnosticStore = null)
+			: base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, diagnosticStore)
 		{
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			inventoryPage = section;
@@ -99,7 +101,11 @@ namespace InventoryKamera
 				{
 					progressReporter.SetNavigation_Image(screenshot);
 					progressReporter.AddError("Unable to parse mora count");
-					SaveInventoryBitmap(screenshot, "mora.png");
+					SaveFailureScreenshot(
+						screenshot,
+						"material_quantity",
+						"mora",
+						"quantity_crop.png");
 				}
 				return count;
 			}
@@ -509,7 +515,15 @@ namespace InventoryKamera
 							{
 								progressReporter.AddError($"Failed to parse quantity for {name}");
 							}
-							if (scanSettings.LogScreenshots || count == 0)
+							if (count == 0)
+							{
+								SaveFailureScreenshot(
+									quantity,
+									"material_quantity",
+									name,
+									"quantity_crop.png");
+							}
+							else if (scanSettings.LogScreenshots)
 							{
 								SaveInventoryBitmap(quantity, $"quantity/{name}_Quantity.png");
 							}

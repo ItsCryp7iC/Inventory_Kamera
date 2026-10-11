@@ -23,6 +23,7 @@ namespace InventoryKamera
 		private readonly IScanProgressReporter progressReporter;
 		private readonly ScanSession scanSession;
 		private readonly GameDataSnapshot gameData;
+		private readonly FailureDiagnosticStore diagnosticStore;
 
         public CharacterScraper(
 			IOcrService ocrService,
@@ -30,7 +31,8 @@ namespace InventoryKamera
 			IScanSettings scanSettings,
 			IScanProgressReporter progressReporter,
 			ScanSession scanSession,
-			GameDataSnapshot gameData)
+			GameDataSnapshot gameData,
+			FailureDiagnosticStore diagnosticStore = null)
 		{
 			this.ocrService = ocrService;
 			this.imagePreprocessor = imagePreprocessor;
@@ -38,6 +40,7 @@ namespace InventoryKamera
 			this.progressReporter = progressReporter;
 			this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
+			this.diagnosticStore = diagnosticStore ?? FailureDiagnosticStore.CreateDefault();
 			NumOfCharToScan = scanSettings.NumOfCharToScan;
 		}
 
@@ -299,14 +302,25 @@ namespace InventoryKamera
 					// Unrecognized, non-manequin slot: it never gets added to Characters, so it's
 					// already skipped by the Constellations (Phase 2) and Talents (Phase 3) passes (both
 					// only iterate recorded characters). Save one full-window screenshot so the user can
-					// identify who was skipped -- it goes in the top-level characters folder (not a
-					// per-character subfolder, since we have no name to file it under). Saved regardless
-					// of LogScreenshots: an unrecognized character is a failure worth capturing.
+					// identify who was skipped. Saved regardless of LogScreenshots through the bounded
+					// per-run failure store because an unrecognized character is a failure worth retaining.
 					unrecognizedCount++;
 					Logger.Warn("Unrecognized character (raw OCR: \"{0}\") -- skipping all passes and saving a full screenshot.", rawRead);
-					Directory.CreateDirectory("./logging/characters");
 					using (var screenshot = Navigation.CaptureWindow())
-						screenshot.Save($"./logging/characters/unrecognized_{unrecognizedCount}.png");
+					{
+						try
+						{
+							FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+								"character_identity",
+								"unrecognized_" + unrecognizedCount);
+							failure.SaveBitmap("failure_full.png", screenshot);
+							Logger.Warn("Saved unrecognized-character diagnostics to {0}.", failure.DirectoryPath);
+						}
+						catch (Exception ex)
+						{
+							Logger.Warn(ex, "Could not save unrecognized-character diagnostics.");
+						}
+					}
 				}
 
 				scanSession.CancellationToken.ThrowIfCancellationRequested();
@@ -598,6 +612,7 @@ namespace InventoryKamera
 				Logger.Error(error);
 				progressReporter.AddError(error);
 				DestinationVerificationDiagnostics.Save(
+					diagnosticStore,
 					result,
 					"character",
 					CharacterScreenDetector.CopyDetectionRegion);
@@ -791,38 +806,29 @@ namespace InventoryKamera
 		private static string ForDiagnosticLog(string text) =>
 			(text ?? string.Empty).Replace("\r", "\\r").Replace("\n", "\\n");
 
-		private static string SafeDiagnosticName(string name) =>
-			Regex.Replace(name ?? "unknown", @"[^a-zA-Z0-9_-]", "_");
-
 		private void SaveCharacterVerificationDiagnostics(
 			Character character,
 			CharacterVerificationPhase phase,
 			IReadOnlyList<CharacterVerificationDiagnosticFrame> frames)
 		{
-			string folderName = string.Format(
-				"{0}_{1}_{2}_{3}",
-				SafeDiagnosticName(character.CanonicalName),
-				phase.ToString().ToLowerInvariant(),
-				DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff"),
-				Guid.NewGuid().ToString("N").Substring(0, 8));
-			string folder = Path.Combine(".", "logging", "character_verification", folderName);
-
 			try
 			{
-				Directory.CreateDirectory(folder);
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"character_verification",
+					character.CanonicalName + "_" + phase.ToString().ToLowerInvariant());
 				for (int i = 0; i < frames.Count; i++)
 				{
-					frames[i].Header.Save(Path.Combine(folder, $"attempt_{i + 1:00}_header.png"));
-					frames[i].Processed.Save(Path.Combine(folder, $"attempt_{i + 1:00}_processed.png"));
+					failure.SaveBitmap($"attempt_{i + 1:00}_header.png", frames[i].Header);
+					failure.SaveBitmap($"attempt_{i + 1:00}_processed.png", frames[i].Processed);
 				}
 
 				using (Bitmap full = Navigation.CaptureWindow())
-					full.Save(Path.Combine(folder, "failure_full.png"));
-				Logger.Warn("Saved character verification diagnostics to {0}", folder);
+					failure.SaveBitmap("failure_full.png", full);
+				Logger.Warn("Saved character verification diagnostics to {0}", failure.DirectoryPath);
 			}
 			catch (Exception ex)
 			{
-				Logger.Warn(ex, "Could not save character verification diagnostics to {0}", folder);
+				Logger.Warn(ex, "Could not save character verification diagnostics.");
 			}
 		}
 
@@ -1339,23 +1345,18 @@ namespace InventoryKamera
 			}
 		}
 
-		private static void SaveLevelFailureDiagnostics(string characterName, IReadOnlyList<Bitmap> attempts)
+		private void SaveLevelFailureDiagnostics(string characterName, IReadOnlyList<Bitmap> attempts)
 		{
 			try
 			{
-				string safeName = GameDataSnapshot.NormalizeKey(characterName);
-				if (string.IsNullOrWhiteSpace(safeName)) safeName = "unknown";
-				string directory = Path.Combine(
-					".",
-					"logging",
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
 					"character_level",
-					$"{safeName}_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{Guid.NewGuid():N}");
-				Directory.CreateDirectory(directory);
+					characterName);
 
 				for (int i = 0; i < attempts.Count; i++)
-					attempts[i].Save(Path.Combine(directory, $"attempt_{i + 1:00}_crop.png"));
+					failure.SaveBitmap($"attempt_{i + 1:00}_crop.png", attempts[i]);
 
-				Logger.Warn("Saved {0} failed character-level OCR crop(s) to {1}", attempts.Count, directory);
+				Logger.Warn("Saved {0} failed character-level OCR crop(s) to {1}", attempts.Count, failure.DirectoryPath);
 			}
 			catch (Exception ex)
 			{
@@ -1786,38 +1787,34 @@ namespace InventoryKamera
 			Character character,
 			IReadOnlyList<ConstellationNodeDiagnosticFrame> frames)
 		{
-			string folderName = string.Format(
-				"{0}_{1}_{2}",
-				SafeDiagnosticName(character.CanonicalName),
-				DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff"),
-				Guid.NewGuid().ToString("N").Substring(0, 8));
-			string folder = Path.Combine(".", "logging", "constellation_verification", folderName);
-
 			try
 			{
-				Directory.CreateDirectory(folder);
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"constellation_verification",
+					character.CanonicalName);
 				foreach (ConstellationNodeDiagnosticFrame frame in frames)
 				{
 					string prefix = $"node_{frame.Node:00}_attempt_{frame.Attempt:00}";
-					frame.Full.Save(Path.Combine(folder, prefix + "_full.png"));
-					frame.RawActivated.Save(Path.Combine(folder, prefix + "_activated_raw.png"));
+					failure.SaveBitmap(prefix + "_activated_raw.png", frame.RawActivated);
 					foreach (ConstellationActivatedDiagnosticVariant variant in frame.ActivatedVariants)
 					{
-						variant.Processed.Save(Path.Combine(
-							folder,
-							prefix + "_activated_" + variant.Read.Source + ".png"));
+						failure.SaveBitmap(
+							prefix + "_activated_" + variant.Read.Source + ".png",
+							variant.Processed);
 					}
-					frame.RawLocked.Save(Path.Combine(folder, prefix + "_locked_raw.png"));
-					frame.ProcessedLocked.Save(Path.Combine(folder, prefix + "_locked_processed.png"));
+					failure.SaveBitmap(prefix + "_locked_raw.png", frame.RawLocked);
+					failure.SaveBitmap(prefix + "_locked_processed.png", frame.ProcessedLocked);
 				}
 
+				// Focused evidence is retained for every attempt. One final full-window frame provides
+				// context without persisting duplicate account-bearing screenshots for every retry.
 				if (frames.Count > 0)
-					frames[frames.Count - 1].Full.Save(Path.Combine(folder, "failure_full.png"));
-				Logger.Warn("Saved constellation verification diagnostics to {0}", folder);
+					failure.SaveBitmap("failure_full.png", frames[frames.Count - 1].Full);
+				Logger.Warn("Saved constellation verification diagnostics to {0}", failure.DirectoryPath);
 			}
 			catch (Exception ex)
 			{
-				Logger.Warn(ex, "Could not save constellation verification diagnostics to {0}", folder);
+				Logger.Warn(ex, "Could not save constellation verification diagnostics.");
 			}
 		}
 
@@ -2019,29 +2016,24 @@ namespace InventoryKamera
 			Character character,
 			IReadOnlyList<TalentScanDiagnosticFrame> frames)
 		{
-			string folderName = string.Format(
-				"{0}_{1}_{2}",
-				SafeDiagnosticName(character.CanonicalName),
-				DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff"),
-				Guid.NewGuid().ToString("N").Substring(0, 8));
-			string folder = Path.Combine(".", "logging", "talent_verification", folderName);
-
 			try
 			{
-				Directory.CreateDirectory(folder);
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"talent_verification",
+					character.CanonicalName);
 				for (int i = 0; i < frames.Count; i++)
 				{
-					frames[i].Capture.Save(Path.Combine(folder, $"attempt_{i + 1:00}_crop.png"));
-					frames[i].Processed.Save(Path.Combine(folder, $"attempt_{i + 1:00}_processed.png"));
+					failure.SaveBitmap($"attempt_{i + 1:00}_crop.png", frames[i].Capture);
+					failure.SaveBitmap($"attempt_{i + 1:00}_processed.png", frames[i].Processed);
 				}
 
 				using (Bitmap full = Navigation.CaptureWindow())
-					full.Save(Path.Combine(folder, "failure_full.png"));
-				Logger.Warn("Saved character talent consensus diagnostics to {0}", folder);
+					failure.SaveBitmap("failure_full.png", full);
+				Logger.Warn("Saved character talent consensus diagnostics to {0}", failure.DirectoryPath);
 			}
 			catch (Exception ex)
 			{
-				Logger.Warn(ex, "Could not save character talent consensus diagnostics to {0}", folder);
+				Logger.Warn(ex, "Could not save character talent consensus diagnostics.");
 			}
 		}
 

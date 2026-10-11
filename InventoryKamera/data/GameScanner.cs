@@ -3,6 +3,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -33,6 +34,7 @@ namespace InventoryKamera
 		private readonly IScanSettings scanSettings;
 		private readonly IScanProgressReporter progressReporter;
 		private readonly ScanSession scanSession;
+		private readonly FailureDiagnosticStore diagnosticStore;
 		private GameDataSnapshot gameData;
 
 		private WeaponScraper weaponScraper;
@@ -56,7 +58,8 @@ namespace InventoryKamera
 		internal GameScanner(
 			IScanProgressReporter progressReporter,
 			ScanSession scanSession,
-			GameDataSnapshot gameData)
+			GameDataSnapshot gameData,
+			FailureDiagnosticStore diagnosticStore = null)
 		{
 			Characters = new List<Character>();
 			Inventory = new Inventory();
@@ -64,6 +67,7 @@ namespace InventoryKamera
 			equippedWeapons = new List<Weapon>();
 			this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
+			this.diagnosticStore = diagnosticStore ?? FailureDiagnosticStore.CreateDefault();
 
 			var tesseractOcr = new OcrService();
 			ocrService = tesseractOcr;
@@ -129,32 +133,42 @@ namespace InventoryKamera
 		private void InitializeScrapers()
 		{
 			weaponScraper = new WeaponScraper(
-				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
+				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData, diagnosticStore);
 			artifactScraper = new ArtifactScraper(
-				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
+				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData, diagnosticStore);
 			characterScraper = new CharacterScraper(
-				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
+				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData, diagnosticStore);
 			materialScraper = new MaterialScraper(
-				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData);
+				ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, gameData, diagnosticStore);
 		}
 
 		public void ResetLogging()
 		{
-			try
-			{
-				Directory.Delete("./logging/weapons", true);
-				Directory.Delete("./logging/artifacts", true);
-				Directory.Delete("./logging/characters", true);
-				Directory.Delete("./logging/materials", true);
-			}
-			catch { }
-
-			Directory.CreateDirectory("./logging/weapons");
-			Directory.CreateDirectory("./logging/artifacts");
-			Directory.CreateDirectory("./logging/characters");
-			Directory.CreateDirectory("./logging/materials");
-
+			diagnosticStore.ApplyRetention();
+			ResetTransientLogging(Path.GetFullPath(Path.Combine(".", "logging")));
 			Logger.Info("Logging directory reset");
+		}
+
+		internal static void ResetTransientLogging(string loggingRoot)
+		{
+			if (string.IsNullOrWhiteSpace(loggingRoot))
+				throw new ArgumentException("A logging root is required.", nameof(loggingRoot));
+
+			string[] transientDirectories = { "weapons", "artifacts", "characters", "materials" };
+			foreach (string name in transientDirectories)
+			{
+				string directory = Path.Combine(loggingRoot, name);
+				try
+				{
+					if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+				}
+				catch (Exception ex)
+				{
+					Logger.Warn(ex, "Could not reset transient screenshot directory {0}.", directory);
+				}
+
+				Directory.CreateDirectory(directory);
+			}
 		}
 
 		public void StopImageProcessorWorkers()
@@ -451,10 +465,11 @@ namespace InventoryKamera
 							progressReporter.SetGear(imageCollection.Bitmaps.Last(), weapon);
 
 							string weaponPath = $"./logging/weapons/weapon{weapon.Id}/";
+							bool weaponValid = weapon.IsValid();
 
 							if (scanSettings.LogScreenshots) Directory.CreateDirectory(weaponPath);
 
-							if (weapon.IsValid())
+							if (weaponValid)
 							{
 								Logger.Info("Weapon scan #{0}: scanned OK -- {1}", weapon.Id, weapon.ToString());
 								progressReporter.IncrementWeaponCount();
@@ -474,16 +489,10 @@ namespace InventoryKamera
 								progressReporter.AddError(error + weapon.ToString());
 								Logger.Warn("Weapon scan #{0}: FAILED validation -- {1}scanned as: {2}",
 									weapon.Id, error.Replace("\n", "; "), weapon.ToString());
-								Directory.CreateDirectory(weaponPath);
-								using (var writer = File.CreateText(weaponPath + "log.txt"))
-								{
-									writer.WriteLine($"Version: {AppInfo.Version}");
-									writer.WriteLine($"Resolution: {Navigation.GetWidth()}x{Navigation.GetHeight()}");
-									writer.WriteLine($"Error log:\n\t{error.Replace("\n", "\n\t")}");
-								}
+								SaveInvalidWeaponDiagnostics(weapon, error, imageCollection.Bitmaps);
 							}
 
-                            if (!weapon.IsValid() || scanSettings.LogScreenshots)
+                            if (scanSettings.LogScreenshots)
                             {
                                 Directory.CreateDirectory(weaponPath + "name");
                                 imageCollection.Bitmaps[0].Save(weaponPath + "name/name.png");
@@ -510,7 +519,7 @@ namespace InventoryKamera
                             // add decision made just above so the rescue path never double-adds.
                             if (pendingWeaponName != null)
                             {
-                                bool wasAdded = weapon.IsValid();
+								bool wasAdded = weaponValid;
                                 progressReporter.EnqueueCorrection(
                                     imageCollection.Bitmaps[0], pendingWeaponName.RecognizedText,
                                     pendingWeaponName.ConfidencePercent, pendingWeaponName.FieldLabel,
@@ -546,10 +555,11 @@ namespace InventoryKamera
 							progressReporter.SetGear(imageCollection.Bitmaps.Last(), artifact);
 
 							string artifactPath = $"./logging/artifacts/artifact{artifact.Id}/";
+							bool artifactValid = artifact.IsValid();
 
                             if (scanSettings.LogScreenshots) Directory.CreateDirectory(artifactPath);
 
-							if (artifact.IsValid())
+							if (artifactValid)
 							{
 								Logger.Info("Artifact scan #{0}: scanned OK -- {1}", artifact.Id, artifact.ToString());
 								progressReporter.IncrementArtifactCount();
@@ -571,16 +581,10 @@ namespace InventoryKamera
 								progressReporter.AddError(error + artifact.ToString());
 								Logger.Warn("Artifact scan #{0}: FAILED validation -- {1}scanned as: {2}",
 									artifact.Id, error.Replace("\n", "; "), artifact.ToString());
-								Directory.CreateDirectory(artifactPath);
-								using (var writer = File.CreateText(artifactPath + "log.txt"))
-								{
-									writer.WriteLine($"Version: {AppInfo.Version}");
-									writer.WriteLine($"Resolution: {Navigation.GetWidth()}x{Navigation.GetHeight()}");
-									writer.WriteLine($"Error Log:\n\t{error.Replace("\n", "\n\t")}");
-								}
+								SaveInvalidArtifactDiagnostics(artifact, error, imageCollection.Bitmaps);
 							}
 
-                            if (!artifact.IsValid() || scanSettings.LogScreenshots)
+                            if (scanSettings.LogScreenshots)
                             {
                                 Directory.CreateDirectory(artifactPath + "name");
                                 imageCollection.Bitmaps[0].Save(artifactPath + "name/name.png");
@@ -613,7 +617,7 @@ namespace InventoryKamera
 							// the add decision just above so the rescue path never double-adds.
 							if (pendingArtifactSet != null)
 							{
-								bool wasAdded = artifact.IsValid();
+								bool wasAdded = artifactValid;
 								progressReporter.EnqueueCorrection(
 									imageCollection.Bitmaps[0], pendingArtifactSet.RecognizedText,
 									pendingArtifactSet.ConfidencePercent, pendingArtifactSet.FieldLabel,
@@ -641,7 +645,7 @@ namespace InventoryKamera
 					}
 		}
 
-        private static void LogObject(object obj, string path)
+		private static void LogObject(object obj, string path)
         {
             using (var file = new StreamWriter(path))
             {
@@ -652,6 +656,67 @@ namespace InventoryKamera
                 serializer.Serialize(file, obj);
             }
         }
+
+		private void SaveInvalidWeaponDiagnostics(
+			Weapon weapon,
+			string error,
+			IReadOnlyList<Bitmap> bitmaps)
+		{
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"weapon_validation",
+					"weapon_" + weapon.Id);
+				failure.SaveText("log.txt", DiagnosticSummary(error));
+				failure.SaveText("weapon.json", JsonConvert.SerializeObject(weapon, Formatting.Indented));
+				failure.SaveBitmap("name.png", bitmaps[0]);
+				failure.SaveBitmap("rarity.png", bitmaps[0]);
+				failure.SaveBitmap("level.png", bitmaps[1]);
+				failure.SaveBitmap("refinement.png", bitmaps[2]);
+				failure.SaveBitmap("locked.png", bitmaps[3]);
+				failure.SaveBitmap("equipped.png", bitmaps[4]);
+				failure.SaveBitmap("card.png", bitmaps[bitmaps.Count - 1]);
+				Logger.Warn("Saved weapon validation diagnostics to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save weapon validation diagnostics for item {0}.", weapon.Id);
+			}
+		}
+
+		private void SaveInvalidArtifactDiagnostics(
+			Artifact artifact,
+			string error,
+			IReadOnlyList<Bitmap> bitmaps)
+		{
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"artifact_validation",
+					"artifact_" + artifact.Id);
+				failure.SaveText("log.txt", DiagnosticSummary(error));
+				failure.SaveText("artifact.json", JsonConvert.SerializeObject(artifact, Formatting.Indented));
+				failure.SaveBitmap("name.png", bitmaps[0]);
+				failure.SaveBitmap("slot.png", bitmaps[1]);
+				failure.SaveBitmap("mainstat.png", bitmaps[2]);
+				failure.SaveBitmap("level.png", bitmaps[3]);
+				failure.SaveBitmap("substats.png", bitmaps[4]);
+				failure.SaveBitmap("equipped.png", bitmaps[5]);
+				failure.SaveBitmap("locked.png", bitmaps[6]);
+				failure.SaveBitmap("sanctify.png", bitmaps[7]);
+				failure.SaveBitmap("card.png", bitmaps[bitmaps.Count - 1]);
+				Logger.Warn("Saved artifact validation diagnostics to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save artifact validation diagnostics for item {0}.", artifact.Id);
+			}
+		}
+
+		private static string DiagnosticSummary(string error) =>
+			$"Version: {AppInfo.Version}{Environment.NewLine}" +
+			$"Resolution: {Navigation.GetWidth()}x{Navigation.GetHeight()}{Environment.NewLine}" +
+			$"Error log:{Environment.NewLine}\t{(error ?? string.Empty).Replace("\n", Environment.NewLine + "\t")}";
 
         public void AssignArtifacts()
 		{

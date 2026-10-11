@@ -1,7 +1,6 @@
 using InventoryKamera.game;
 using System;
 using System.Drawing;
-using System.IO;
 
 namespace InventoryKamera
 {
@@ -14,38 +13,39 @@ namespace InventoryKamera
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
         internal static void Save(
+            FailureDiagnosticStore diagnosticStore,
             PaimonMenuNavigationResult result,
             string targetName,
             Func<Bitmap, Bitmap> copyDetectorCrop)
         {
+            if (diagnosticStore == null) throw new ArgumentNullException(nameof(diagnosticStore));
             if (result == null) throw new ArgumentNullException(nameof(result));
             if (copyDetectorCrop == null) throw new ArgumentNullException(nameof(copyDetectorCrop));
             if (result.DiagnosticScreenshots.Count == 0) return;
 
             try
             {
-                string runId = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff") + "_" +
-                    Guid.NewGuid().ToString("N").Substring(0, 8);
-                string directory = Path.Combine(
-                    "./logging",
-                    "paimonmenu",
-                    $"{targetName}_entry_failure_{runId}");
-                Directory.CreateDirectory(directory);
+                FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+                    "destination_verification",
+                    targetName + "_entry");
 
                 for (int index = 0; index < result.DiagnosticScreenshots.Count; index++)
                 {
                     Bitmap screenshot = result.DiagnosticScreenshots[index];
                     int attempt = index + 1;
-                    screenshot.Save(Path.Combine(directory, $"attempt_{attempt:00}_full.png"));
                     using Bitmap crop = copyDetectorCrop(screenshot);
-                    crop.Save(Path.Combine(directory, $"attempt_{attempt:00}_crop.png"));
+                    failure.SaveBitmap($"attempt_{attempt:00}_crop.png", crop);
                 }
+
+                // One final context frame is sufficient; retaining every full-window retry duplicated
+                // private screen content without adding evidence beyond the attempt crops.
+                failure.SaveBitmap("failure_full.png", result.DiagnosticScreenshots[result.DiagnosticScreenshots.Count - 1]);
 
                 Logger.Info(
                     "Saved {0} {1} destination-verification diagnostic attempt(s) to {2}.",
                     result.DiagnosticScreenshots.Count,
                     targetName,
-                    directory);
+                    failure.DirectoryPath);
             }
             catch (Exception ex)
             {
