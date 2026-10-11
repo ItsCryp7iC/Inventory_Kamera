@@ -21,7 +21,9 @@ namespace InventoryKamera.ui
 
         public OcrCorrectionForm(Bitmap image, string recognizedText, float confidencePercent, string fieldLabel)
         {
-            Text = "Low-confidence OCR result";
+            Text = fieldLabel?.EndsWith(" item count", StringComparison.OrdinalIgnoreCase) == true
+                ? "Item count needs confirmation"
+                : "Low-confidence OCR result";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = false;

@@ -178,6 +178,108 @@ namespace InventoryKamera
 			scanSession.AbortWorkersAndWait();
 		}
 
+		private void RunInventoryPhase(InventoryPhaseRequest phase, GameNavigator navigator)
+		{
+			string displayName;
+			switch (phase.Phase)
+			{
+				case InventoryScanPhase.Weapons:
+					displayName = "weapons";
+					break;
+				case InventoryScanPhase.Artifacts:
+					displayName = "artifacts";
+					break;
+				case InventoryScanPhase.CharacterDevelopmentItems:
+					displayName = "character development materials";
+					break;
+				default:
+					displayName = "materials";
+					break;
+			}
+
+			Logger.Info("Scanning {0}...", displayName);
+			try
+			{
+				switch (phase.Phase)
+				{
+					case InventoryScanPhase.Weapons:
+						weaponScraper.ScanWeapons(navigator, verifiedCurrentTab: phase.TargetTab);
+						break;
+					case InventoryScanPhase.Artifacts:
+						artifactScraper.ScanArtifacts(navigator, verifiedCurrentTab: phase.TargetTab);
+						break;
+					case InventoryScanPhase.CharacterDevelopmentItems:
+						materialScraper.SetInventoryPage(InventoryPage.CharacterDevelopmentItems);
+						materialScraper.ScanMaterials(navigator, ref Inventory, verifiedCurrentTab: phase.TargetTab);
+						break;
+					case InventoryScanPhase.Materials:
+						materialScraper.SetInventoryPage(InventoryPage.Materials);
+						materialScraper.ScanMaterials(navigator, ref Inventory, verifiedCurrentTab: phase.TargetTab);
+						break;
+				}
+			}
+			catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
+			{
+				Logger.Info("{0} scanning stopped by user cancellation.", displayName);
+			}
+			catch (FormatException ex)
+			{
+				progressReporter.AddError(ex.Message);
+			}
+			catch (Exception ex)
+			{
+				progressReporter.AddError(ex.Message + "\n" + ex.StackTrace);
+			}
+			Logger.Info("Done scanning {0}", displayName);
+		}
+
+		private void HandleInventoryTabTransitionFailure(
+			InventoryPhaseRequest phase,
+			InventoryTabNavigationResult result)
+		{
+			if (result.Status == InventoryTabNavigationStatus.Cancelled)
+			{
+				Logger.Info("Inventory tab transition to {0} stopped by user cancellation.", phase.TargetTab);
+				return;
+			}
+
+			string error = result.Message + " Remaining inventory scan phases were skipped.";
+			Logger.Error(error);
+			progressReporter.AddError(error);
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"inventory_tab_transition",
+					phase.TargetTab);
+				failure.SaveText(
+					"transition.txt",
+					$"status={result.Status}\n" +
+					$"current={result.CurrentTab ?? "(unknown)"}\n" +
+					$"target={result.TargetTab}\n" +
+					$"input_count={result.InputCount}\n" +
+					$"raw_ocr={result.RawText}\n" +
+					$"message={result.Message}\n");
+
+				if (result.InitialDiagnosticScreenshot != null)
+				{
+					using Bitmap crop = InventoryScreenDetector.CopyDetectionRegion(
+						result.InitialDiagnosticScreenshot);
+					failure.SaveBitmap("initial_tab_crop.png", crop);
+				}
+				if (result.DiagnosticScreenshot != null)
+				{
+					using Bitmap crop = InventoryScreenDetector.CopyDetectionRegion(
+						result.DiagnosticScreenshot);
+					failure.SaveBitmap("final_tab_crop.png", crop);
+				}
+				Logger.Warn("Saved Inventory tab-transition diagnostics to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save Inventory tab-transition diagnostics.");
+			}
+		}
+
 		public void GatherData()
 		{
 			ResetLogging();
@@ -231,7 +333,7 @@ namespace InventoryKamera
 							navigator,
 							inventoryScreenDetector,
 							new NavigationGameScreenCapture(),
-							cancellationRequested: () => scanSession.IsCancellationRequested);
+							cancellationToken: scanSession.CancellationToken);
 
 						if (scanInventory && !scanSession.IsCancellationRequested)
 						{
@@ -254,77 +356,21 @@ namespace InventoryKamera
 							}
 							else
 							{
-							// Per user (2026-07-05): once a phase has switched to and scanned a tab, the
-							// next phase already knows where it left off -- no need to re-detect the
-							// current tab via OCR (which had been flaking) just to compute the next
-							// switch. Threaded through explicitly rather than re-derived.
-							string currentTab = InventoryTabNavigator.CanonicalTabName;
+								InventoryTabNavigationTiming tabTiming =
+									InventoryScraper.CreateInventoryTabNavigationTiming();
+								IReadOnlyList<InventoryPhaseRequest> phasePlan = InventoryPhasePlan.Create(
+									scanSettings.ScanWeapons,
+									scanSettings.ScanArtifacts,
+									scanSettings.ScanCharDevItems,
+									scanSettings.ScanMaterials);
+								var phaseCoordinator = new InventoryPhaseCoordinator(
+									target => inventoryTabNavigator.NavigateTo(target, tabTiming),
+									phase => RunInventoryPhase(phase, navigator),
+									HandleInventoryTabTransitionFailure,
+									scanSession.CancellationToken);
 
-							if (scanSettings.ScanWeapons && !scanSession.IsCancellationRequested)
-							{
-								Logger.Info("Scanning weapons...");
-								try
-								{
-									currentTab = weaponScraper.ScanWeapons(navigator, knownCurrentTab: currentTab);
-								}
-								catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
-								{
-									Logger.Info("Weapon scanning stopped by user cancellation.");
-								}
-								catch (FormatException ex) { progressReporter.AddError(ex.Message); }
-								catch (Exception ex)
-								{
-									progressReporter.AddError(ex.Message + "\n" + ex.StackTrace);
-								}
-								Logger.Info("Done scanning weapons");
-							}
-
-							if (scanSettings.ScanArtifacts && !scanSession.IsCancellationRequested)
-							{
-								Logger.Info("Scanning artifacts...");
-								try
-								{
-									currentTab = artifactScraper.ScanArtifacts(navigator, knownCurrentTab: currentTab);
-								}
-								catch (FormatException ex) { progressReporter.AddError(ex.Message); }
-								catch (Exception ex)
-								{
-									progressReporter.AddError(ex.Message + "\n" + ex.StackTrace);
-								}
-								Logger.Info("Done scanning artifacts");
-							}
-
-							if (scanSettings.ScanCharDevItems && !scanSession.IsCancellationRequested)
-							{
-								Logger.Info("Scanning character development materials...");
-								try
-								{
-									materialScraper.SetInventoryPage(InventoryPage.CharacterDevelopmentItems);
-									currentTab = materialScraper.ScanMaterials(navigator, ref Inventory, knownCurrentTab: currentTab);
-								}
-								catch (FormatException ex) { progressReporter.AddError(ex.Message); }
-								catch (Exception ex)
-								{
-									progressReporter.AddError(ex.Message + "\n" + ex.StackTrace);
-								}
-								Logger.Info("Done scanning character development materials");
-							}
-
-							if (scanSettings.ScanMaterials && !scanSession.IsCancellationRequested)
-							{
-								Logger.Info("Scanning materials...");
-								try
-								{
-									materialScraper.SetInventoryPage(InventoryPage.Materials);
-									currentTab = materialScraper.ScanMaterials(navigator, ref Inventory, knownCurrentTab: currentTab);
-								}
-								catch (FormatException ex) { progressReporter.AddError(ex.Message); }
-								catch (Exception ex)
-								{
-									progressReporter.AddError(ex.Message + "\n" + ex.StackTrace);
-								}
-								Logger.Info("Done scanning materials");
-							}
+								if (!phaseCoordinator.Run(phasePlan) && !scanSession.IsCancellationRequested)
+									Logger.Warn("Remaining inventory phases were skipped after an unverified tab transition.");
 							}
 						}
 

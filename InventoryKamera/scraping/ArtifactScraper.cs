@@ -418,7 +418,8 @@ namespace InventoryKamera
         /// 2026-07-04: switching between Weapons/Artifacts tabs shouldn't back all the way out to the
         /// unpaused game state and re-enter -- see <c>WeaponScraper.ScanWeapons</c>'s doc
         /// comment for the full reasoning; <c>GatherData</c> now owns the single controller/entry
-        /// spanning both phases). Switches to Artifacts, sets sort-by-obtained and clears filters
+        /// spanning both phases). The caller visually verifies Artifacts before this method sets
+        /// sort-by-obtained and clears filters
         /// (<see cref="SetSortByObtained"/>/<see cref="ClearFilters"/>, both
         /// live-verified 2026-07-04), then repeatedly reads the selected item's card and advances with
         /// a single left-stick push to the Right (per user, confirmed to work the same way as weapons).
@@ -429,14 +430,14 @@ namespace InventoryKamera
         /// Quality/Type (see <see cref="QueueScan"/>'s own comment) -- scans in whatever
         /// order the grid is currently in, filtering without early-stop.
         /// </summary>
-        /// <param name="knownCurrentTab">See <see cref="InventoryScraper.SwitchToTab"/> --
-        /// pass the previous controller-driven phase's returned tab (e.g. "Weapons") to skip
-        /// re-detecting via OCR.</param>
-        public string ScanArtifacts(GameNavigator navigator, int count = 0, string knownCurrentTab = null)
+        /// <param name="verifiedCurrentTab">The tab already verified by the shared state-aware
+        /// navigator. A missing or different value prevents the phase from starting.</param>
+        public string ScanArtifacts(GameNavigator navigator, int count = 0, string verifiedCurrentTab = null)
         {
             StopScanning = false;
 
-            string currentTab = SwitchToTab(navigator, "Artifacts", knownCurrentTab);
+            string currentTab = SwitchToTab("Artifacts", verifiedCurrentTab);
+            if (StopScanning) return currentTab;
             SetSortByObtained(navigator);
             ClearFilters(navigator);
 
@@ -483,10 +484,7 @@ namespace InventoryKamera
             Logger.Info("Controller artifact scan finished: {0} of {1} scanned (cancelled={2}, stopped={3})",
                 scanned, artifactCount, scanSession.IsCancellationRequested, StopScanning);
 
-            // Always report "Artifacts" here, not whatever SwitchToTab returned -- see
-            // WeaponScraper.ScanWeapons's matching comment: by the time we get here the
-            // inventory is on Artifacts regardless of whether the pre-switch OCR detection succeeded,
-            // and reporting the real value lets the next phase skip re-running that same flaky OCR.
+            // The state-aware transition gate verified Artifacts before this phase was invoked.
             return "Artifacts";
         }
 

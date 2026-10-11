@@ -499,9 +499,11 @@ namespace InventoryKamera
 		/// right-stick step reliably advances/auto-scrolls through this grid the same way it does for
 		/// Weapons.
 		/// </summary>
-		/// <returns>The tab actually active once this method returns, to hand into the next
-		/// controller-driven phase (see <see cref="InventoryScraper.SwitchToTab"/>).</returns>
-		internal string ScanMaterials(GameNavigator navigator, ref Inventory inventory, string knownCurrentTab = null)
+		/// <param name="verifiedCurrentTab">The tab already verified by the shared state-aware
+		/// navigator. A missing or different value prevents the phase from starting.</param>
+		/// <returns>The verified target tab after scanning, or the supplied tab when the
+		/// precondition failed.</returns>
+		internal string ScanMaterials(GameNavigator navigator, ref Inventory inventory, string verifiedCurrentTab = null)
 		{
 			StopScanning = false;
 
@@ -509,7 +511,8 @@ namespace InventoryKamera
 				? "Character Development Items"
 				: "Materials";
 
-			string currentTab = SwitchToTab(navigator, targetTab, knownCurrentTab);
+			string currentTab = SwitchToTab(targetTab, verifiedCurrentTab);
+			if (StopScanning) return currentTab;
 
 			// Full-window reference shot of the grid before scanning starts -- useful alongside the
 			// per-item quantity crops for judging whether GetQuantityRegion's fixed
@@ -629,10 +632,7 @@ namespace InventoryKamera
 			Logger.Info("Controller {0} scan finished: {1} scanned (cancelled={2}, stopped={3})",
 				inventoryPage, scanned, scanSession.IsCancellationRequested, StopScanning);
 
-			// Always report targetTab here, not whatever SwitchToTab returned -- see
-			// WeaponScraper.ScanWeapons's matching comment: by the time we get here the
-			// inventory is on targetTab regardless of whether the pre-switch OCR detection succeeded,
-			// and reporting the real value lets the next phase skip re-running that same flaky OCR.
+			// The state-aware transition gate verified targetTab before this phase was invoked.
 			return targetTab;
 		}
     }

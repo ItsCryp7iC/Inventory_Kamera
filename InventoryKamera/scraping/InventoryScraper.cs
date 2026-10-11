@@ -6,7 +6,6 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
-using System.Threading;
 
 namespace InventoryKamera
 {
@@ -69,8 +68,7 @@ namespace InventoryKamera
 
         /// <summary>
         /// Shared with every subclass (previously duplicated as a private method on
-        /// <c>ArtifactScraper</c> only) so every controller-mode capture region -- including this
-        /// base class's own <see cref="DetectCurrentTabIndex"/> -- can leave a visual
+        /// <c>ArtifactScraper</c> only) so every controller-mode capture region can leave a visual
         /// trail when <see cref="IScanSettings.LogScreenshots"/> is on, not just artifacts.
         /// <paramref name="relativePath"/> may contain '/' to nest into subfolders (e.g.
         /// <c>"weapons/weapon0/name/name"</c>), matching the per-item folder layout
@@ -195,77 +193,107 @@ namespace InventoryKamera
 
         private int ScanItemCountFromRegion(Rectangle region)
         {
-            using (Bitmap countBitmap = Navigation.CaptureRegion(region))
+            Bitmap latestCountBitmap = null;
+            InventoryItemCountReadResult readResult = null;
+            try
             {
-                progressReporter.SetNavigation_Image(countBitmap);
+                readResult = InventoryItemCountReader.Read(
+                    scanSettings.OcrConfidenceThreshold,
+                    attempt =>
+                    {
+                        scanSession.CancellationToken.ThrowIfCancellationRequested();
+                        latestCountBitmap?.Dispose();
+                        latestCountBitmap = Navigation.CaptureRegion(region);
+                        progressReporter.SetNavigation_Image(latestCountBitmap);
 
-                Bitmap n = imagePreprocessor.ConvertToGrayscale(countBitmap);
-                imagePreprocessor.SetContrast(60.0, ref n);
-                imagePreprocessor.SetInvert(ref n);
+                        using Bitmap processed = imagePreprocessor.ConvertToGrayscale(latestCountBitmap);
+                        Bitmap ocrImage = processed;
+                        try
+                        {
+                            imagePreprocessor.SetContrast(60.0, ref ocrImage);
+                            imagePreprocessor.SetInvert(ref ocrImage);
+                            var (rawText, confidence) = ocrService.AnalyzeTextWithConfidence(ocrImage);
+                            float confidencePercent = confidence * 100;
+                            InventoryItemCountParseResult parsed =
+                                InventoryItemCountParser.Parse(rawText);
+                            Logger.Debug(
+                                "{0} item count OCR attempt {1}/{2}: raw=\"{3}\" confidence={4:0.0}% " +
+                                "parse={5} reason=\"{6}\".",
+                                inventoryPage,
+                                attempt,
+                                InventoryItemCountReader.DefaultAttempts,
+                                rawText?.Trim(),
+                                confidencePercent,
+                                parsed.Status,
+                                parsed.Reason ?? "accepted");
+                            return new InventoryItemCountObservation(rawText, confidencePercent);
+                        }
+                        finally
+                        {
+                            if (!ReferenceEquals(ocrImage, processed)) ocrImage?.Dispose();
+                        }
+                    },
+                    scanSession.CancellationToken,
+                    WaitForItemCountRetry,
+                    retryDelayMs: ScaledControllerDelay(300));
 
-                var (rawText, confidence) = ocrService.AnalyzeTextWithConfidence(n);
-                string text = rawText.Trim();
-                n.Dispose();
-
-                // Remove any non-numeric and '/' characters
-                text = Regex.Replace(text, @"[^0-9/]", string.Empty);
-
-                float confidencePercent = confidence * 100;
-                Logger.Debug("{0} item count OCR: rawText=\"{1}\" confidence={2:0.0}% threshold={3}%", inventoryPage, text, confidencePercent, scanSettings.OcrConfidenceThreshold);
-                if (string.IsNullOrWhiteSpace(text) || confidencePercent < scanSettings.OcrConfidenceThreshold)
+                if (readResult.Success)
                 {
-                    Logger.Debug("{0} item count below confidence threshold -- requesting inline correction", inventoryPage);
-                    string corrected = progressReporter.RequestCorrection(
-                        countBitmap,
-                        text,
-                        confidencePercent,
-                        $"{inventoryPage} item count",
-                        scanSession.CancellationToken);
-                    text = Regex.Replace(corrected ?? string.Empty, @"[^0-9/]", string.Empty);
+                    SaveSuccessfulItemCountDiagnostics(latestCountBitmap);
+                    return readResult.Count;
                 }
 
-                if (string.IsNullOrWhiteSpace(text))
+                InventoryItemCountObservation lastObservation =
+                    readResult.Observations[readResult.Observations.Count - 1];
+                Logger.Warn(
+                    "{0} item count remained unresolved after {1} fresh captures; requesting inline correction.",
+                    inventoryPage,
+                    readResult.Observations.Count);
+                string corrected = progressReporter.RequestCorrection(
+                    latestCountBitmap,
+                    lastObservation.RawText,
+                    lastObservation.ConfidencePercent,
+                    $"{inventoryPage} item count",
+                    scanSession.CancellationToken);
+                scanSession.CancellationToken.ThrowIfCancellationRequested();
+
+                InventoryItemCountParseResult correction =
+                    InventoryItemCountParser.Parse(corrected);
+                if (correction.Success)
                 {
-                    SaveItemCountFailure(countBitmap);
-                    throw new FormatException($"Unable to locate {inventoryPage} item count.");
+                    Logger.Info(
+                        "Accepted corrected {0} item count {1}/{2}.",
+                        inventoryPage,
+                        correction.Count,
+                        correction.Capacity);
+                    SaveSuccessfulItemCountDiagnostics(latestCountBitmap);
+                    return correction.Count;
                 }
 
-                if (scanSettings.LogScreenshots)
-                {
-                    SaveInventoryBitmap(countBitmap, "ItemCount.png");
-                    using (Bitmap full = Navigation.CaptureWindow())
-                        SaveInventoryBitmap(full, $"InventoryWindow_{Navigation.GetWidth()}x{Navigation.GetHeight()}.png");
-                }
-
-                int count;
-                string pageCapacity;
-                switch (inventoryPage)
-                {
-                    case InventoryPage.Artifacts:
-                        pageCapacity = "1800";
-                        break;
-                    default:
-                        pageCapacity = "2000";
-                        break;
-                }
-
-                if (Regex.IsMatch(text, "/")) // Check for slash
-                {
-                    count = int.Parse(text.Split('/')[0]);
-                }
-                else if (Regex.Matches(text, pageCapacity).Count == 1) // Remove the inventory capacity from number
-                {
-                    text = text.Replace(pageCapacity, string.Empty);
-                    count = int.Parse(text);
-                }
-                else // Extreme worst case
-                {
-                    count = 2000;
-                    Logger.Debug("Defaulted to 2000 for inventory page capacity");
-                }
-
-                return count;
+                SaveItemCountFailure(latestCountBitmap, readResult, corrected, correction);
+                throw new FormatException(
+                    $"Unable to determine a structurally valid {inventoryPage} item count; " +
+                    $"last result was {correction.Status}: {correction.Reason}");
             }
+            finally
+            {
+                latestCountBitmap?.Dispose();
+            }
+        }
+
+        private void WaitForItemCountRetry(int milliseconds)
+        {
+            if (scanSession.CancellationToken.WaitHandle.WaitOne(milliseconds))
+                scanSession.CancellationToken.ThrowIfCancellationRequested();
+        }
+
+        private void SaveSuccessfulItemCountDiagnostics(Bitmap countBitmap)
+        {
+            if (!scanSettings.LogScreenshots || countBitmap == null) return;
+
+            SaveInventoryBitmap(countBitmap, "ItemCount.png");
+            using Bitmap full = Navigation.CaptureWindow();
+            SaveInventoryBitmap(full, $"InventoryWindow_{Navigation.GetWidth()}x{Navigation.GetHeight()}.png");
         }
 
         /// <summary>
@@ -322,11 +350,6 @@ namespace InventoryKamera
                     height: (int)(card.Height * 0.0519)));
         }
 
-        // Genshin's inventory remembers whichever tab was last open, so tab-switching can't assume a
-        // known starting tab -- the tab name label gets OCR'd and fuzzy-matched against this list.
-        // Shared across Weapons/Artifacts/Character Development Items (Phase 3 §6c).
-        internal static readonly string[] ControllerInventoryTabNames = InventoryTabRecognition.Names;
-
         /// <summary>
         /// Captures the selected item's always-visible detail card -- confirmed by the user to be the
         /// same region for Weapons, Artifacts, and Character Development Items. Percentages measured
@@ -376,12 +399,7 @@ namespace InventoryKamera
                 {
                     Logger.Info("State-aware Inventory entry succeeded. {0}", result.DetectionDetails);
 
-                    var tabTiming = new InventoryTabNavigationTiming(
-                        initialSettleMs: ScaledControllerDelay(500),
-                        buttonHoldMs: ScaledControllerDelay(200),
-                        stepSettleMs: ScaledControllerDelay(800),
-                        finalSettleMs: ScaledControllerDelay(1000),
-                        detectionRetryMs: ScaledControllerDelay(300));
+                    InventoryTabNavigationTiming tabTiming = CreateInventoryTabNavigationTiming();
                     using (InventoryTabNavigationResult normalization =
                         tabNavigator.NormalizeToWeapons(tabTiming))
                     {
@@ -418,153 +436,30 @@ namespace InventoryKamera
             }
         }
 
-        /// <summary>
-        /// Captures the tab-name label (top-left of the inventory screen), OCRs it, and fuzzy-matches
-        /// it against <see cref="ControllerInventoryTabNames"/>. Returns the matched index (-1 if no
-        /// confident match). Must be called while already inside Inventory (see
-        /// <see cref="EnterInventory"/>) and before the owning <c>GameNavigator</c> is
-        /// disposed -- disposal mashes back out of the menu as a safety net.
-        /// </summary>
-        internal int DetectCurrentTabIndex(out string rawText)
-        {
-            // Height tightened 0.08 -> 0.05 (2026-07-07): the debug screenshot showed the sub-tab
-            // icon row bleeding into the bottom of the crop, which likely confused Tesseract's
-            // SingleLine page-seg mode into garbling otherwise-clean "Weapons" text into "Mn NT".
-            // Needs live confirmation that the tab-name line itself is still fully inside the crop.
-            using (var region = Navigation.CaptureRegion(
-                x: (int)(0.09 * Navigation.GetWidth()),
-                y: (int)(0.035 * Navigation.GetHeight()),
-                width: (int)(0.20 * Navigation.GetWidth()),
-                height: (int)(0.05 * Navigation.GetHeight())))
-            {
-                SaveDebugScreenshot(region, "tabdetection/region");
-
-                if (scanSettings.LogScreenshots)
-                {
-                    Bitmap processed = imagePreprocessor.ConvertToGrayscale(region);
-                    imagePreprocessor.SetContrast(60.0, ref processed);
-                    imagePreprocessor.SetInvert(ref processed);
-                    using (processed) SaveDebugScreenshot(processed, "tabdetection/processed");
-                }
-
-                var detector = new InventoryScreenDetector(ocrService, imagePreprocessor);
-                InventoryScreenDetection detection = detector.DetectTabRegion(region);
-                rawText = detection.RawText;
-            }
-            return InventoryTabRecognition.Match(rawText);
-        }
+        internal static InventoryTabNavigationTiming CreateInventoryTabNavigationTiming() =>
+            new InventoryTabNavigationTiming(
+                initialSettleMs: ScaledControllerDelay(500),
+                buttonHoldMs: ScaledControllerDelay(200),
+                stepSettleMs: ScaledControllerDelay(800),
+                finalSettleMs: ScaledControllerDelay(1000),
+                detectionRetryMs: ScaledControllerDelay(300));
 
         /// <summary>
-        /// Switches to <paramref name="targetTab"/> from wherever the cursor currently is, cycling
-        /// LB/RB (the inventory sub-tab row's own input, distinct from the pause menu's stick-driven
-        /// grid). Tabs wrap around (circular) -- takes whichever direction is fewer presses. Must run
-        /// inside Inventory already (see <see cref="EnterInventory"/>).
+        /// Enforces the verified-tab precondition established by <see cref="InventoryTabNavigator"/>.
+        /// This method deliberately sends no input; all tab movement and visual verification belongs
+        /// to the shared navigator before a category scanner is invoked.
         /// </summary>
-        /// <param name="knownCurrentTab">
-        /// If the caller already knows which tab is active (e.g. the previous scan phase just
-        /// finished switching to and scanning that exact tab, and nothing changes tabs mid-scan), pass
-        /// it here to skip OCR detection entirely. Per user (2026-07-05): re-detecting via OCR for
-        /// every phase transition is both slower and less reliable than just remembering where the
-        /// last phase left off -- a live miss ("Weapons" misread as "eepons J"/"eepons |") persisted
-        /// even after a settle-wait and 3 retry attempts, pointing at an OCR/rendering issue with this
-        /// specific capture rather than a timing one; skipping the read avoids it outright.
-        /// </param>
-        /// <returns>The tab actually active after this call (<paramref name="targetTab"/> on success,
-        /// or the original tab if detection failed and the switch was skipped) -- pass this into the
-        /// next phase's <paramref name="knownCurrentTab"/> to keep the chain going without OCR.</returns>
-        internal string SwitchToTab(GameNavigator navigator, string targetTab, string knownCurrentTab = null)
+        internal string SwitchToTab(string targetTab, string verifiedCurrentTab)
         {
-            int currentIndex;
-            string rawText = null;
-
-            if (knownCurrentTab != null)
-            {
-                currentIndex = Array.IndexOf(ControllerInventoryTabNames, knownCurrentTab);
-                Logger.Info("Tab switch: using known current tab \"{0}\" (skipping OCR detection).", knownCurrentTab);
-            }
-            else
-            {
-                // Per user (2026-07-05): no settle wait existed between one scan phase's last
-                // per-item advance and the next phase's tab-detection capture -- contributed to the
-                // "Weapons" -> "eepons |" misread below, since detection fired immediately with zero
-                // margin for whatever the previous action's animation/UI was still doing.
-                Thread.Sleep(ScaledControllerDelay(500));
-
-                // Detection can also flake even with the settle above -- retry a few times before
-                // giving up, rather than treating a -1 "undetected" index as a valid array index in
-                // the step-count math below. That silently produced a plausible-but-wrong step count
-                // once (2 presses instead of 1), which would land on the wrong tab entirely and scan
-                // garbage data with no visible error.
-                currentIndex = -1;
-                const int maxDetectAttempts = 3;
-                for (int attempt = 1; attempt <= maxDetectAttempts && currentIndex < 0; attempt++)
-                {
-                    currentIndex = DetectCurrentTabIndex(out rawText);
-                    if (currentIndex < 0 && attempt < maxDetectAttempts)
-                    {
-                        Logger.Warn("Tab detection attempt {0} failed (raw=\"{1}\") -- retrying.", attempt, rawText);
-                        Thread.Sleep(ScaledControllerDelay(300));
-                    }
-                }
-            }
-
-            int targetIndex = Array.IndexOf(ControllerInventoryTabNames, targetTab);
-
-            if (targetIndex < 0)
-            {
-                string warning = $"\"{targetTab}\" is not a recognized inventory tab name -- skipped tab switch.";
-                Logger.Warn(warning);
-                progressReporter.AddError(warning);
-                return knownCurrentTab;
-            }
-
-            if (currentIndex < 0)
-            {
-                // Per user (2026-07-07): don't let the scan continue against a tab it can't confirm
-                // -- that risks silently cataloguing items under the wrong item type. Ending this
-                // phase's scan (StopScanning) is safe: WeaponScraper/ArtifactScraper/MaterialScraper's
-                // own scan loops all check StopScanning before every iteration, so this stops before a
-                // single item is read rather than partway through a wrong-tab grid.
-                string warning = $"Could not confidently detect the current inventory tab (last OCR: \"{rawText}\") -- " +
-                    $"stopping this scan phase instead of switching to {targetTab} blind.";
-                Logger.Warn(warning);
-                progressReporter.AddError(warning);
-                StopScanning = true;
-                return knownCurrentTab; // unknown tab either way; nothing better to report back
-            }
-
-            string currentTabName = ControllerInventoryTabNames[currentIndex];
-
-            if (currentIndex == targetIndex)
-            {
-                Logger.Info("Tab switch: scanned in on \"{0}\" (raw=\"{1}\"), already the target -- 0 shoulder presses needed.", currentTabName, rawText);
+            if (string.Equals(targetTab, verifiedCurrentTab, StringComparison.Ordinal))
                 return targetTab;
-            }
 
-            int tabCount = ControllerInventoryTabNames.Length;
-            int forwardSteps = ((targetIndex - currentIndex) % tabCount + tabCount) % tabCount;
-            int backwardSteps = tabCount - forwardSteps;
-            bool goForward = forwardSteps <= backwardSteps;
-            int steps = Math.Min(forwardSteps, backwardSteps);
-            string shoulderButton = goForward ? "RightShoulder" : "LeftShoulder";
-
-            Logger.Info("Tab switch: scanned in on \"{0}\" (raw=\"{1}\"), target \"{2}\" -- {3} {4} ({5}) presses.",
-                currentTabName, rawText, targetTab, steps, shoulderButton, goForward ? "forward/right" : "backward/left");
-
-            // Per user (2026-07-04): base tab-switch timing doubled to 200/800/1000 (through several
-            // rounds: 80/100/300 -> 120/150/400 -> 240/300/800 -> 100/400/500 -> this) -- still
-            // scaled by ScaledControllerDelay, just a higher starting point.
-            for (int i = 0; i < steps; i++)
-            {
-                if (goForward)
-                    navigator.TapNextTab(holdMs: ScaledControllerDelay(200));
-                else
-                    navigator.TapPreviousTab(holdMs: ScaledControllerDelay(200));
-                Thread.Sleep(ScaledControllerDelay(800));
-            }
-            Thread.Sleep(ScaledControllerDelay(1000));
-
-            return targetTab;
+            string warning = $"The {targetTab} scan phase was not started because its Inventory tab " +
+                $"was not visually verified (verified tab: {verifiedCurrentTab ?? "(none)"}).";
+            Logger.Warn(warning);
+            progressReporter.AddError(warning);
+            StopScanning = true;
+            return verifiedCurrentTab;
         }
 
         /// <summary>
@@ -601,14 +496,31 @@ namespace InventoryKamera
             image.Save(path + filename);
         }
 
-		private void SaveItemCountFailure(Bitmap countBitmap)
+		private void SaveItemCountFailure(
+			Bitmap countBitmap,
+			InventoryItemCountReadResult readResult,
+			string correctedText,
+			InventoryItemCountParseResult correction)
 		{
 			try
 			{
 				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
 					"inventory_item_count",
 					inventoryPage.ToString());
-				failure.SaveBitmap("count_crop.png", countBitmap);
+				if (countBitmap != null) failure.SaveBitmap("count_crop.png", countBitmap);
+				var evidence = new System.Text.StringBuilder();
+				for (int i = 0; i < readResult.Observations.Count; i++)
+				{
+					InventoryItemCountObservation observation = readResult.Observations[i];
+					InventoryItemCountParseResult parsed =
+						InventoryItemCountParser.Parse(observation.RawText);
+					evidence.AppendLine(
+						$"attempt={i + 1}; raw=\"{observation.RawText}\"; " +
+						$"confidence={observation.ConfidencePercent:0.0}; status={parsed.Status}; reason={parsed.Reason}");
+				}
+				evidence.AppendLine(
+					$"correction=\"{correctedText}\"; status={correction.Status}; reason={correction.Reason}");
+				failure.SaveText("observations.txt", evidence.ToString());
 				using (Bitmap full = Navigation.CaptureWindow())
 					failure.SaveBitmap("failure_full.png", full);
 				Logger.Warn("Saved inventory item-count diagnostics to {0}.", failure.DirectoryPath);

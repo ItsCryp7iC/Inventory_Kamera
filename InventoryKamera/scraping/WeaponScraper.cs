@@ -222,9 +222,9 @@ namespace InventoryKamera
         /// 2026-07-04: switching between Weapons/Artifacts tabs shouldn't back all the way out to the
         /// unpaused game state and re-enter -- <c>GatherData</c> now owns one <see cref="GameNavigator"/>
         /// and one <see cref="InventoryScraper.EnterInventory"/> call spanning every
-        /// controller-driven scan phase, with each phase just switching tabs via
-        /// <see cref="InventoryScraper.SwitchToTab"/> instead of a full exit/re-entry).
-        /// Switches to Weapons, then repeatedly reads the selected item's card and advances to the next
+        /// controller-driven scan phase. The caller visually verifies Weapons through
+        /// <see cref="InventoryTabNavigator"/> before invoking this method. It then repeatedly reads
+        /// the selected item's card and advances to the next
         /// item with a single left-stick push to the Right -- per user (2026-07-03, live-tested), the
         /// grid auto-advances/wraps to the next item in inventory order on its own, including across row
         /// boundaries, so no column/row bookkeeping is needed (an earlier Down+Left-to-column-0 manual
@@ -235,15 +235,15 @@ namespace InventoryKamera
         /// uses) via <see cref="SetSortMode"/> (2026-07-04), which is what makes
         /// <see cref="QueueScan"/>'s early-stop-on-threshold safe again.
         /// </summary>
-        /// <returns>The tab actually active once this method returns ("Weapons" on a normal run, or
-        /// whatever <paramref name="knownCurrentTab"/> was if tab detection failed and switching had
-        /// to be skipped) -- pass this into the next controller-driven phase's own call so it can skip
-        /// re-detecting via OCR (see <see cref="InventoryScraper.SwitchToTab"/>).</returns>
-        public string ScanWeapons(GameNavigator navigator, int count = 0, string knownCurrentTab = null)
+        /// <param name="verifiedCurrentTab">The tab already verified by the shared state-aware
+        /// navigator. A missing or different value prevents the phase from starting.</param>
+        /// <returns>Weapons after a verified scan, or the supplied tab when the precondition failed.</returns>
+        public string ScanWeapons(GameNavigator navigator, int count = 0, string verifiedCurrentTab = null)
         {
             StopScanning = false;
 
-            string currentTab = SwitchToTab(navigator, "Weapons", knownCurrentTab);
+            string currentTab = SwitchToTab("Weapons", verifiedCurrentTab);
+            if (StopScanning) return currentTab;
             sortModeConfirmed = SetSortMode(navigator, SortByLevel ? "Level" : "Quality");
             if (!sortModeConfirmed)
             {
@@ -288,13 +288,7 @@ namespace InventoryKamera
             Logger.Info("Controller weapon scan finished: {0} of {1} scanned (cancelled={2}, stopped={3})",
                 scanned, weaponCount, scanSession.IsCancellationRequested, StopScanning);
 
-            // Always report "Weapons" here, not whatever SwitchToTab returned: this
-            // method's whole job is to end up scanning the Weapons tab, so by the time we get here
-            // that's true regardless of whether the pre-switch OCR detection above succeeded (it
-            // being unconfident just means the switch itself was skipped, not that the tab is
-            // unknown -- inventory was already sitting on it, or nothing would have scanned).
-            // Reporting the real value lets the next phase use the known-tab fast path instead of
-            // re-running the same flaky OCR detection immediately again.
+            // The state-aware transition gate verified Weapons before this phase was invoked.
             return "Weapons";
         }
 

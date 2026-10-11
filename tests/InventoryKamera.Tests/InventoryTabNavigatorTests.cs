@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
 using Tesseract;
 using Xunit;
 
@@ -220,6 +221,201 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void NavigateTo_OneShoulderStepVerifiesDestination()
+        {
+            var events = new List<string>();
+            InventoryTabNavigator navigator = CreateNavigator(
+                events,
+                Detection("Weapons"),
+                Detection("Artifacts"));
+
+            using InventoryTabNavigationResult result = navigator.NavigateTo("Artifacts", NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(InventoryTabNavigationStatus.Succeeded, result.Status);
+            Assert.Equal(1, result.InputCount);
+            Assert.Equal(1, events.Count(e => e == "Button:NextTab:True"));
+            Assert.Equal(2, events.Count(e => e == "Capture"));
+        }
+
+        [Fact]
+        public void NavigateTo_MultipleStepsVerifiesDestination()
+        {
+            var events = new List<string>();
+            InventoryTabNavigator navigator = CreateNavigator(
+                events,
+                Detection("Weapons"),
+                Detection("Character Development Items"));
+
+            using InventoryTabNavigationResult result =
+                navigator.NavigateTo("Character Development Items", NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.InputCount);
+            Assert.Equal(2, events.Count(e => e == "Button:NextTab:True"));
+        }
+
+        [Fact]
+        public void NavigateTo_WrapAroundUsesShortestRoute()
+        {
+            var events = new List<string>();
+            InventoryTabNavigator navigator = CreateNavigator(
+                events,
+                Detection("Furnishings"),
+                Detection("Weapons"));
+
+            using InventoryTabNavigationResult result = navigator.NavigateTo("Weapons", NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.InputCount);
+            Assert.Equal(1, events.Count(e => e == "Button:NextTab:True"));
+        }
+
+        [Fact]
+        public void NavigateTo_DroppedFirstInputReplansFromObservedTab()
+        {
+            var events = new List<string>();
+            InventoryTabNavigator navigator = CreateNavigator(
+                events,
+                Detection("Weapons"),
+                Detection("Weapons"),
+                Detection("Artifacts"));
+
+            using InventoryTabNavigationResult result = navigator.NavigateTo("Artifacts", NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.InputCount);
+            Assert.Equal(3, events.Count(e => e == "Capture"));
+            Assert.Equal(2, events.Count(e => e == "Button:NextTab:True"));
+        }
+
+        [Fact]
+        public void NavigateTo_UnexpectedValidDestinationReplansFromObservedTab()
+        {
+            var events = new List<string>();
+            InventoryTabNavigator navigator = CreateNavigator(
+                events,
+                Detection("Weapons"),
+                Detection("Artifacts"),
+                Detection("Materials"));
+
+            using InventoryTabNavigationResult result = navigator.NavigateTo("Materials", NoWaitTiming());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(7, result.InputCount); // 4 from Weapons, then 3 from observed Artifacts.
+            Assert.Equal(3, events.Count(e => e == "Capture"));
+        }
+
+        [Fact]
+        public void NavigateTo_UnresolvedCurrentTabFailsWithoutShoulderInput()
+        {
+            var events = new List<string>();
+            InventoryTabNavigator navigator = CreateNavigator(events, Detection("Unreadable"));
+
+            using InventoryTabNavigationResult result = navigator.NavigateTo("Artifacts", NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Equal(InventoryTabNavigationStatus.FailedToDetectCurrent, result.Status);
+            Assert.DoesNotContain(events, IsTabPress);
+            Assert.Contains("Button:Back:True", events);
+        }
+
+        [Fact]
+        public void NavigateTo_RepeatedVerificationFailureStopsAfterBoundedRoutes()
+        {
+            var events = new List<string>();
+            InventoryTabNavigator navigator = CreateNavigator(
+                events,
+                Detection("Weapons"),
+                Detection("Weapons"),
+                Detection("Weapons"),
+                Detection("Weapons"));
+
+            using InventoryTabNavigationResult result = navigator.NavigateTo("Artifacts", NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Equal(InventoryTabNavigationStatus.FailedToReachTarget, result.Status);
+            Assert.Equal(3, result.InputCount);
+            Assert.Equal(3, events.Count(e => e == "Button:NextTab:True"));
+        }
+
+        [Fact]
+        public void NavigateTo_CancelledBeforeCaptureSendsNoInput()
+        {
+            var events = new List<string>();
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+            InventoryTabNavigator navigator = CreateNavigatorAdvanced(
+                events,
+                cancellation.Token,
+                new[] { Detection("Weapons") });
+
+            using InventoryTabNavigationResult result = navigator.NavigateTo("Artifacts", NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Equal(InventoryTabNavigationStatus.Cancelled, result.Status);
+            Assert.DoesNotContain("Capture", events);
+            Assert.DoesNotContain(events, IsTabPress);
+        }
+
+        [Fact]
+        public void NavigateTo_CancelledDuringRecoveryDoesNotSendAnotherInput()
+        {
+            var events = new List<string>();
+            using var cancellation = new CancellationTokenSource();
+            var detector = new CancellingInventoryScreenDetector(
+                events,
+                cancellation,
+                cancelOnDetection: 2,
+                Detection("Weapons"),
+                Detection("Weapons"));
+            var gameNavigator = new GameNavigator(new FakeGameInput(events), _ => { });
+            var navigator = new InventoryTabNavigator(
+                gameNavigator,
+                detector,
+                new FakeCapture(events),
+                wait: _ => { },
+                cancellationToken: cancellation.Token,
+                detectionAttempts: 1);
+
+            using InventoryTabNavigationResult result = navigator.NavigateTo("Artifacts", NoWaitTiming());
+
+            Assert.False(result.Success);
+            Assert.Equal(InventoryTabNavigationStatus.Cancelled, result.Status);
+            Assert.Equal(1, events.Count(e => e == "Button:NextTab:True"));
+            Assert.Equal(2, events.Count(e => e == "Capture"));
+        }
+
+        [Fact]
+        public void NavigateTo_CancellationDuringStepWaitStopsBeforeVerificationCapture()
+        {
+            var events = new List<string>();
+            using var cancellation = new CancellationTokenSource();
+            var gameNavigator = new GameNavigator(new FakeGameInput(events), _ => { });
+            var navigator = new InventoryTabNavigator(
+                gameNavigator,
+                new FakeInventoryScreenDetector(
+                    events,
+                    new[] { Detection("Weapons"), Detection("Artifacts") }),
+                new FakeCapture(events),
+                wait: _ => cancellation.Cancel(),
+                cancellationToken: cancellation.Token,
+                detectionAttempts: 1);
+            var timing = new InventoryTabNavigationTiming(
+                initialSettleMs: 0,
+                buttonHoldMs: 0,
+                stepSettleMs: 1,
+                finalSettleMs: 0,
+                detectionRetryMs: 0);
+
+            using InventoryTabNavigationResult result = navigator.NavigateTo("Artifacts", timing);
+
+            Assert.Equal(InventoryTabNavigationStatus.Cancelled, result.Status);
+            Assert.Equal(1, events.Count(e => e == "Capture"));
+            Assert.Equal(1, events.Count(e => e == "Button:NextTab:True"));
+        }
+
+        [Fact]
         public void PlannerRoutesDoNotDependOnEnabledIntermediateScanCategories()
         {
             var planner = new InventoryTabPathPlanner();
@@ -238,12 +434,21 @@ namespace InventoryKamera.Tests
             List<string> events,
             params InventoryScreenDetection[] detections)
         {
+            return CreateNavigatorAdvanced(events, default, detections);
+        }
+
+        private static InventoryTabNavigator CreateNavigatorAdvanced(
+            List<string> events,
+            CancellationToken cancellationToken,
+            InventoryScreenDetection[] detections)
+        {
             var gameNavigator = new GameNavigator(new FakeGameInput(events), _ => { });
             return new InventoryTabNavigator(
                 gameNavigator,
                 new FakeInventoryScreenDetector(events, detections),
                 new FakeCapture(events),
                 wait: _ => { },
+                cancellationToken: cancellationToken,
                 detectionAttempts: 1);
         }
 
@@ -277,6 +482,37 @@ namespace InventoryKamera.Tests
                 InventoryScreenDetection detection =
                     detections.Count > 1 ? detections.Dequeue() : detections.Peek();
                 events.Add("Detect:" + (detection.TabName ?? "Unknown"));
+                return detection;
+            }
+        }
+
+        private sealed class CancellingInventoryScreenDetector : IInventoryScreenDetector
+        {
+            private readonly List<string> events;
+            private readonly CancellationTokenSource cancellation;
+            private readonly int cancelOnDetection;
+            private readonly Queue<InventoryScreenDetection> detections;
+            private int count;
+
+            public CancellingInventoryScreenDetector(
+                List<string> events,
+                CancellationTokenSource cancellation,
+                int cancelOnDetection,
+                params InventoryScreenDetection[] detections)
+            {
+                this.events = events;
+                this.cancellation = cancellation;
+                this.cancelOnDetection = cancelOnDetection;
+                this.detections = new Queue<InventoryScreenDetection>(detections);
+            }
+
+            public InventoryScreenDetection Detect(Bitmap screenshot)
+            {
+                InventoryScreenDetection detection =
+                    detections.Count > 1 ? detections.Dequeue() : detections.Peek();
+                events.Add("Detect:" + (detection.TabName ?? "Unknown"));
+                count++;
+                if (count == cancelOnDetection) cancellation.Cancel();
                 return detection;
             }
         }

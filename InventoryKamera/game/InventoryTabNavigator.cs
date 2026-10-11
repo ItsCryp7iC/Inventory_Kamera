@@ -17,11 +17,7 @@ namespace InventoryKamera.game
         public int Steps { get; }
         public string FailureReason { get; }
 
-        private InventoryTabPlan(
-            bool success,
-            InventoryTabDirection direction,
-            int steps,
-            string failureReason)
+        private InventoryTabPlan(bool success, InventoryTabDirection direction, int steps, string failureReason)
         {
             Success = success;
             Direction = direction;
@@ -78,50 +74,94 @@ namespace InventoryKamera.game
         }
     }
 
+    internal enum InventoryTabNavigationStatus
+    {
+        Succeeded,
+        AlreadyAtTarget,
+        FailedToDetectCurrent,
+        FailedToReachTarget,
+        Cancelled,
+    }
+
     internal sealed class InventoryTabNavigationResult : IDisposable
     {
-        public bool Success { get; }
+        public InventoryTabNavigationStatus Status { get; }
+        public bool Success =>
+            Status == InventoryTabNavigationStatus.Succeeded ||
+            Status == InventoryTabNavigationStatus.AlreadyAtTarget;
         public string CurrentTab { get; }
+        public string TargetTab { get; }
         public string Message { get; }
         public string RawText { get; }
+        public int InputCount { get; }
+        public Bitmap InitialDiagnosticScreenshot { get; }
         public Bitmap DiagnosticScreenshot { get; }
 
         private InventoryTabNavigationResult(
-            bool success,
+            InventoryTabNavigationStatus status,
             string currentTab,
+            string targetTab,
             string message,
             string rawText,
+            int inputCount,
+            Bitmap initialDiagnosticScreenshot,
             Bitmap diagnosticScreenshot)
         {
-            Success = success;
+            Status = status;
             CurrentTab = currentTab;
+            TargetTab = targetTab;
             Message = message;
             RawText = rawText ?? string.Empty;
+            InputCount = inputCount;
+            InitialDiagnosticScreenshot = initialDiagnosticScreenshot;
             DiagnosticScreenshot = diagnosticScreenshot;
         }
 
-        public static InventoryTabNavigationResult Succeeded(string currentTab, string rawText) =>
-            new InventoryTabNavigationResult(true, currentTab, null, rawText, null);
+        public static InventoryTabNavigationResult Succeeded(
+            InventoryTabNavigationStatus status,
+            string targetTab,
+            string rawText,
+            int inputCount) =>
+            new InventoryTabNavigationResult(
+                status, targetTab, targetTab, null, rawText, inputCount, null, null);
 
         public static InventoryTabNavigationResult Failed(
+            InventoryTabNavigationStatus status,
             string message,
             string currentTab,
+            string targetTab,
             string rawText,
-            Bitmap screenshot) =>
-            new InventoryTabNavigationResult(false, currentTab, message, rawText, screenshot);
+            int inputCount,
+            Bitmap initialScreenshot,
+            Bitmap finalScreenshot) =>
+            new InventoryTabNavigationResult(
+                status,
+                currentTab,
+                targetTab,
+                message,
+                rawText,
+                inputCount,
+                initialScreenshot,
+                finalScreenshot);
 
-        public void Dispose() => DiagnosticScreenshot?.Dispose();
+        public void Dispose()
+        {
+            InitialDiagnosticScreenshot?.Dispose();
+            if (!ReferenceEquals(DiagnosticScreenshot, InitialDiagnosticScreenshot))
+                DiagnosticScreenshot?.Dispose();
+        }
     }
 
     /// <summary>
-    /// Normalizes a verified-open Inventory screen to the canonical Weapons tab. Semantic OCR
-    /// determines the active tab; controller shoulder input follows a bounded circular plan; a fresh
-    /// capture must verify Weapons before scanning can begin.
+    /// Navigates between Inventory tabs from visual state. Semantic OCR determines the active tab;
+    /// controller shoulder input follows a bounded circular plan; a fresh capture must verify the
+    /// requested target before its scan phase may begin.
     /// </summary>
     internal sealed class InventoryTabNavigator
     {
         internal const string CanonicalTabName = "Weapons";
         internal const int DefaultDetectionAttempts = 3;
+        internal const int DefaultRecoveryAttempts = 2;
 
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
@@ -130,8 +170,9 @@ namespace InventoryKamera.game
         private readonly IGameScreenCapture screenCapture;
         private readonly InventoryTabPathPlanner pathPlanner;
         private readonly Action<int> wait;
-        private readonly Func<bool> cancellationRequested;
+        private readonly CancellationToken cancellationToken;
         private readonly int detectionAttempts;
+        private readonly int recoveryAttempts;
 
         public InventoryTabNavigator(
             GameNavigator navigator,
@@ -139,105 +180,164 @@ namespace InventoryKamera.game
             IGameScreenCapture screenCapture,
             InventoryTabPathPlanner pathPlanner = null,
             Action<int> wait = null,
-            Func<bool> cancellationRequested = null,
-            int detectionAttempts = DefaultDetectionAttempts)
+            CancellationToken cancellationToken = default,
+            int detectionAttempts = DefaultDetectionAttempts,
+            int recoveryAttempts = DefaultRecoveryAttempts)
         {
             this.navigator = navigator ?? throw new ArgumentNullException(nameof(navigator));
             this.detector = detector ?? throw new ArgumentNullException(nameof(detector));
             this.screenCapture = screenCapture ?? throw new ArgumentNullException(nameof(screenCapture));
             this.pathPlanner = pathPlanner ?? new InventoryTabPathPlanner();
-            this.wait = wait ?? Thread.Sleep;
-            this.cancellationRequested = cancellationRequested ?? (() => false);
+            this.wait = wait;
+            this.cancellationToken = cancellationToken;
             this.detectionAttempts = Math.Max(1, detectionAttempts);
+            this.recoveryAttempts = Math.Max(0, recoveryAttempts);
         }
 
-        public InventoryTabNavigationResult NormalizeToWeapons(InventoryTabNavigationTiming timing)
+        public InventoryTabNavigationResult NormalizeToWeapons(InventoryTabNavigationTiming timing) =>
+            NavigateTo(CanonicalTabName, timing);
+
+        public InventoryTabNavigationResult NavigateTo(string targetTab, InventoryTabNavigationTiming timing)
         {
             if (timing == null) throw new ArgumentNullException(nameof(timing));
 
+            int targetIndex = Array.IndexOf(InventoryTabRecognition.Names, targetTab);
+            if (targetIndex < 0)
+                throw new ArgumentException($"Unknown Inventory tab '{targetTab}'.", nameof(targetTab));
+
             Bitmap latestScreenshot = null;
+            Bitmap initialScreenshot = null;
             InventoryScreenDetection latestDetection = null;
+            int inputCount = 0;
+
             try
             {
-                wait(timing.InitialSettleMs);
+                Wait(timing.InitialSettleMs);
                 if (!TryDetect(timing, ref latestScreenshot, out latestDetection))
                 {
+                    if (latestScreenshot != null) initialScreenshot = new Bitmap(latestScreenshot);
                     return Fail(
-                        $"Inventory opened, but the active tab could not be detected (OCR: \"{latestDetection?.RawText}\").",
-                        latestDetection,
-                        Transfer(ref latestScreenshot));
-                }
-
-                int targetIndex = Array.IndexOf(InventoryTabRecognition.Names, CanonicalTabName);
-                InventoryTabPlan plan = pathPlanner.Plan(
-                    latestDetection.TabIndex,
-                    targetIndex,
-                    InventoryTabRecognition.Names.Length);
-                if (!plan.Success)
-                    return Fail(plan.FailureReason, latestDetection, Transfer(ref latestScreenshot));
-
-                Logger.Info(
-                    "Inventory tab normalization: current={0} (OCR: \"{1}\"), target={2}, direction={3}, steps={4}.",
-                    latestDetection.TabName,
-                    latestDetection.RawText,
-                    CanonicalTabName,
-                    plan.Direction,
-                    plan.Steps);
-
-                if (plan.Steps == 0)
-                {
-                    latestScreenshot.Dispose();
-                    latestScreenshot = null;
-                    return InventoryTabNavigationResult.Succeeded(
-                        CanonicalTabName,
-                        latestDetection.RawText);
-                }
-
-                for (int step = 0; step < plan.Steps; step++)
-                {
-                    if (cancellationRequested())
-                        return Fail(
-                            "Inventory tab normalization was cancelled.",
-                            latestDetection,
-                            Transfer(ref latestScreenshot));
-
-                    if (plan.Direction == InventoryTabDirection.Next)
-                        navigator.TapNextTab(timing.ButtonHoldMs);
-                    else
-                        navigator.TapPreviousTab(timing.ButtonHoldMs);
-                    wait(timing.StepSettleMs);
-                }
-
-                wait(timing.FinalSettleMs);
-                if (!TryDetect(timing, ref latestScreenshot, out latestDetection) ||
-                    latestDetection.TabIndex != targetIndex)
-                {
-                    return Fail(
-                        $"Inventory tab normalization did not reach {CanonicalTabName}; " +
-                            $"detected {latestDetection?.TabName ?? "(unknown)"} " +
+                        InventoryTabNavigationStatus.FailedToDetectCurrent,
+                        $"Inventory is open, but the active tab could not be detected before navigating to {targetTab} " +
                             $"(OCR: \"{latestDetection?.RawText}\").",
+                        targetTab,
                         latestDetection,
+                        inputCount,
+                        Transfer(ref initialScreenshot),
                         Transfer(ref latestScreenshot));
                 }
 
-                Logger.Info("Inventory tab normalization verified {0} (OCR: \"{1}\").",
-                    latestDetection.TabName, latestDetection.RawText);
-                latestScreenshot.Dispose();
-                latestScreenshot = null;
-                return InventoryTabNavigationResult.Succeeded(
-                    CanonicalTabName,
-                    latestDetection.RawText);
+                initialScreenshot = new Bitmap(latestScreenshot);
+                if (latestDetection.TabIndex == targetIndex)
+                {
+                    Logger.Info("Inventory tab transition verified {0} without input (OCR: \"{1}\").",
+                        targetTab, latestDetection.RawText);
+                    return InventoryTabNavigationResult.Succeeded(
+                        InventoryTabNavigationStatus.AlreadyAtTarget,
+                        targetTab,
+                        latestDetection.RawText,
+                        inputCount);
+                }
+
+                int maximumRoutes = recoveryAttempts + 1;
+                for (int routeAttempt = 1; routeAttempt <= maximumRoutes; routeAttempt++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    InventoryTabPlan plan = pathPlanner.Plan(
+                        latestDetection.TabIndex,
+                        targetIndex,
+                        InventoryTabRecognition.Names.Length);
+                    if (!plan.Success)
+                    {
+                        return Fail(
+                            InventoryTabNavigationStatus.FailedToReachTarget,
+                            plan.FailureReason,
+                            targetTab,
+                            latestDetection,
+                            inputCount,
+                            Transfer(ref initialScreenshot),
+                            Transfer(ref latestScreenshot));
+                    }
+
+                    Logger.Info(
+                        "Inventory tab transition {0}/{1}: current={2} (OCR: \"{3}\"), target={4}, direction={5}, steps={6}.",
+                        routeAttempt,
+                        maximumRoutes,
+                        latestDetection.TabName,
+                        latestDetection.RawText,
+                        targetTab,
+                        plan.Direction,
+                        plan.Steps);
+
+                    for (int step = 0; step < plan.Steps; step++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (plan.Direction == InventoryTabDirection.Next)
+                            navigator.TapNextTab(timing.ButtonHoldMs);
+                        else
+                            navigator.TapPreviousTab(timing.ButtonHoldMs);
+                        inputCount++;
+                        Wait(timing.StepSettleMs);
+                    }
+
+                    Wait(timing.FinalSettleMs);
+                    bool detected = TryDetect(timing, ref latestScreenshot, out latestDetection);
+                    if (detected && latestDetection.TabIndex == targetIndex)
+                    {
+                        Logger.Info(
+                            "Inventory tab transition verified {0} after {1} shoulder input(s) (OCR: \"{2}\").",
+                            targetTab,
+                            inputCount,
+                            latestDetection.RawText);
+                        return InventoryTabNavigationResult.Succeeded(
+                            InventoryTabNavigationStatus.Succeeded,
+                            targetTab,
+                            latestDetection.RawText,
+                            inputCount);
+                    }
+
+                    if (!detected || routeAttempt == maximumRoutes)
+                    {
+                        string detectedTab = latestDetection?.TabName ?? "(unknown)";
+                        return Fail(
+                            InventoryTabNavigationStatus.FailedToReachTarget,
+                            $"Inventory tab transition did not reach {targetTab} after {routeAttempt} bounded route attempt(s); " +
+                                $"detected {detectedTab} (OCR: \"{latestDetection?.RawText}\").",
+                            targetTab,
+                            latestDetection,
+                            inputCount,
+                            Transfer(ref initialScreenshot),
+                            Transfer(ref latestScreenshot));
+                    }
+
+                    Logger.Warn(
+                        "Inventory tab transition reached {0} instead of {1}; replanning from the verified state.",
+                        latestDetection.TabName,
+                        targetTab);
+                }
+
+                throw new InvalidOperationException("Inventory tab transition exhausted without a result.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return Cancelled(targetTab, latestDetection, inputCount,
+                    Transfer(ref initialScreenshot), Transfer(ref latestScreenshot));
             }
             catch (Exception ex)
             {
-                Logger.Error(ex, "Inventory tab normalization failed unexpectedly.");
+                Logger.Error(ex, "Inventory tab transition to {0} failed unexpectedly.", targetTab);
                 return Fail(
-                    $"Inventory tab normalization failed: {ex.Message}",
+                    InventoryTabNavigationStatus.FailedToReachTarget,
+                    $"Inventory tab transition to {targetTab} failed: {ex.Message}",
+                    targetTab,
                     latestDetection,
+                    inputCount,
+                    Transfer(ref initialScreenshot),
                     Transfer(ref latestScreenshot));
             }
             finally
             {
+                initialScreenshot?.Dispose();
                 latestScreenshot?.Dispose();
             }
         }
@@ -250,10 +350,12 @@ namespace InventoryKamera.game
             detection = null;
             for (int attempt = 1; attempt <= detectionAttempts; attempt++)
             {
-                if (cancellationRequested()) return false;
+                cancellationToken.ThrowIfCancellationRequested();
                 latestScreenshot?.Dispose();
                 latestScreenshot = screenCapture.CaptureWindow();
+                cancellationToken.ThrowIfCancellationRequested();
                 detection = detector.Detect(latestScreenshot);
+                cancellationToken.ThrowIfCancellationRequested();
                 Logger.Debug(
                     "Inventory tab detection attempt {0}/{1}: tab={2}; index={3}; OCR=\"{4}\".",
                     attempt,
@@ -262,15 +364,39 @@ namespace InventoryKamera.game
                     detection.TabIndex,
                     detection.RawText);
                 if (detection.IsInventoryOpen) return true;
-                if (attempt < detectionAttempts) wait(timing.DetectionRetryMs);
+                if (attempt < detectionAttempts) Wait(timing.DetectionRetryMs);
             }
             return false;
         }
 
-        private InventoryTabNavigationResult Fail(
-            string message,
+        private InventoryTabNavigationResult Cancelled(
+            string targetTab,
             InventoryScreenDetection detection,
-            Bitmap diagnosticScreenshot)
+            int inputCount,
+            Bitmap initialScreenshot,
+            Bitmap finalScreenshot)
+        {
+            const string message = "Inventory tab transition was cancelled.";
+            Logger.Info(message);
+            return InventoryTabNavigationResult.Failed(
+                InventoryTabNavigationStatus.Cancelled,
+                message,
+                detection?.TabName,
+                targetTab,
+                detection?.RawText,
+                inputCount,
+                initialScreenshot,
+                finalScreenshot);
+        }
+
+        private InventoryTabNavigationResult Fail(
+            InventoryTabNavigationStatus status,
+            string message,
+            string targetTab,
+            InventoryScreenDetection detection,
+            int inputCount,
+            Bitmap initialScreenshot,
+            Bitmap finalScreenshot)
         {
             Logger.Warn(message);
             try
@@ -279,14 +405,34 @@ namespace InventoryKamera.game
             }
             catch (Exception ex)
             {
-                Logger.Warn(ex, "Could not complete the safe back-out after Inventory tab normalization failure.");
+                Logger.Warn(ex, "Could not complete the safe back-out after Inventory tab transition failure.");
             }
 
             return InventoryTabNavigationResult.Failed(
+                status,
                 message,
                 detection?.TabName,
+                targetTab,
                 detection?.RawText,
-                diagnosticScreenshot);
+                inputCount,
+                initialScreenshot,
+                finalScreenshot);
+        }
+
+        private void Wait(int milliseconds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (milliseconds <= 0) return;
+
+            if (wait != null)
+            {
+                wait(milliseconds);
+                cancellationToken.ThrowIfCancellationRequested();
+                return;
+            }
+
+            if (cancellationToken.WaitHandle.WaitOne(milliseconds))
+                cancellationToken.ThrowIfCancellationRequested();
         }
 
         private static Bitmap Transfer(ref Bitmap bitmap)
