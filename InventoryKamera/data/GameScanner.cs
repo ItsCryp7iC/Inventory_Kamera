@@ -35,6 +35,7 @@ namespace InventoryKamera
 		private readonly IScanProgressReporter progressReporter;
 		private readonly ScanSession scanSession;
 		private readonly FailureDiagnosticStore diagnosticStore;
+		private readonly InventoryResultPublisher resultPublisher;
 		private GameDataSnapshot gameData;
 
 		private WeaponScraper weaponScraper;
@@ -68,6 +69,7 @@ namespace InventoryKamera
 			this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			this.diagnosticStore = diagnosticStore ?? FailureDiagnosticStore.CreateDefault();
+			resultPublisher = new InventoryResultPublisher();
 
 			var tesseractOcr = new OcrService();
 			ocrService = tesseractOcr;
@@ -393,12 +395,20 @@ namespace InventoryKamera
 			// Wait for Image Processors to finish
 			AwaitProcessors();
 
-			// Every weapon/artifact is now catalogued (from raw best-guess names). Show the batched
-			// low-confidence name corrections the scan deferred, and let each patch its record --
-			// after the workers have drained (so the callbacks' inventory mutations run single-threaded)
-			// and before the assignment passes below (so a correction that rescues an equipped item is
-			// assigned to its character).
-			progressReporter.FlushDeferredCorrections(scanSession.CancellationToken);
+			// Every weapon/artifact is now parsed and staged (from raw best-guess names). Show the
+			// batched low-confidence name corrections after the workers have drained, then publish the
+			// staged results in producer order before equipment assignment. A correction may promote an
+			// initially invalid staged item, but no callback mutates the final inventory collections.
+			try
+			{
+				progressReporter.FlushDeferredCorrections(scanSession.CancellationToken);
+			}
+			finally
+			{
+				// OCR workers stage results concurrently, but only this scan thread mutates the
+				// final collections. Producer-assigned IDs define stable scan order.
+				resultPublisher.CommitTo(Inventory, equippedWeapons, equippedArtifacts);
+			}
 
 			if (scanSettings.ScanCharacters)
 			{
@@ -466,6 +476,7 @@ namespace InventoryKamera
 
 							string weaponPath = $"./logging/weapons/weapon{weapon.Id}/";
 							bool weaponValid = weapon.IsValid();
+							StagedInventoryResult<Weapon> stagedWeapon;
 
 							if (scanSettings.LogScreenshots) Directory.CreateDirectory(weaponPath);
 
@@ -473,9 +484,7 @@ namespace InventoryKamera
 							{
 								Logger.Info("Weapon scan #{0}: scanned OK -- {1}", weapon.Id, weapon.ToString());
 								progressReporter.IncrementWeaponCount();
-								Inventory.Add(weapon);
-								if (!string.IsNullOrWhiteSpace(weapon.EquippedCharacter))
-									equippedWeapons.Add(weapon);
+								stagedWeapon = resultPublisher.StageWeapon(imageCollection.Id, weapon, isPublishable: true);
 							}
 							else
 							{
@@ -490,6 +499,7 @@ namespace InventoryKamera
 								Logger.Warn("Weapon scan #{0}: FAILED validation -- {1}scanned as: {2}",
 									weapon.Id, error.Replace("\n", "; "), weapon.ToString());
 								SaveInvalidWeaponDiagnostics(weapon, error, imageCollection.Bitmaps);
+								stagedWeapon = resultPublisher.StageWeapon(imageCollection.Id, weapon, isPublishable: false);
 							}
 
                             if (scanSettings.LogScreenshots)
@@ -513,10 +523,10 @@ namespace InventoryKamera
 
                             // A low-confidence weapon name isn't corrected inline anymore -- it's queued
                             // and shown after the whole scan finishes (see FlushDeferredCorrections). The
-                            // record above was built and catalogued from the raw best-guess; the callback
-                            // patches its name once the user answers, and rescues it into the inventory if
-                            // the correction turns a previously-invalid name valid. wasAdded mirrors the
-                            // add decision made just above so the rescue path never double-adds.
+                            // staged record above was built from the raw best-guess; the callback patches
+                            // its name and promotes it for ordered publication if the correction turns a
+                            // previously-invalid name valid. wasAdded mirrors the initial validity decision
+                            // so the rescue path never increments progress twice.
                             if (pendingWeaponName != null)
                             {
 								bool wasAdded = weaponValid;
@@ -529,13 +539,10 @@ namespace InventoryKamera
                                         if (resolved == null) return;
                                         weapon.UpdateName(resolved);
                                         Logger.Info("Weapon scan #{0}: name corrected post-scan to \"{1}\".", weapon.Id, weapon.Name);
-                                        if (!wasAdded && weapon.IsValid())
-                                        {
-                                            progressReporter.IncrementWeaponCount();
-                                            Inventory.Add(weapon);
-                                            if (!string.IsNullOrWhiteSpace(weapon.EquippedCharacter))
-                                                equippedWeapons.Add(weapon);
-                                        }
+										if (!wasAdded && weapon.IsValid() && stagedWeapon.MarkPublishable())
+										{
+											progressReporter.IncrementWeaponCount();
+										}
                                     });
                             }
 
@@ -556,6 +563,7 @@ namespace InventoryKamera
 
 							string artifactPath = $"./logging/artifacts/artifact{artifact.Id}/";
 							bool artifactValid = artifact.IsValid();
+							StagedInventoryResult<Artifact> stagedArtifact;
 
                             if (scanSettings.LogScreenshots) Directory.CreateDirectory(artifactPath);
 
@@ -563,9 +571,7 @@ namespace InventoryKamera
 							{
 								Logger.Info("Artifact scan #{0}: scanned OK -- {1}", artifact.Id, artifact.ToString());
 								progressReporter.IncrementArtifactCount();
-								Inventory.Add(artifact);
-								if (!string.IsNullOrWhiteSpace(artifact.EquippedCharacter))
-									equippedArtifacts.Add(artifact);
+								stagedArtifact = resultPublisher.StageArtifact(imageCollection.Id, artifact, isPublishable: true);
 							}
 							else
 							{
@@ -582,6 +588,7 @@ namespace InventoryKamera
 								Logger.Warn("Artifact scan #{0}: FAILED validation -- {1}scanned as: {2}",
 									artifact.Id, error.Replace("\n", "; "), artifact.ToString());
 								SaveInvalidArtifactDiagnostics(artifact, error, imageCollection.Bitmaps);
+								stagedArtifact = resultPublisher.StageArtifact(imageCollection.Id, artifact, isPublishable: false);
 							}
 
                             if (scanSettings.LogScreenshots)
@@ -611,10 +618,10 @@ namespace InventoryKamera
 
 							// A low-confidence artifact set name is queued for correction after the whole
 							// scan finishes (see FlushDeferredCorrections) rather than corrected inline.
-							// The record above was catalogued from the raw best-guess; the callback patches
-							// its set name once the user answers, and rescues it into the inventory when the
-							// correction turns a previously-invalid (unmatched) set valid. wasAdded mirrors
-							// the add decision just above so the rescue path never double-adds.
+							// The staged record above was built from the raw best-guess; the callback patches
+							// its set name and promotes it for ordered publication when the correction turns a
+							// previously-invalid set valid. wasAdded mirrors the initial validity decision so
+							// the rescue path never increments progress twice.
 							if (pendingArtifactSet != null)
 							{
 								bool wasAdded = artifactValid;
@@ -627,12 +634,9 @@ namespace InventoryKamera
 										if (resolved == null) return;
 										artifact.UpdateSetName(resolved);
 										Logger.Info("Artifact scan #{0}: set name corrected post-scan to \"{1}\".", artifact.Id, artifact.SetName);
-										if (!wasAdded && artifact.IsValid())
+										if (!wasAdded && artifact.IsValid() && stagedArtifact.MarkPublishable())
 										{
 											progressReporter.IncrementArtifactCount();
-											Inventory.Add(artifact);
-											if (!string.IsNullOrWhiteSpace(artifact.EquippedCharacter))
-												equippedArtifacts.Add(artifact);
 										}
 									});
 							}
