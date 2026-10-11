@@ -267,6 +267,10 @@ namespace InventoryKamera
 								{
 									currentTab = weaponScraper.ScanWeapons(navigator, knownCurrentTab: currentTab);
 								}
+								catch (OperationCanceledException) when (scanSession.IsCancellationRequested)
+								{
+									Logger.Info("Weapon scanning stopped by user cancellation.");
+								}
 								catch (FormatException ex) { progressReporter.AddError(ex.Message); }
 								catch (Exception ex)
 								{

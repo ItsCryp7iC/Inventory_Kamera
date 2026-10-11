@@ -55,6 +55,86 @@ namespace InventoryKamera
                 createdImages.Add(name);
                 Bitmap level = GetLevelBitmap(card);
                 createdImages.Add(level);
+
+                WeaponThresholdObservation firstEvidence = ReadThresholdObservation(name, level);
+                Bitmap confirmationCard = null;
+                Bitmap confirmationName = null;
+                Bitmap confirmationLevel = null;
+                WeaponThresholdDecision filterDecision;
+                try
+                {
+                    filterDecision = WeaponThresholdEvidence.Evaluate(
+                    firstEvidence,
+                    scanSettings.MinimumWeaponRarity,
+                    scanSettings.MinimumWeaponLevel,
+                    sortModeConfirmed,
+                    SortByLevel,
+                    () =>
+                    {
+                        scanSession.CancellationToken.ThrowIfCancellationRequested();
+                        confirmationCard = GetItemCard();
+                        confirmationName = GetItemNameBitmap(confirmationCard);
+                        confirmationLevel = GetLevelBitmap(confirmationCard);
+                        return ReadThresholdObservation(confirmationName, confirmationLevel);
+                    },
+                    scanSession.CancellationToken);
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
+
+                    Logger.Debug(
+                        "Weapon scan #{0}: threshold decision={1}; sortConfirmed={2}; sort={3}; " +
+                        "firstRarity={4}; firstLevel={5}; confirmationRarity={6}; confirmationLevel={7}.",
+                        id,
+                        filterDecision.ReasonCode,
+                        sortModeConfirmed,
+                        SortByLevel ? "Level" : "Quality",
+                        FormatRarity(firstEvidence),
+                        FormatLevel(firstEvidence),
+                        FormatRarity(filterDecision.Confirmation),
+                        FormatLevel(filterDecision.Confirmation));
+
+                    if (filterDecision.Reason == WeaponThresholdDecisionReason.ConfirmationConflictContinue ||
+                        filterDecision.Reason == WeaponThresholdDecisionReason.ConfirmationUnresolvedContinue)
+                    {
+                        SaveThresholdDiagnostics(
+                            id,
+                            filterDecision,
+                            name,
+                            level,
+                            confirmationName,
+                            confirmationLevel);
+                    }
+
+                    // A conflict means the original stop-triggering frame is not trustworthy. Feed
+                    // the newest complete card to the normal worker instead of exporting data from
+                    // the suspect first frame. An unresolved confirmation will then fail ordinary
+                    // model validation visibly rather than silently terminating the inventory scan.
+                    if (!filterDecision.ShouldDiscard && filterDecision.ConfirmationRequested &&
+                        confirmationCard != null && confirmationName != null && confirmationLevel != null)
+                    {
+                        foreach (Bitmap image in createdImages.Distinct(ReferenceEqualityComparer.Instance))
+                            image?.Dispose();
+                        createdImages.Clear();
+
+                        card = confirmationCard;
+                        name = confirmationName;
+                        level = confirmationLevel;
+                        confirmationCard = null;
+                        confirmationName = null;
+                        confirmationLevel = null;
+                        createdImages.Add(card);
+                        createdImages.Add(name);
+                        createdImages.Add(level);
+                    }
+                }
+                finally
+                {
+                    confirmationLevel?.Dispose();
+                    confirmationName?.Dispose();
+                    confirmationCard?.Dispose();
+                }
+
+                StopScanning = filterDecision.ShouldStop;
+
                 Bitmap refinement = GetRefinementBitmap(card);
                 createdImages.Add(refinement);
                 Bitmap equipped = GetEquippedBitmap(card);
@@ -73,29 +153,10 @@ namespace InventoryKamera
                 };
                 work = new OCRImageCollection(weaponImages, "weapon", id);
 
-                bool a = false;
-
-                bool belowRarity = GetQuality(name) < scanSettings.MinimumWeaponRarity;
-                bool belowLevel = ScanLevel(level, ref a) < scanSettings.MinimumWeaponLevel;
-
-            // Safe as of 2026-07-04: ScanWeapons sorts by level/quality before scanning
-            // (SetSortMode, confirmed live-working), so a below-threshold item guarantees
-            // every later item is too, matching QueueScan's (mouse path) own precondition. Only trust
-            // that guarantee -- and stop the whole scan on the first below-threshold item -- when
-            // SetSortMode actually confirmed the sort; otherwise (e.g. the sort-mode OCR
-            // read failed) still filter this one item out below, but keep scanning the rest of the
-            // (potentially unsorted) grid instead of assuming everything after it is also below threshold.
-                WeaponFilterDecision filterDecision = WeaponFilterPolicy.Evaluate(
-                    sortModeConfirmed,
-                    SortByLevel,
-                    belowRarity,
-                    belowLevel);
-                StopScanning = filterDecision.ShouldStop;
-
                 if (filterDecision.ShouldDiscard)
                 {
-                    Logger.Info("Weapon scan #{0}: filtered out (belowRarity={1}, belowLevel={2}, stopping={3}).",
-                        id, belowRarity, belowLevel, StopScanning);
+                    Logger.Info("Weapon scan #{0}: filtered out (reason={1}, stopping={2}).",
+                        id, filterDecision.Reason, StopScanning);
                     // Filtered-out items never reached ProcessImageCollectionAsync (GameScanner.cs),
                     // which is the only place that normally saves per-region crops -- without this, a
                     // wrong belowLevel/belowRarity read (e.g. a miscalibrated crop) filtered (or, worse,
@@ -109,6 +170,7 @@ namespace InventoryKamera
                 }
 
                 Logger.Info("Weapon scan #{0}: queued for cataloguing.", id);
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
                 scanSession.TryQueueWork(work);
                 ownershipTransferred = true;
             }
@@ -378,30 +440,83 @@ namespace InventoryKamera
             return (name, null);
         }
 
-        public int ScanLevel(Bitmap bm, ref bool ascended)
+		public int ScanLevel(Bitmap bm, ref bool ascended)
 		{
-			Bitmap n = imagePreprocessor.ConvertToGrayscale(bm);
-			imagePreprocessor.SetInvert(ref n);
+			WeaponLevelParseResult result = ReadLevel(bm);
+			if (!result.Success) return -1;
 
-			string text = ocrService.AnalyzeText(n).Trim();
-			n.Dispose();
-			text = Regex.Replace(text, @"(?![\d/]).", string.Empty);
+			ascended = result.Ascended;
+			return result.Level.Value;
+		}
 
-			if (text.Contains('/'))
+		private WeaponThresholdObservation ReadThresholdObservation(Bitmap name, Bitmap level) =>
+			new WeaponThresholdObservation(GetQuality(name), ReadLevel(level));
+
+		private WeaponLevelParseResult ReadLevel(Bitmap bitmap)
+		{
+			Bitmap processed = imagePreprocessor.ConvertToGrayscale(bitmap);
+			try
 			{
-				string[] temp = text.Split(new[] { '/' }, 2);
-
-				if (temp.Length == 2)
-				{
-					if (int.TryParse(temp[0], out int level) && int.TryParse(temp[1], out int maxLevel))
-					{
-						maxLevel = (int)Math.Round(maxLevel / 10.0, MidpointRounding.AwayFromZero) * 10;
-						ascended = 20 <= level && level < maxLevel;
-						return level;
-					}
-				}
+				imagePreprocessor.SetInvert(ref processed);
+				string rawText = ocrService.AnalyzeText(processed).Trim();
+				WeaponLevelParseResult result = WeaponLevelParser.Parse(rawText);
+				Logger.Debug(
+					"Weapon level OCR: raw=\"{0}\"; level={1}; maxLevel={2}; accepted={3}; reason={4}.",
+					rawText.Replace("\r", " ").Replace("\n", " "),
+					result.Level?.ToString() ?? "unresolved",
+					result.MaximumLevel?.ToString() ?? "unresolved",
+					result.Success,
+					result.ReasonCode);
+				return result;
 			}
-			return -1;
+			finally
+			{
+				processed?.Dispose();
+			}
+		}
+
+		private void SaveThresholdDiagnostics(
+			int id,
+			WeaponThresholdDecision decision,
+			Bitmap firstName,
+			Bitmap firstLevel,
+			Bitmap confirmationName,
+			Bitmap confirmationLevel)
+		{
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"weapon_threshold",
+					$"weapon_{id}_{decision.ReasonCode}");
+				failure.SaveBitmap("first_rarity.png", firstName);
+				failure.SaveBitmap("first_level.png", firstLevel);
+				if (confirmationName != null) failure.SaveBitmap("confirmation_rarity.png", confirmationName);
+				if (confirmationLevel != null) failure.SaveBitmap("confirmation_level.png", confirmationLevel);
+				failure.SaveText(
+					"decision.txt",
+					$"reason={decision.ReasonCode}\n" +
+					$"sort={(SortByLevel ? "Level" : "Quality")}\n" +
+					$"minimumRarity={scanSettings.MinimumWeaponRarity}\n" +
+					$"minimumLevel={scanSettings.MinimumWeaponLevel}\n" +
+					$"firstRarity={FormatRarity(decision.First)}\n" +
+					$"firstLevel={FormatLevel(decision.First)}\n" +
+					$"confirmationRarity={FormatRarity(decision.Confirmation)}\n" +
+					$"confirmationLevel={FormatLevel(decision.Confirmation)}\n");
+				Logger.Warn("Saved conflicting weapon-threshold evidence to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save weapon-threshold diagnostics for weapon #{0}.", id);
+			}
+		}
+
+		private static string FormatRarity(WeaponThresholdObservation observation) =>
+			observation?.Rarity?.ToString() ?? "unresolved";
+
+		private static string FormatLevel(WeaponThresholdObservation observation)
+		{
+			if (observation?.Level?.Success != true) return "unresolved";
+			return $"{observation.Level.Level}/{observation.Level.MaximumLevel}";
 		}
 
 		public int ScanRefinement(Bitmap image)
