@@ -79,22 +79,39 @@ namespace InventoryKamera
             // Blocks efficiently until an engine is free, instead of busy-polling with Thread.Sleep.
             TesseractEngine e = engines.Take();
 
-            if (numbersOnly) e.SetVariable("tessedit_char_whitelist", "0123456789");
-            using (var pix = BitmapToPix(bitmap))
-            using (var page = e.Process(pix, pageMode))
+            try
             {
-                using (var iter = page.GetIterator())
+                // Set the variable for every use of this pooled engine. Otherwise an engine used by
+                // numeric OCR can retain its digit whitelist when it later serves ordinary text OCR.
+                e.SetVariable("tessedit_char_whitelist", numbersOnly ? "0123456789" : string.Empty);
+                using (var pix = BitmapToPix(bitmap))
+                using (var page = e.Process(pix, pageMode))
                 {
-                    iter.Begin();
-                    do
+                    using (var iter = page.GetIterator())
                     {
-                        text += iter.GetText(PageIteratorLevel.TextLine);
+                        iter.Begin();
+                        do
+                        {
+                            text += iter.GetText(PageIteratorLevel.TextLine);
+                        }
+                        while (iter.Next(PageIteratorLevel.TextLine));
                     }
-                    while (iter.Next(PageIteratorLevel.TextLine));
+                    confidence = page.GetMeanConfidence();
                 }
-                confidence = page.GetMeanConfidence();
             }
-            engines.Add(e);
+            finally
+            {
+                // Return pooled engines to a neutral state for positional OCR and other callers
+                // that do not pass through this method before using the same engine.
+                try
+                {
+                    e.SetVariable("tessedit_char_whitelist", string.Empty);
+                }
+                finally
+                {
+                    engines.Add(e);
+                }
+            }
 
             return (text, confidence);
         }

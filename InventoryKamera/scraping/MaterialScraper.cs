@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Runtime.Serialization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace InventoryKamera
@@ -37,6 +38,7 @@ namespace InventoryKamera
 	{
 		private static NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 		private readonly GameDataSnapshot gameData;
+		private readonly HashSet<string> encounteredMaterialNames = new HashSet<string>(StringComparer.Ordinal);
 
 
 		public MaterialScraper(
@@ -125,11 +127,6 @@ namespace InventoryKamera
 				return mora;
 			}
 		}
-
-		private static KeyValuePair<int, int>? SafeExtractMaxCounter(Dictionary<int, int> counts)
-		{
-            return counts.Count == 0 ? null : (KeyValuePair<int, int>?)counts.Aggregate((l, r) => l.Value > r.Value ? l : r);
-        }
 
 		/// <summary>
 		/// Controller-mode equivalent of <see cref="ScanMaterialName"/>: reads from the always-visible
@@ -340,67 +337,145 @@ namespace InventoryKamera
 		/// <see cref="GetQuantityRegion"/> instead of re-deriving a grid-cell's bottom
 		/// strip from a mouse-detected rectangle (there is no such rectangle in controller mode).
 		/// </summary>
-		private int ScanQuantityBitmap(Bitmap quantityBitmap)
+		private MaterialQuantityResolutionResult ScanQuantityBitmap(Bitmap quantityBitmap)
 		{
-			Dictionary<int, int> counts = new Dictionary<int, int>();
-
 			var rRange = new IntRange(0, 150);
 			var bRange = new IntRange(0, 150);
 			var gRange = new IntRange(0, 150);
 
-			for (var scale = 1.0; scale <= 3; scale += 0.5)
+			MaterialQuantityReadResult primary = MaterialQuantityReader.Read(attempt =>
 			{
+				double scale = 1.0 + ((attempt - 1) * 0.5);
 				using (Bitmap rescaled = GenshinProcesor.ResizeImage(quantityBitmap, (int)(quantityBitmap.Width * scale), (int)(quantityBitmap.Height * scale)))
 				{
 					Bitmap copy = (Bitmap)rescaled.Clone();
-					imagePreprocessor.FilterColors(ref copy, rRange, bRange, gRange);
-
-					for (int i = 0; i < copy.Width; i++)
-						for (int j = 0; j < copy.Height * 0.25; j++)
-							copy.SetPixel(i, j, Color.White);
-
-					Bitmap n = imagePreprocessor.ConvertToGrayscale(copy);
-
-					imagePreprocessor.SetInvert(ref n);
-					imagePreprocessor.SetThreshold(50, ref n);
-
-					string original = ocrService.AnalyzeText(n).Trim();
-
-					n.Dispose();
-					copy.Dispose();
-
-					if (int.TryParse(original, out int val)) return val;
-
-					var cleaned = original;
-					cleaned = cleaned.Replace("M", "111");
-					cleaned = Regex.Replace(cleaned, @"[^0-9]", string.Empty);
-
-					int.TryParse(cleaned, out val);
-
-					Logger.Debug("Material quantity OCR: raw=\"{0}\" cleaned=\"{1}\" parsed={2}", original, cleaned, val);
-
-					if (counts.TryGetValue(val, out var counter))
+					Bitmap grayscale = null;
+					try
 					{
-						if (counter >= 3 && val != 0) return val;
-						counts[val]++;
+						imagePreprocessor.FilterColors(ref copy, rRange, bRange, gRange);
+
+						for (int i = 0; i < copy.Width; i++)
+							for (int j = 0; j < copy.Height * 0.25; j++)
+								copy.SetPixel(i, j, Color.White);
+
+						grayscale = imagePreprocessor.ConvertToGrayscale(copy);
+						imagePreprocessor.SetInvert(ref grayscale);
+						imagePreprocessor.SetThreshold(50, ref grayscale);
+						return ocrService.AnalyzeText(grayscale).Trim();
 					}
-					else
+					finally
 					{
-						counts.Add(val, 1);
+						grayscale?.Dispose();
+						copy.Dispose();
 					}
 				}
+			}, scanSession.CancellationToken);
+
+			foreach (MaterialQuantityObservation observation in primary.Observations)
+			{
+				Logger.Debug(
+					"Material quantity OCR attempt {0}: raw=\"{1}\" normalized=\"{2}\" parsed={3} candidateFrequency={4}",
+					observation.Attempt,
+					observation.RawText,
+					observation.NormalizedText,
+					observation.Quantity?.ToString() ?? "unresolved",
+					observation.CandidateFrequency);
 			}
 
-			var nullableMode = SafeExtractMaxCounter(counts);
-			if (nullableMode == null)
-				return 0;
+			MaterialQuantityResolutionResult result = MaterialQuantityResolver.Resolve(
+				primary,
+				() => MaterialQuantityNumericFallback.Read(quantityBitmap, ocrService, imagePreprocessor),
+				scanSession.CancellationToken);
 
-			var mode = nullableMode.Value;
-			if (mode.Key == 0 && counts.Count >= 5)
-				return 0;
+			if (result.Fallback != null)
+			{
+				Logger.Debug(
+					"Material quantity numeric fallback: mode={0} raw=\"{1}\" normalized=\"{2}\" parsed={3} confidence={4:P1}",
+					result.Fallback.PreprocessingMode,
+					result.Fallback.RawText,
+					result.Fallback.NormalizedText,
+					result.Fallback.Quantity?.ToString() ?? "unresolved",
+					result.Fallback.Confidence);
+			}
+			Logger.Debug(
+				"Material quantity OCR decision: status={0} distinctCandidates={1} primaryReason={2} finalReason={3} quantity={4}",
+				result.Status,
+				primary.CandidateCounts.Count,
+				primary.DecisionReasonCode,
+				result.DecisionReasonCode,
+				result.Quantity?.ToString() ?? "unresolved");
 
-			counts.Remove(mode.Key);
-			return SafeExtractMaxCounter(counts)?.Value ?? 0;
+			return result;
+		}
+
+		private void SaveQuantityDiagnostics(
+			Bitmap quantityBitmap,
+			string materialName,
+			MaterialQuantityResolutionResult result)
+		{
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure("material_quantity", materialName);
+				failure.SaveBitmap("quantity_crop.png", quantityBitmap);
+
+				var evidence = new StringBuilder();
+				evidence.AppendLine($"Status: {result.Status}");
+				evidence.AppendLine($"Primary distinct candidate count: {result.Primary.CandidateCounts.Count}");
+				evidence.AppendLine($"Primary decision reason: {result.Primary.DecisionReasonCode}");
+				foreach (MaterialQuantityObservation observation in result.Primary.Observations)
+				{
+					evidence.AppendLine(
+						$"Attempt {observation.Attempt}: raw=\"{observation.RawText}\"; " +
+						$"normalized=\"{observation.NormalizedText}\"; " +
+						$"quantity={observation.Quantity?.ToString() ?? "unresolved"}; " +
+						$"candidateFrequency={observation.CandidateFrequency}");
+				}
+				evidence.AppendLine("Primary candidate counts: " +
+					(result.Primary.CandidateCounts.Count == 0
+						? "none"
+						: string.Join(", ", result.Primary.CandidateCounts
+							.OrderBy(candidate => candidate.Key)
+							.Select(candidate => $"{candidate.Key}={candidate.Value}"))));
+				if (result.Fallback == null)
+				{
+					evidence.AppendLine("Fallback: not attempted");
+				}
+				else
+				{
+					evidence.AppendLine($"Fallback preprocessing mode: {result.Fallback.PreprocessingMode}");
+					evidence.AppendLine($"Fallback raw OCR: \"{result.Fallback.RawText}\"");
+					evidence.AppendLine($"Fallback normalized OCR: \"{result.Fallback.NormalizedText}\"");
+					evidence.AppendLine($"Fallback parsed value: {result.Fallback.Quantity?.ToString() ?? "unresolved"}");
+					evidence.AppendLine($"Fallback confidence: {result.Fallback.Confidence:P1}");
+				}
+				evidence.AppendLine($"Final decision reason: {result.DecisionReasonCode}");
+				failure.SaveText("observations.txt", evidence.ToString());
+				Logger.Debug("Saved material quantity OCR diagnostics to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save material quantity OCR diagnostics for {0}.", materialName);
+			}
+		}
+
+		internal static bool TryAddResolvedMaterial(
+			Inventory inventory,
+			string materialName,
+			MaterialQuantityResolutionResult quantityResult,
+			out int quantity)
+		{
+			if (inventory == null) throw new ArgumentNullException(nameof(inventory));
+			quantity = 0;
+			if (string.IsNullOrWhiteSpace(materialName) || quantityResult == null ||
+				quantityResult.Status != MaterialQuantityReadStatus.Resolved ||
+				!quantityResult.Quantity.HasValue || quantityResult.Quantity.Value <= 0)
+			{
+				return false;
+			}
+
+			quantity = quantityResult.Quantity.Value;
+			inventory.Materials.Add(new Material(materialName, quantity));
+			return true;
 		}
 
 		/// <summary>
@@ -483,8 +558,6 @@ namespace InventoryKamera
 				using (Bitmap nameBitmap = GetItemNameBitmap(card))
 				{
 					string name = ScanMaterialName(nameBitmap);
-					Material material = new Material(name, 0);
-
 					if (string.IsNullOrEmpty(name))
 					{
 						consecutiveEmptyReads++;
@@ -500,7 +573,8 @@ namespace InventoryKamera
 						consecutiveEmptyReads = 0;
 					}
 
-					if (!string.IsNullOrEmpty(name) && inventory.Materials.Contains(material))
+					if (!string.IsNullOrEmpty(name) &&
+						(encounteredMaterialNames.Contains(name) || inventory.Materials.Contains(new Material(name, 1))))
 					{
 						Logger.Debug("Repeat material found ({0}) -- stopping controller {1} scan.", name, inventoryPage);
 						break;
@@ -508,31 +582,35 @@ namespace InventoryKamera
 
 					if (!string.IsNullOrEmpty(name))
 					{
+						// Remember the name even if quantity OCR fails so the existing repeated-name
+						// termination behavior does not depend on exporting an invalid zero-count item.
+						encounteredMaterialNames.Add(name);
 						using (Bitmap quantity = Navigation.CaptureRegion(GetQuantityRegion(rowQuantityTop, rowQuantityHeight, column)))
 						{
-							int count = ScanQuantityBitmap(quantity);
-							if (count == 0)
+							MaterialQuantityResolutionResult quantityResult = ScanQuantityBitmap(quantity);
+							if (quantityResult.Status == MaterialQuantityReadStatus.Cancelled ||
+								scanSession.IsCancellationRequested)
 							{
-								progressReporter.AddError($"Failed to parse quantity for {name}");
-							}
-							if (count == 0)
-							{
-								SaveFailureScreenshot(
-									quantity,
-									"material_quantity",
-									name,
-									"quantity_crop.png");
-							}
-							else if (scanSettings.LogScreenshots)
-							{
-								SaveInventoryBitmap(quantity, $"quantity/{name}_Quantity.png");
+								Logger.Info("Material quantity scan cancelled for {0}; no failure diagnostic was recorded.", name);
+								break;
 							}
 
-							material.count = count;
-							inventory.Materials.Add(material);
-							progressReporter.ResetCharacterDisplay();
-							progressReporter.SetMaterial(nameBitmap, quantity, name, count);
-							scanned++;
+							if (quantityResult.Fallback != null)
+								SaveQuantityDiagnostics(quantity, name, quantityResult);
+
+							if (!TryAddResolvedMaterial(inventory, name, quantityResult, out int count))
+							{
+								progressReporter.AddError($"Failed to parse quantity for {name}; item was omitted from export");
+							}
+							else
+							{
+								if (scanSettings.LogScreenshots)
+									SaveInventoryBitmap(quantity, $"quantity/{name}_Quantity.png");
+
+								progressReporter.ResetCharacterDisplay();
+								progressReporter.SetMaterial(nameBitmap, quantity, name, count);
+								scanned++;
+							}
 						}
 					}
 				}
