@@ -612,7 +612,9 @@ namespace InventoryKamera
 							progressReporter.SetGear(imageCollection.Bitmaps.Last(), artifact);
 
 							string artifactPath = $"./logging/artifacts/artifact{artifact.Id}/";
-							bool artifactValid = artifact.IsValid();
+							bool artifactValid = ArtifactResultIntegrity.IsPublishable(
+								artifact,
+								out ArtifactValidationResult artifactValidation);
 							StagedInventoryResult<Artifact> stagedArtifact;
 
                             if (scanSettings.LogScreenshots) Directory.CreateDirectory(artifactPath);
@@ -626,14 +628,7 @@ namespace InventoryKamera
 							else
 							{
 								progressReporter.AddError($"Unable to validate information for artifact ID#{artifact.Id}");
-								string error = "";
-								if (!artifact.HasValidSlot()) error += "Invalid artifact gear slot\n";
-								if (!artifact.HasValidSetName()) error += "Invalid artifact set name\n";
-								if (!artifact.HasValidRarity()) error += "Invalid artifact rarity\n";
-								if (!artifact.HasValidLevel()) error += "Invalid artifact level\n";
-								if (!artifact.HasValidMainStat()) error += "Invalid artifact main stat\n";
-								if (!artifact.HasValidSubStats()) error += "Invalid artifact sub stats\n";
-								if (!artifact.HasValidEquippedCharacter()) error += "Invalid equipped character\n";
+								string error = string.Join("\n", artifactValidation.FailureCodes) + "\n";
 								progressReporter.AddError(error + artifact.ToString());
 								Logger.Warn("Artifact scan #{0}: FAILED validation -- {1}scanned as: {2}",
 									artifact.Id, error.Replace("\n", "; "), artifact.ToString());
@@ -669,12 +664,10 @@ namespace InventoryKamera
 							// A low-confidence artifact set name is queued for correction after the whole
 							// scan finishes (see FlushDeferredCorrections) rather than corrected inline.
 							// The staged record above was built from the raw best-guess; the callback patches
-							// its set name and promotes it for ordered publication when the correction turns a
-							// previously-invalid set valid. wasAdded mirrors the initial validity decision so
-							// the rescue path never increments progress twice.
+							// its set name, then revalidates the complete Artifact. This can promote a repaired
+							// result or demote one that the correction made invalid before ordered publication.
 							if (pendingArtifactSet != null)
 							{
-								bool wasAdded = artifactValid;
 								progressReporter.EnqueueCorrection(
 									imageCollection.Bitmaps[0], pendingArtifactSet.RecognizedText,
 									pendingArtifactSet.ConfidencePercent, pendingArtifactSet.FieldLabel,
@@ -682,11 +675,29 @@ namespace InventoryKamera
 									{
 										string resolved = pendingArtifactSet.Resolve(corrected);
 										if (resolved == null) return;
-										artifact.UpdateSetName(resolved);
-										Logger.Info("Artifact scan #{0}: set name corrected post-scan to \"{1}\".", artifact.Id, artifact.SetName);
-										if (!wasAdded && artifact.IsValid() && stagedArtifact.MarkPublishable())
-										{
+										ArtifactCorrectionOutcome outcome =
+											ArtifactResultIntegrity.ApplySetNameCorrection(
+												artifact,
+												stagedArtifact,
+												resolved,
+												out ArtifactValidationResult correctedValidation);
+										Logger.Info(
+											"Artifact scan #{0}: set name corrected post-scan to \"{1}\"; outcome={2}; validation={3}.",
+											artifact.Id,
+											artifact.SetName,
+											outcome,
+											correctedValidation.Summary);
+										if (outcome == ArtifactCorrectionOutcome.Promoted)
 											progressReporter.IncrementArtifactCount();
+										else if (outcome == ArtifactCorrectionOutcome.Invalidated)
+										{
+											string correctionError =
+												"correction_invalidated_result\n" +
+												string.Join("\n", correctedValidation.FailureCodes);
+											progressReporter.AddError(
+												$"Artifact ID#{artifact.Id} was omitted after set-name correction: " +
+												correctedValidation.Summary);
+											SaveInvalidArtifactCorrectionDiagnostics(artifact, correctionError);
 										}
 									});
 							}
@@ -764,6 +775,23 @@ namespace InventoryKamera
 			catch (Exception ex)
 			{
 				Logger.Warn(ex, "Could not save artifact validation diagnostics for item {0}.", artifact.Id);
+			}
+		}
+
+		private void SaveInvalidArtifactCorrectionDiagnostics(Artifact artifact, string error)
+		{
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"artifact_validation",
+					"artifact_" + artifact.Id + "_correction");
+				failure.SaveText("log.txt", DiagnosticSummary(error));
+				failure.SaveText("artifact.json", JsonConvert.SerializeObject(artifact, Formatting.Indented));
+				Logger.Warn("Saved corrected Artifact validation diagnostics to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save corrected Artifact validation diagnostics for item {0}.", artifact.Id);
 			}
 		}
 

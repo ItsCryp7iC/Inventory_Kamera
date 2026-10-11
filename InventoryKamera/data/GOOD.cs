@@ -114,7 +114,23 @@ namespace InventoryKamera
             }
 
             // Assign Artifacts
-            var exportedArtifacts = artifacts.ToList();
+            var exportedArtifacts = new List<Artifact>();
+            foreach (Artifact artifact in artifacts)
+            {
+                if (ArtifactResultIntegrity.IsPublishable(
+                    artifact,
+                    out ArtifactValidationResult validation))
+                {
+                    exportedArtifacts.Add(artifact);
+                }
+                else
+                {
+                    Logger.Warn(
+                        "Omitting artifact {0} from GOOD export: {1}.",
+                        artifact?.Id.ToString() ?? "(null)",
+                        validation.Summary);
+                }
+            }
             if (exportedArtifacts.Count > 0)
             {
                 Artifacts = exportedArtifacts;

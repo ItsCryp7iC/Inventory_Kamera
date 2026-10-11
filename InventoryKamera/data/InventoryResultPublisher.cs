@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using NLog;
 
 namespace InventoryKamera
 {
@@ -27,6 +28,9 @@ namespace InventoryKamera
 
         /// <summary>Promotes an initially invalid result after deferred correction makes it valid.</summary>
         internal bool MarkPublishable() => Interlocked.Exchange(ref publishable, 1) == 0;
+
+        /// <summary>Demotes a result when deferred correction makes the staged item invalid.</summary>
+        internal bool MarkUnpublishable() => Interlocked.Exchange(ref publishable, 0) != 0;
     }
 
     /// <summary>
@@ -35,6 +39,7 @@ namespace InventoryKamera
     /// </summary>
     internal sealed class InventoryResultPublisher
     {
+        private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
         private readonly object gate = new object();
         private readonly Dictionary<int, StagedInventoryResult<Weapon>> weapons =
             new Dictionary<int, StagedInventoryResult<Weapon>>();
@@ -106,6 +111,15 @@ namespace InventoryKamera
                     .Where(result => result.IsPublishable)
                     .OrderBy(result => result.SourceSequence))
                 {
+                    if (!ArtifactResultIntegrity.IsPublishable(result.Item, out ArtifactValidationResult validation))
+                    {
+                        Logger.Warn(
+                            "Artifact #{0} was omitted at deterministic publication: {1}.",
+                            result.SourceSequence,
+                            validation.Summary);
+                        continue;
+                    }
+
                     inventory.Add(result.Item);
                     if (!string.IsNullOrWhiteSpace(result.Item.EquippedCharacter))
                         equippedArtifacts.Add(result.Item);

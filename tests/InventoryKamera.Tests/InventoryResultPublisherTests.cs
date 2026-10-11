@@ -148,6 +148,106 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void ValidToValidArtifactCorrection_RemainsPublished()
+        {
+            var publisher = new InventoryResultPublisher();
+            Artifact artifact = ArtifactAt(4);
+            StagedInventoryResult<Artifact> staged =
+                publisher.StageArtifact(4, artifact, isPublishable: true);
+
+            ArtifactCorrectionOutcome outcome = ArtifactResultIntegrity.ApplySetNameCorrection(
+                artifact,
+                staged,
+                "OtherSet",
+                out ArtifactValidationResult validation);
+
+            Assert.Equal(ArtifactCorrectionOutcome.Retained, outcome);
+            Assert.True(validation.IsValid, validation.Summary);
+            Assert.Equal("OtherSet", Assert.Single(Commit(publisher).Artifacts).SetName);
+        }
+
+        [Fact]
+        public void InvalidToValidArtifactCorrection_IsPromoted()
+        {
+            var publisher = new InventoryResultPublisher();
+            Artifact artifact = ArtifactAt(4, setName: "UnknownSet");
+            StagedInventoryResult<Artifact> staged =
+                publisher.StageArtifact(4, artifact, isPublishable: false);
+
+            ArtifactCorrectionOutcome outcome = ArtifactResultIntegrity.ApplySetNameCorrection(
+                artifact,
+                staged,
+                "GladiatorsFinale",
+                out ArtifactValidationResult validation);
+
+            Assert.Equal(ArtifactCorrectionOutcome.Promoted, outcome);
+            Assert.True(validation.IsValid, validation.Summary);
+            Assert.Equal(4, Assert.Single(Commit(publisher).Artifacts).Id);
+        }
+
+        [Fact]
+        public void ValidToInvalidArtifactCorrection_IsRemovedBeforePublication()
+        {
+            var publisher = new InventoryResultPublisher();
+            Artifact artifact = ArtifactAt(4);
+            StagedInventoryResult<Artifact> staged =
+                publisher.StageArtifact(4, artifact, isPublishable: true);
+
+            ArtifactCorrectionOutcome outcome = ArtifactResultIntegrity.ApplySetNameCorrection(
+                artifact,
+                staged,
+                "UnknownSet",
+                out ArtifactValidationResult validation);
+
+            Assert.Equal(ArtifactCorrectionOutcome.Invalidated, outcome);
+            Assert.False(validation.IsValid);
+            Assert.Empty(Commit(publisher).Artifacts);
+        }
+
+        [Fact]
+        public void InvalidatingCorrectionLeavesSequenceGapWithoutShiftingLaterEquipment()
+        {
+            var publisher = new InventoryResultPublisher();
+            Artifact corrected = ArtifactAt(1, "Jean");
+            Artifact later = ArtifactAt(3, "Zhongli");
+            StagedInventoryResult<Artifact> correctedStage =
+                publisher.StageArtifact(1, corrected, isPublishable: true);
+            publisher.StageArtifact(3, later, isPublishable: true);
+
+            ArtifactCorrectionOutcome outcome = ArtifactResultIntegrity.ApplySetNameCorrection(
+                corrected,
+                correctedStage,
+                "UnknownSet",
+                out _);
+            var inventory = new Inventory();
+            var equipped = new List<Artifact>();
+            publisher.CommitTo(inventory, new List<Weapon>(), equipped);
+
+            Assert.Equal(ArtifactCorrectionOutcome.Invalidated, outcome);
+            Assert.Equal(3, Assert.Single(inventory.Artifacts).Id);
+            Assert.Same(later, Assert.Single(equipped));
+            Assert.Equal("Zhongli", later.EquippedCharacter);
+        }
+
+        [Fact]
+        public void PublicationDefenseRejectsInvalidArtifactAndPreservesLaterSequenceAndEquipment()
+        {
+            var publisher = new InventoryResultPublisher();
+            Artifact invalid = ArtifactAt(0, setName: "UnknownSet");
+            Artifact later = ArtifactAt(2, "Zhongli");
+            publisher.StageArtifact(0, invalid, isPublishable: true);
+            publisher.StageArtifact(2, later, isPublishable: true);
+            var inventory = new Inventory();
+            var equipped = new List<Artifact>();
+
+            publisher.CommitTo(inventory, new List<Weapon>(), equipped);
+
+            Assert.Equal(2, Assert.Single(inventory.Artifacts).Id);
+            Assert.Same(later, Assert.Single(equipped));
+            Assert.Equal("Zhongli", later.EquippedCharacter);
+        }
+
+        [Fact]
         public void EquipmentAssociationUsesTheSameCommittedItems()
         {
             var publisher = new InventoryResultPublisher();
@@ -231,9 +331,12 @@ namespace InventoryKamera.Tests
                 _id: sequence,
                 _rarity: 5);
 
-        private static Artifact ArtifactAt(int sequence, string equippedCharacter = null) =>
+        private static Artifact ArtifactAt(
+            int sequence,
+            string equippedCharacter = null,
+            string setName = "GladiatorsFinale") =>
             new Artifact(
-                "TestSet",
+                setName,
                 5,
                 20,
                 "flower",
@@ -241,6 +344,7 @@ namespace InventoryKamera.Tests
                 new List<Artifact.SubStat>(),
                 new List<Artifact.SubStat>(),
                 equippedCharacter,
-                sequence);
+                sequence,
+                gameData: ArtifactTests.Snapshot());
     }
 }

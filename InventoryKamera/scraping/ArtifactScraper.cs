@@ -659,13 +659,10 @@ namespace InventoryKamera
 			imagePreprocessor.SetInvert(ref n);
 
 			// numbersOnly = true => seems to interpret the '+' as a '4'
-			string text = ocrService.AnalyzeText(n, Tesseract.PageSegMode.SingleWord).Trim().ToLower();
+			string text = ocrService.AnalyzeText(n, Tesseract.PageSegMode.SingleWord);
 			n.Dispose();
 
-			// Get rid of all non digits
-			text = Regex.Replace(text, @"[\D]", string.Empty);
-
-			return int.TryParse(text, out int level) ? level : -1;
+			return ArtifactLevelParser.TryParse(text, out int level) ? level : -1;
 		}
 
 		private (List<SubStat> active, List<SubStat> unactivated) ScanArtifactSubStats(Bitmap artifactImage)

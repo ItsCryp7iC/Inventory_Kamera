@@ -64,8 +64,10 @@ namespace InventoryKamera
 			Rarity = _rarity;
 			MainStat = string.IsNullOrWhiteSpace(_mainStat) ? "" : _mainStat;
 			Level = _level;
-			SubStats = _subStats.ToList().Where(e => e.value > 0).ToList();
-			unactivatedSubstats = _unactivatedSubStats.ToList().Where(e => e.value > 0).ToList();
+			// Preserve every parsed entry so validation can reject malformed OCR instead of silently
+			// dropping only the bad row and exporting a plausible-looking partial Artifact.
+			SubStats = _subStats?.ToList();
+			unactivatedSubstats = _unactivatedSubStats?.ToList();
 			SetName = string.IsNullOrWhiteSpace(_setName) ? "" : _setName;
 			EquippedCharacter = string.IsNullOrWhiteSpace(_equippedCharacter) ? "" : _equippedCharacter;
 			Lock = _Lock;
@@ -93,7 +95,24 @@ namespace InventoryKamera
 
 		public bool IsValid()
 		{
-			return HasValidLevel() && HasValidRarity() && HasValidSlot() && HasValidSetName() && HasValidMainStat() && HasValidSubStats() && HasValidEquippedCharacter();
+			return Validate().IsValid;
+		}
+
+		internal ArtifactValidationResult Validate()
+		{
+			var failures = new List<string>();
+			if (!HasValidSetName()) failures.Add("invalid_set_key");
+			if (!HasValidSlot()) failures.Add("invalid_slot");
+			if (!HasValidRarity()) failures.Add("invalid_rarity");
+			if (!HasValidLevel()) failures.Add("invalid_level");
+			if (!HasValidMainStat()) failures.Add("invalid_main_stat");
+			if (!HasValidActiveSubStats()) failures.Add("invalid_active_substat");
+			if (!HasValidUnactivatedSubStats()) failures.Add("invalid_unactivated_substat");
+			if (HasDuplicateSubStats()) failures.Add("duplicate_substat");
+			if (HasMainStatSubStatCollision()) failures.Add("main_stat_as_substat");
+			if (!HasValidSubStatCounts()) failures.Add("invalid_substat_structure");
+			if (!HasValidEquippedCharacter()) failures.Add("invalid_location");
+			return new ArtifactValidationResult(failures);
 		}
 
 		public bool HasValidLevel()
@@ -123,19 +142,54 @@ namespace InventoryKamera
 
 		public bool HasValidSubStats()
 		{
+			return HasValidActiveSubStats()
+				&& HasValidUnactivatedSubStats()
+				&& !HasDuplicateSubStats()
+				&& !HasMainStatSubStatCollision()
+				&& HasValidSubStatCounts();
+		}
+
+		internal bool HasValidActiveSubStats() => HasValidSubStatCollection(SubStats);
+
+		internal bool HasValidUnactivatedSubStats() =>
+			HasValidSubStatCollection(unactivatedSubstats);
+
+		private bool HasValidSubStatCollection(IReadOnlyCollection<SubStat> substats)
+		{
+			if (substats == null) return false;
 			GameDataSnapshot data = RequireGameData();
-			bool valid = true;
+			return substats.All(substat =>
+				!string.IsNullOrWhiteSpace(substat.stat)
+				&& LookupService.IsValidStat(substat.stat, data)
+				&& substat.value > 0);
+		}
 
-			SubStats.ForEach(s =>
+		private bool HasDuplicateSubStats()
+		{
+			if (SubStats == null || unactivatedSubstats == null) return false;
+			var keys = new HashSet<string>(StringComparer.Ordinal);
+			return SubStats.Concat(unactivatedSubstats)
+				.Where(substat => !string.IsNullOrWhiteSpace(substat.stat))
+				.Any(substat => !keys.Add(substat.stat));
+		}
+
+		private bool HasMainStatSubStatCollision()
+		{
+			if (string.IsNullOrWhiteSpace(MainStat) ||
+				SubStats == null || unactivatedSubstats == null)
 			{
-                if (!string.IsNullOrWhiteSpace(s.stat) &&
-					(!LookupService.IsValidStat(s.stat, data) || s.value == (decimal)(-1.0)))
-                {
-                    valid = false;
-                }
-            });
+				return false;
+			}
 
-			return valid;
+			return SubStats.Concat(unactivatedSubstats)
+				.Any(substat => string.Equals(substat.stat, MainStat, StringComparison.Ordinal));
+		}
+
+		private bool HasValidSubStatCounts()
+		{
+			if (SubStats == null || unactivatedSubstats == null) return false;
+			return unactivatedSubstats.Count <= 1
+				&& SubStats.Count + unactivatedSubstats.Count <= 4;
 		}
 
 		public bool HasValidEquippedCharacter()
@@ -205,7 +259,7 @@ namespace InventoryKamera
 				+ $"Level: {Level}\n"
 				+ $"Main Stat: {MainStat}\n";
 
-			SubStats.ForEach(s => output += $"Substat {SubStats.IndexOf(s)+1}: {s}\n");
+			SubStats?.ForEach(s => output += $"Substat {SubStats.IndexOf(s)+1}: {s}\n");
 
 			output += $"Locked: {Lock}\n";
 

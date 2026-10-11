@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Threading;
 using System.Threading.Tasks;
@@ -132,6 +133,63 @@ namespace InventoryKamera.Tests
             resolve.Set();
             await interactionCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.False(applied);
+        }
+
+        [Fact]
+        public async Task CancelledArtifactCorrectionLeavesIncompleteArtifactUnpublished()
+        {
+            var viewModel = new ScanViewModel();
+            var publisher = new InventoryResultPublisher();
+            Artifact artifact = new Artifact(
+                "UnknownSet",
+                5,
+                20,
+                "flower",
+                "hp",
+                new List<Artifact.SubStat>(),
+                new List<Artifact.SubStat>(),
+                _id: 1,
+                gameData: ArtifactTests.Snapshot());
+            StagedInventoryResult<Artifact> staged =
+                publisher.StageArtifact(1, artifact, isPublishable: false);
+            using var session = new ScanSession();
+            using var image = new Bitmap(2, 2);
+            using var interactionStarted = new ManualResetEventSlim(false);
+            using var resolve = new ManualResetEventSlim(false);
+            var interactionCompleted = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            viewModel.CorrectionRequested += args =>
+            {
+                interactionStarted.Set();
+                resolve.Wait();
+                args.ResolvedText = "GladiatorsFinale";
+                interactionCompleted.TrySetResult(true);
+            };
+            viewModel.EnqueueCorrection(
+                image,
+                "UnknownSet",
+                10,
+                "artifact set",
+                corrected => ArtifactResultIntegrity.ApplySetNameCorrection(
+                    artifact,
+                    staged,
+                    corrected,
+                    out _));
+            Task flush = Task.Run(() =>
+                viewModel.FlushDeferredCorrections(session.CancellationToken));
+            Assert.True(interactionStarted.Wait(TimeSpan.FromSeconds(2)));
+
+            session.RequestCancellation();
+            await flush.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var inventory = new Inventory();
+            publisher.CommitTo(inventory, new List<Weapon>(), new List<Artifact>());
+            Assert.Empty(inventory.Artifacts);
+            Assert.False(staged.IsPublishable);
+
+            resolve.Set();
+            await interactionCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(staged.IsPublishable);
         }
 
         private sealed class PendingCorrection : IDisposable

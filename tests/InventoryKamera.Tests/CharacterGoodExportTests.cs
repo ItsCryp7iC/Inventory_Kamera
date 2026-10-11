@@ -125,6 +125,7 @@ namespace InventoryKamera.Tests
         public void OmittedCharacterDoesNotClearEquipmentLocations()
         {
             Character zhongli = CompleteCharacter("Zhongli", "Geo");
+            GameDataSnapshot snapshot = CreateSnapshot();
             CharacterScraper.MarkCharacterPhaseUnavailable(
                 zhongli,
                 CharacterVerificationPhase.Talent);
@@ -143,7 +144,8 @@ namespace InventoryKamera.Tests
                 "hp",
                 new List<Artifact.SubStat>(),
                 new List<Artifact.SubStat>(),
-                _equippedCharacter: "Zhongli");
+                _equippedCharacter: "Zhongli",
+                gameData: snapshot);
 
             var good = Export(new[] { zhongli }, new[] { weapon }, new[] { artifact });
             JObject json = JObject.Parse(good.ToString());
@@ -199,18 +201,21 @@ namespace InventoryKamera.Tests
                     ["zhongli"] = CharacterData("Zhongli", "geo"),
                     ["traveler"] = CharacterData("Traveler", "cryo"),
                 },
-                new Dictionary<string, JObject>(),
+                new Dictionary<string, JObject>
+                {
+                    ["testset"] = new JObject { ["GOOD"] = "TestSet" },
+                },
                 new Dictionary<string, string>(),
                 new Dictionary<string, string>(),
                 new Dictionary<string, string>(),
-                new Dictionary<string, string>(),
+                new Dictionary<string, string> { ["hp"] = "hp" },
                 new Dictionary<string, string>
                 {
                     ["anemo"] = "Anemo",
                     ["geo"] = "Geo",
                     ["cryo"] = "Cryo",
                 },
-                Array.Empty<string>(),
+                new[] { "flower" },
                 Array.Empty<string>());
 
         private static JObject CharacterData(string goodName, string element) => new JObject
