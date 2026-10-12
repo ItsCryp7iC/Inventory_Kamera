@@ -574,12 +574,10 @@ namespace InventoryKamera
                             // A low-confidence weapon name isn't corrected inline anymore -- it's queued
                             // and shown after the whole scan finishes (see FlushDeferredCorrections). The
                             // staged record above was built from the raw best-guess; the callback patches
-                            // its name and promotes it for ordered publication if the correction turns a
-                            // previously-invalid name valid. wasAdded mirrors the initial validity decision
-                            // so the rescue path never increments progress twice.
+                            // its name and revalidates the complete Weapon. This can promote a repaired
+                            // result or demote one that the correction made invalid before ordered publication.
                             if (pendingWeaponName != null)
                             {
-								bool wasAdded = weaponValid;
                                 progressReporter.EnqueueCorrection(
                                     imageCollection.Bitmaps[0], pendingWeaponName.RecognizedText,
                                     pendingWeaponName.ConfidencePercent, pendingWeaponName.FieldLabel,
@@ -587,12 +585,34 @@ namespace InventoryKamera
                                     {
                                         string resolved = pendingWeaponName.Resolve(corrected);
                                         if (resolved == null) return;
-                                        weapon.UpdateName(resolved);
-                                        Logger.Info("Weapon scan #{0}: name corrected post-scan to \"{1}\".", weapon.Id, weapon.Name);
-										if (!wasAdded && weapon.IsValid() && stagedWeapon.MarkPublishable())
-										{
-											progressReporter.IncrementWeaponCount();
-										}
+                                        string previousName = weapon.Name;
+                                        WeaponCorrectionOutcome outcome =
+                                            WeaponResultIntegrity.ApplyNameCorrection(
+                                                weapon,
+                                                stagedWeapon,
+                                                resolved,
+                                                out WeaponValidationResult correctedValidation);
+                                        Logger.Info(
+                                            "Weapon scan #{0}: name corrected post-scan from \"{1}\" to \"{2}\"; outcome={3}; validation={4}.",
+                                            weapon.Id,
+                                            previousName,
+                                            weapon.Name,
+                                            outcome,
+                                            correctedValidation.Summary);
+                                        if (outcome == WeaponCorrectionOutcome.Promoted)
+                                            progressReporter.IncrementWeaponCount();
+                                        else if (outcome == WeaponCorrectionOutcome.Invalidated)
+                                        {
+                                            progressReporter.AddError(
+                                                $"Weapon ID#{weapon.Id} was omitted after name correction: " +
+                                                correctedValidation.Summary);
+                                            SaveInvalidWeaponCorrectionDiagnostics(
+                                                weapon,
+                                                previousName,
+                                                corrected,
+                                                resolved,
+                                                correctedValidation);
+                                        }
                                     });
                             }
 
@@ -792,6 +812,35 @@ namespace InventoryKamera
 			catch (Exception ex)
 			{
 				Logger.Warn(ex, "Could not save corrected Artifact validation diagnostics for item {0}.", artifact.Id);
+			}
+		}
+
+		private void SaveInvalidWeaponCorrectionDiagnostics(
+			Weapon weapon,
+			string previousName,
+			string correctedRawName,
+			string resolvedName,
+			WeaponValidationResult validation)
+		{
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"weapon_validation",
+					"weapon_" + weapon.Id + "_correction");
+				string details =
+					"Reason: correction_invalidated_result" + Environment.NewLine +
+					"Source sequence: " + weapon.Id + Environment.NewLine +
+					"Previous key: " + (previousName ?? string.Empty) + Environment.NewLine +
+					"Corrected raw name: " + (correctedRawName ?? string.Empty) + Environment.NewLine +
+					"Resolved name: " + (resolvedName ?? string.Empty) + Environment.NewLine +
+					"Validation: " + validation.Summary;
+				failure.SaveText("log.txt", DiagnosticSummary(details));
+				failure.SaveText("weapon.json", JsonConvert.SerializeObject(weapon, Formatting.Indented));
+				Logger.Warn("Saved corrected Weapon validation diagnostics to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save corrected Weapon validation diagnostics for item {0}.", weapon.Id);
 			}
 		}
 

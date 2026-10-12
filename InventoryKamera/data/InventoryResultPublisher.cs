@@ -102,6 +102,16 @@ namespace InventoryKamera
                     .Where(result => result.IsPublishable)
                     .OrderBy(result => result.SourceSequence))
                 {
+                    if (!WeaponResultIntegrity.IsPublishable(result.Item, out WeaponValidationResult validation))
+                    {
+                        result.MarkUnpublishable();
+                        Logger.Warn(
+                            "Weapon #{0} was omitted at deterministic publication: {1}.",
+                            result.SourceSequence,
+                            validation.Summary);
+                        continue;
+                    }
+
                     inventory.Add(result.Item);
                     if (!string.IsNullOrWhiteSpace(result.Item.EquippedCharacter))
                         equippedWeapons.Add(result.Item);

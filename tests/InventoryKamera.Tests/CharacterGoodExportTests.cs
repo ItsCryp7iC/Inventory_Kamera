@@ -135,7 +135,8 @@ namespace InventoryKamera.Tests
                 true,
                 1,
                 _equippedCharacter: "Zhongli",
-                _rarity: 5);
+                _rarity: 5,
+                gameData: snapshot);
             var artifact = new Artifact(
                 "TestSet",
                 5,
@@ -205,7 +206,10 @@ namespace InventoryKamera.Tests
                 {
                     ["testset"] = new JObject { ["GOOD"] = "TestSet" },
                 },
-                new Dictionary<string, string>(),
+                new Dictionary<string, string>
+                {
+                    ["testpolearm"] = "TestPolearm",
+                },
                 new Dictionary<string, string>(),
                 new Dictionary<string, string>(),
                 new Dictionary<string, string> { ["hp"] = "hp" },

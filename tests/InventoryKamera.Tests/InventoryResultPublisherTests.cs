@@ -101,6 +101,42 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void PublicationDefenseRejectsInvalidWeaponAndPreservesLaterSequenceAndEquipment()
+        {
+            var publisher = new InventoryResultPublisher();
+            Weapon invalid = WeaponAt(0, name: "UnknownWeapon", equippedCharacter: "Jean");
+            Weapon later = WeaponAt(2, equippedCharacter: "Zhongli");
+            StagedInventoryResult<Weapon> invalidStage =
+                publisher.StageWeapon(0, invalid, isPublishable: true);
+            publisher.StageWeapon(2, later, isPublishable: true);
+            var inventory = new Inventory();
+            var equipped = new List<Weapon>();
+
+            publisher.CommitTo(inventory, equipped, new List<Artifact>());
+
+            Assert.False(invalidStage.IsPublishable);
+            Assert.Equal(2, Assert.Single(inventory.Weapons).Id);
+            Assert.Same(later, Assert.Single(equipped));
+            Assert.Equal("Zhongli", later.EquippedCharacter);
+        }
+
+        [Fact]
+        public void DuplicateValidWeaponNamesRemainSeparateAndOrdered()
+        {
+            var publisher = new InventoryResultPublisher();
+            Weapon later = WeaponAt(4, name: "FavoniusSword");
+            Weapon earlier = WeaponAt(1, name: "FavoniusSword");
+            publisher.StageWeapon(4, later, isPublishable: true);
+            publisher.StageWeapon(1, earlier, isPublishable: true);
+
+            Inventory inventory = Commit(publisher);
+
+            Assert.Equal(new[] { 1, 4 }, inventory.Weapons.Select(weapon => weapon.Id));
+            Assert.Same(earlier, inventory.Weapons[0]);
+            Assert.Same(later, inventory.Weapons[1]);
+        }
+
+        [Fact]
         public void StagingDoesNotMutateFinalCollectionsAndCommitIsIdempotent()
         {
             var publisher = new InventoryResultPublisher();
@@ -321,15 +357,11 @@ namespace InventoryKamera.Tests
             return inventory;
         }
 
-        private static Weapon WeaponAt(int sequence, string equippedCharacter = null) =>
-            new Weapon(
-                "TestWeapon" + sequence,
-                90,
-                true,
-                1,
-                _equippedCharacter: equippedCharacter,
-                _id: sequence,
-                _rarity: 5);
+        private static Weapon WeaponAt(
+            int sequence,
+            string equippedCharacter = null,
+            string name = null) =>
+            WeaponTestData.WeaponAt(sequence, name, equippedCharacter);
 
         private static Artifact ArtifactAt(
             int sequence,

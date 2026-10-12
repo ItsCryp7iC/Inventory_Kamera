@@ -192,6 +192,56 @@ namespace InventoryKamera.Tests
             Assert.False(staged.IsPublishable);
         }
 
+        [Fact]
+        public async Task CancelledWeaponCorrectionCannotPromoteOrMutateAfterLateAnswer()
+        {
+            var viewModel = new ScanViewModel();
+            var publisher = new InventoryResultPublisher();
+            Weapon weapon = WeaponTestData.WeaponAt(1, "UnknownWeapon");
+            StagedInventoryResult<Weapon> staged =
+                publisher.StageWeapon(1, weapon, isPublishable: false);
+            using var session = new ScanSession();
+            using var image = new Bitmap(2, 2);
+            using var interactionStarted = new ManualResetEventSlim(false);
+            using var resolve = new ManualResetEventSlim(false);
+            var interactionCompleted = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            viewModel.CorrectionRequested += args =>
+            {
+                interactionStarted.Set();
+                resolve.Wait();
+                args.ResolvedText = "FavoniusSword";
+                interactionCompleted.TrySetResult(true);
+            };
+            viewModel.EnqueueCorrection(
+                image,
+                "UnknownWeapon",
+                10,
+                "weapon name",
+                corrected => WeaponResultIntegrity.ApplyNameCorrection(
+                    weapon,
+                    staged,
+                    corrected,
+                    out _));
+            Task flush = Task.Run(() =>
+                viewModel.FlushDeferredCorrections(session.CancellationToken));
+            Assert.True(interactionStarted.Wait(TimeSpan.FromSeconds(2)));
+
+            session.RequestCancellation();
+            await flush.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var inventory = new Inventory();
+            publisher.CommitTo(inventory, new List<Weapon>(), new List<Artifact>());
+            Assert.Empty(inventory.Weapons);
+            Assert.False(staged.IsPublishable);
+            Assert.Equal("UnknownWeapon", weapon.Name);
+
+            resolve.Set();
+            await interactionCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(staged.IsPublishable);
+            Assert.Equal("UnknownWeapon", weapon.Name);
+        }
+
         private sealed class PendingCorrection : IDisposable
         {
             private readonly ManualResetEventSlim handlerEntered = new ManualResetEventSlim(false);

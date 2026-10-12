@@ -102,7 +102,23 @@ namespace InventoryKamera
 
 
             // Assign Weapons
-            var exportedWeapons = weapons.ToList();
+            var exportedWeapons = new List<Weapon>();
+            foreach (Weapon weapon in weapons)
+            {
+                if (WeaponResultIntegrity.IsPublishable(
+                    weapon,
+                    out WeaponValidationResult validation))
+                {
+                    exportedWeapons.Add(weapon);
+                }
+                else
+                {
+                    Logger.Warn(
+                        "Omitting weapon {0} from GOOD export: {1}.",
+                        weapon?.Id.ToString() ?? "(null)",
+                        validation.Summary);
+                }
+            }
             if (exportedWeapons.Count > 0)
             {
                 Weapons = exportedWeapons;
