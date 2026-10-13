@@ -1,4 +1,5 @@
 using Xunit;
+using InventoryKamera.game;
 
 namespace InventoryKamera.Tests
 {
@@ -80,6 +81,67 @@ namespace InventoryKamera.Tests
             {
                 Properties.Settings.Default.TravelerName = original;
             }
+        }
+
+        [Fact]
+        public void ControllerConfirmLayout_RoundTripsThroughUserSettings()
+        {
+            int original = Properties.Settings.Default.ControllerConfirmLayout;
+            try
+            {
+                Properties.Settings.Default.ControllerConfirmLayout =
+                    (int)ControllerConfirmLayout.AConfirm_BCancel;
+                Properties.Settings.Default.Save();
+                Properties.Settings.Default.Reload();
+
+                Assert.Equal(
+                    (int)ControllerConfirmLayout.AConfirm_BCancel,
+                    Properties.Settings.Default.ControllerConfirmLayout);
+            }
+            finally
+            {
+                Properties.Settings.Default.ControllerConfirmLayout = original;
+                Properties.Settings.Default.Save();
+                Properties.Settings.Default.Reload();
+            }
+        }
+
+        [Fact]
+        public void ControllerConfirmLayout_DefaultsToBConfirmACancel()
+        {
+            Assert.Equal(
+                ((int)ControllerConfirmLayout.BConfirm_ACancel).ToString(),
+                Properties.Settings.Default.Properties[nameof(Properties.Settings.ControllerConfirmLayout)]
+                    .DefaultValue.ToString());
+        }
+
+        [Fact]
+        public void UseDefaultControllerConfirmLayout_RoundTripsThroughUserSettings()
+        {
+            bool original = Properties.Settings.Default.UseDefaultControllerConfirmLayout;
+            try
+            {
+                Properties.Settings.Default.UseDefaultControllerConfirmLayout = false;
+                Properties.Settings.Default.Save();
+                Properties.Settings.Default.Reload();
+
+                Assert.False(Properties.Settings.Default.UseDefaultControllerConfirmLayout);
+            }
+            finally
+            {
+                Properties.Settings.Default.UseDefaultControllerConfirmLayout = original;
+                Properties.Settings.Default.Save();
+                Properties.Settings.Default.Reload();
+            }
+        }
+
+        [Fact]
+        public void UseDefaultControllerConfirmLayout_DefaultsToTrue()
+        {
+            Assert.Equal(
+                bool.TrueString,
+                Properties.Settings.Default.Properties[
+                    nameof(Properties.Settings.UseDefaultControllerConfirmLayout)].DefaultValue.ToString());
         }
     }
 }

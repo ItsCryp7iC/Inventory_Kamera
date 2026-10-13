@@ -8,6 +8,7 @@ namespace InventoryKamera.game
     /// </summary>
     internal sealed class GameNavigator : IDisposable
     {
+        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
         private readonly IGameInput input;
         private readonly Action<int> wait;
 
@@ -27,9 +28,24 @@ namespace InventoryKamera.game
         public void EnterControllerMode()
         {
             RequireAvailable();
-            input.SetLeftStickHorizontal(0.5f);
-            wait(150);
-            input.SetLeftStickHorizontal(0f);
+            Exception operationFailure = null;
+            bool movementStarted = false;
+            try
+            {
+                movementStarted = true;
+                input.SetLeftStickHorizontal(0.5f);
+                wait(150);
+            }
+            catch (Exception ex)
+            {
+                operationFailure = ex;
+                throw;
+            }
+            finally
+            {
+                if (movementStarted)
+                    ReleasePreservingOriginal(() => input.SetLeftStickHorizontal(0f), operationFailure, "centering the left stick");
+            }
             wait(150);
             TapBack();
         }
@@ -39,24 +55,37 @@ namespace InventoryKamera.game
         public void MoveStep(MenuDirection direction, int holdMs = 150, int settleMs = 150)
         {
             RequireAvailable();
-            switch (direction)
+            Exception operationFailure = null;
+            bool movementStarted = false;
+            try
             {
-                case MenuDirection.Up:
-                    input.SetLeftStickVertical(1f);
-                    break;
-                case MenuDirection.Down:
-                    input.SetLeftStickVertical(-1f);
-                    break;
-                case MenuDirection.Left:
-                    input.SetLeftStickHorizontal(-1f);
-                    break;
-                case MenuDirection.Right:
-                    input.SetLeftStickHorizontal(1f);
-                    break;
+                movementStarted = true;
+                switch (direction)
+                {
+                    case MenuDirection.Up:
+                        input.SetLeftStickVertical(1f);
+                        break;
+                    case MenuDirection.Down:
+                        input.SetLeftStickVertical(-1f);
+                        break;
+                    case MenuDirection.Left:
+                        input.SetLeftStickHorizontal(-1f);
+                        break;
+                    case MenuDirection.Right:
+                        input.SetLeftStickHorizontal(1f);
+                        break;
+                }
+                wait(holdMs);
             }
-            wait(holdMs);
-            input.SetLeftStickHorizontal(0f);
-            input.SetLeftStickVertical(0f);
+            catch (Exception ex)
+            {
+                operationFailure = ex;
+                throw;
+            }
+            finally
+            {
+                if (movementStarted) CenterStickPreservingOriginal(operationFailure);
+            }
             wait(settleMs);
         }
 
@@ -100,10 +129,24 @@ namespace InventoryKamera.game
 
         public void Dispose()
         {
-            if (!IsAvailable) return;
-            ExitControllerMode();
-            wait(100);
-            input.Dispose();
+            Exception operationFailure = null;
+            try
+            {
+                if (IsAvailable)
+                {
+                    ExitControllerMode();
+                    wait(100);
+                }
+            }
+            catch (Exception ex)
+            {
+                operationFailure = ex;
+                throw;
+            }
+            finally
+            {
+                ReleasePreservingOriginal(input.Dispose, operationFailure, "disposing game input");
+            }
         }
 
         public enum MenuDirection
@@ -117,9 +160,72 @@ namespace InventoryKamera.game
         private void TapButton(GameInputButton button, int holdMs = 150)
         {
             RequireAvailable();
-            input.SetButtonState(button, true);
-            wait(holdMs);
-            input.SetButtonState(button, false);
+            Exception operationFailure = null;
+            bool pressed = false;
+            try
+            {
+                input.SetButtonState(button, true);
+                pressed = true;
+                wait(holdMs);
+            }
+            catch (Exception ex)
+            {
+                operationFailure = ex;
+                throw;
+            }
+            finally
+            {
+                if (pressed)
+                    ReleasePreservingOriginal(
+                        () => input.SetButtonState(button, false),
+                        operationFailure,
+                        $"releasing {button}");
+            }
+        }
+
+        private void CenterStickPreservingOriginal(Exception operationFailure)
+        {
+            Exception horizontalFailure = null;
+            try
+            {
+                input.SetLeftStickHorizontal(0f);
+            }
+            catch (Exception ex)
+            {
+                horizontalFailure = ex;
+                if (operationFailure != null)
+                    Logger.Warn(ex, "Controller cleanup failed while centering the horizontal axis; preserving the original failure.");
+            }
+
+            try
+            {
+                input.SetLeftStickVertical(0f);
+            }
+            catch (Exception ex)
+            {
+                if (operationFailure != null || horizontalFailure != null)
+                {
+                    Logger.Warn(ex, "Controller cleanup failed while centering the vertical axis; preserving the earlier failure.");
+                }
+                else
+                {
+                    throw;
+                }
+            }
+
+            if (operationFailure == null && horizontalFailure != null) throw horizontalFailure;
+        }
+
+        private static void ReleasePreservingOriginal(Action cleanup, Exception operationFailure, string operation)
+        {
+            try
+            {
+                cleanup();
+            }
+            catch (Exception ex) when (operationFailure != null)
+            {
+                Logger.Warn(ex, "Controller cleanup failed while {0}; preserving the original failure.", operation);
+            }
         }
 
         private void RequireAvailable()

@@ -315,7 +315,9 @@ namespace InventoryKamera
 				{
 					if (!navigator.IsAvailable)
 					{
-						progressReporter.AddError($"Controller scan unavailable: {navigator.FailureReason}");
+						progressReporter.AddError(
+							"ViGEmBus appears to be installed, but Inventory Kamera could not create " +
+							$"the virtual controller: {navigator.FailureReason}");
 					}
 					else
 					{

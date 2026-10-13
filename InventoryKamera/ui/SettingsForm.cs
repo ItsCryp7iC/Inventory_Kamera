@@ -5,6 +5,7 @@ using System.Text;
 using System.Windows.Forms;
 using Microsoft.WindowsAPICodePack.Dialogs;
 using WindowsInput.Native;
+using InventoryKamera.game;
 
 namespace InventoryKamera.ui
 {
@@ -12,6 +13,8 @@ namespace InventoryKamera.ui
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
         private readonly GameDataSnapshot gameData;
+        private ComboBox controllerConfirmLayoutComboBox;
+        private CheckBox useDefaultControllerLayoutCheckBox;
 
         public SettingsForm() : this(null)
         {
@@ -29,8 +32,71 @@ namespace InventoryKamera.ui
 
             LoadKeyBindingDisplays();
             DarkModeCheckBox.Checked = Properties.Settings.Default.DarkMode;
+            InitializeControllerLayoutControls();
 
             UiTheme.ApplyTheme(this);
+        }
+
+        private void InitializeControllerLayoutControls()
+        {
+            var group = new FlatGroupBox
+            {
+                Location = new Point(292, 250),
+                Name = "ControllerLayoutGroupBox",
+                Size = new Size(277, 114),
+                TabIndex = 5,
+                TabStop = false,
+                Text = "Controller"
+            };
+            useDefaultControllerLayoutCheckBox = new CheckBox
+            {
+                AutoSize = true,
+                Checked = Properties.Settings.Default.UseDefaultControllerConfirmLayout,
+                Location = new Point(6, 21),
+                Name = "UseDefaultControllerLayoutCheckBox",
+                TabIndex = 0,
+                Text = "Use Genshin's default layout"
+            };
+            var label = new Label
+            {
+                AutoSize = true,
+                Location = new Point(6, 48),
+                Text = "Confirm / Cancel Layout:"
+            };
+            controllerConfirmLayoutComboBox = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Location = new Point(6, 70),
+                Name = "ControllerConfirmLayoutComboBox",
+                Size = new Size(260, 23),
+                TabIndex = 1
+            };
+            controllerConfirmLayoutComboBox.Items.Add(
+                ControllerConfirmLayoutOptions.DisplayText(ControllerConfirmLayout.BConfirm_ACancel));
+            controllerConfirmLayoutComboBox.Items.Add(
+                ControllerConfirmLayoutOptions.DisplayText(ControllerConfirmLayout.AConfirm_BCancel));
+            controllerConfirmLayoutComboBox.SelectedIndex = (int)ControllerConfirmLayoutOptions.FromPersistedValue(
+                Properties.Settings.Default.ControllerConfirmLayout);
+            controllerConfirmLayoutComboBox.SelectedIndexChanged += (_, _) =>
+            {
+                Properties.Settings.Default.ControllerConfirmLayout = controllerConfirmLayoutComboBox.SelectedIndex;
+            };
+            useDefaultControllerLayoutCheckBox.CheckedChanged += (_, _) =>
+            {
+                bool useDefault = useDefaultControllerLayoutCheckBox.Checked;
+                Properties.Settings.Default.UseDefaultControllerConfirmLayout = useDefault;
+                if (useDefault)
+                {
+                    controllerConfirmLayoutComboBox.SelectedIndex = (int)ControllerConfirmLayoutOptions.Default;
+                }
+                controllerConfirmLayoutComboBox.Enabled = !useDefault;
+            };
+            controllerConfirmLayoutComboBox.Enabled = !useDefaultControllerLayoutCheckBox.Checked;
+
+            group.Controls.Add(useDefaultControllerLayoutCheckBox);
+            group.Controls.Add(label);
+            group.Controls.Add(controllerConfirmLayoutComboBox);
+            Controls.Add(group);
         }
 
         // Reflects the current key bindings (kept in Navigation, synced from settings at app start)

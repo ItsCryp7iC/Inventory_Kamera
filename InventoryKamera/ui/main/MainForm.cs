@@ -1,4 +1,5 @@
 ﻿using InventoryKamera.ui;
+using InventoryKamera.game;
 using Microsoft.WindowsAPICodePack.Dialogs;
 using Newtonsoft.Json;
 using NHotkey;
@@ -454,40 +455,31 @@ namespace InventoryKamera
             return true;
         }
 
-        private bool ControllerScanWarningAccepted()
+        private bool ScanSetupAccepted()
         {
-            var settings = Properties.Settings.Default;
-            bool controllerScanSelected = settings.ScanWeapons || settings.ScanArtifacts ||
-                settings.ScanCharacters || settings.ScanCharDevItems || settings.ScanMaterials;
-            if (!controllerScanSelected) return true;
+            using var dialog = new ScanSetupForm(gameDataProvider.Current);
+            if (dialog.ShowDialog(this) == DialogResult.OK) return true;
 
-            var result = MessageBox.Show(
-                this,
-                "Before starting a controller-driven scan, confirm that:\n\n" +
-                "• Genshin Impact is already set to Controller input mode.\n" +
-                "• ViGEmBus is installed for Inventory Kamera's current controller backend.\n" +
-                "• A physical controller is not required.\n\n" +
-                "Inventory Kamera cannot reliably detect or change Genshin's current input mode.\n\n" +
-                "Continue with the scan?",
-                "Controller Scan Requirements",
-                MessageBoxButtons.OKCancel,
-                MessageBoxIcon.Warning);
-
-            if (result == DialogResult.OK) return true;
-
-            Logger.Info("Scan start cancelled at the controller-mode preflight warning.");
+            Logger.Info("Scan start cancelled in Scan Setup.");
             return false;
         }
 
         private void StartButton_Clicked(object sender, EventArgs e)
         {
-            if (!PreflightChecksPass()) return;
             if (scanRunOwner.HasActiveRun)
             {
                 Logger.Debug("Already running");
                 return;
             }
-            if (!ControllerScanWarningAccepted()) return;
+
+            var startSettings = Properties.Settings.Default;
+            bool controllerScanSelected = startSettings.ScanWeapons || startSettings.ScanArtifacts ||
+                startSettings.ScanCharacters || startSettings.ScanCharDevItems || startSettings.ScanMaterials;
+            if (!ControllerScanPreflight.TryProceed(
+                    controllerScanSelected,
+                    ScanSetupAccepted,
+                    PreflightChecksPass))
+                return;
 
             GC.Collect();
 
