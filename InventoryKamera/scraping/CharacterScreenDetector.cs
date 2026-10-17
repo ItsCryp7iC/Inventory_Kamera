@@ -152,13 +152,35 @@ namespace InventoryKamera
 
         private static (bool ExactMatch, bool FuzzyMatch) MatchAttributesLabel(string rawText)
         {
-            string normalized = Regex.Replace((rawText ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]", string.Empty);
-            bool exactMatch = normalized == "attributes";
-            string match = TextNormalizer.FindClosestInList(
-                normalized,
-                new HashSet<string>(new[] { "attributes" }));
-            bool fuzzyMatch = !exactMatch &&
-                (normalized.Contains("attributes") || match == "attributes");
+            const string expected = "attributes";
+            MatchCollection matches = Regex.Matches(
+                (rawText ?? string.Empty).ToLowerInvariant(),
+                @"[a-z0-9]+");
+            var tokens = new List<string>(matches.Count);
+            foreach (Match match in matches) tokens.Add(match.Value);
+
+            // OCR can return the same line more than once with one-character prompt noise after
+            // each copy. Preserve word boundaries so an established Attributes token remains
+            // exact evidence instead of becoming one low-confidence concatenated fuzzy string.
+            bool exactMatch = tokens.Exists(token => token == expected);
+            bool fuzzyMatch = false;
+            if (!exactMatch)
+            {
+                var target = new HashSet<string>(new[] { expected });
+                foreach (string token in tokens)
+                {
+                    // Do not turn arbitrary prefixes/suffixes containing the word into positive
+                    // Character evidence. Fuzzy matching remains for OCR substitutions such as
+                    // "Ateributes" and retains the existing confidence floor.
+                    if (token.Length < 8 || expected.Contains(token) || token.Contains(expected))
+                        continue;
+                    if (TextNormalizer.FindClosestInList(token, target) == expected)
+                    {
+                        fuzzyMatch = true;
+                        break;
+                    }
+                }
+            }
             return (exactMatch, fuzzyMatch);
         }
     }

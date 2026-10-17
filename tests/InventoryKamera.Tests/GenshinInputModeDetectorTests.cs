@@ -223,6 +223,18 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void CharacterWithoutControllerPromptEvidence_PreservesScreenButLeavesModeUnknown()
+        {
+            using Bitmap screen = Compose("character_controller_header.png", 0.080, 0.115, 0.150, 0.070);
+
+            GenshinInputModeDetection result = detector.Detect(screen);
+
+            Assert.Equal(GenshinInputMode.Unknown, result.Mode);
+            Assert.Equal(GenshinInputScreen.Character, result.Screen);
+            Assert.Empty(result.ControllerEvidence);
+        }
+
+        [Fact]
         public void ControllerActionColorsWithoutKnownScanScreenRemainUnknown()
         {
             using Bitmap screen = Compose("inventory_controller_prompts.png", 0.70, 0.89, 0.24, 0.08);

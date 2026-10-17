@@ -425,7 +425,8 @@ namespace InventoryKamera.game
                 if (current.Mode != GenshinInputMode.Controller)
                 {
                     failureReason =
-                        $"Input mode became unresolved while normalizing restoration UI ({current}).";
+                        "Automatic restoration stopped because input mode was not positively " +
+                        $"identified; manual Recovery is required ({current}).";
                     return false;
                 }
                 if (current.Screen == GenshinInputScreen.PaimonMenu)
@@ -436,7 +437,8 @@ namespace InventoryKamera.game
                 if (current.Screen == GenshinInputScreen.Unknown)
                 {
                     failureReason =
-                        $"Controller mode was visible, but the current UI was not a known safe restoration state ({current}).";
+                        "Automatic restoration stopped because the current UI was not a known " +
+                        $"safe restoration state; manual Recovery is required ({current}).";
                     return false;
                 }
                 if (action == MaximumNormalizationActions)

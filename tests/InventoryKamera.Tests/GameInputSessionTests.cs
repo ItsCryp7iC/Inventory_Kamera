@@ -147,6 +147,46 @@ namespace InventoryKamera.Tests
             Assert.Same(harness.Session, harness.Overlay.RecoveryController);
         }
 
+        [Fact]
+        public void UnknownModeOnRecognizedCharacterScreen_StopsSafelyInRecovery()
+        {
+            var harness = Harness.Create(
+                DeclaredInputMode.KeyboardMouse,
+                restoreSucceeds: false,
+                detections: new[]
+                {
+                    Detection(GenshinInputMode.Unknown, GenshinInputScreen.Character),
+                });
+            Assert.True(harness.Session.Prepare(CancellationToken.None, out _));
+
+            Assert.False(harness.Session.RestoreAndRelease(out _));
+
+            Assert.True(harness.Session.RecoveryRequired);
+            Assert.True(harness.Session.ViGEmConnected);
+            Assert.Equal(ScanCompanionState.Recovery, harness.Overlay.State);
+            Assert.Equal(0, harness.Input.DisposeCount);
+        }
+
+        [Fact]
+        public void UnknownScreen_StopsSafelyInRecovery()
+        {
+            var harness = Harness.Create(
+                DeclaredInputMode.KeyboardMouse,
+                restoreSucceeds: false,
+                detections: new[]
+                {
+                    Detection(GenshinInputMode.Controller, GenshinInputScreen.Unknown),
+                });
+            Assert.True(harness.Session.Prepare(CancellationToken.None, out _));
+
+            Assert.False(harness.Session.RestoreAndRelease(out _));
+
+            Assert.True(harness.Session.RecoveryRequired);
+            Assert.True(harness.Session.ViGEmConnected);
+            Assert.Equal(ScanCompanionState.Recovery, harness.Overlay.State);
+            Assert.Equal(0, harness.Input.DisposeCount);
+        }
+
         [Theory]
         [InlineData((int)GameNavigator.MenuDirection.Up, "Vertical:1")]
         [InlineData((int)GameNavigator.MenuDirection.Down, "Vertical:-1")]
@@ -362,9 +402,18 @@ namespace InventoryKamera.Tests
         }
 
         private static GenshinInputModeDetection Detection(GenshinInputMode mode) =>
+            Detection(
+                mode,
+                mode == GenshinInputMode.Unknown
+                    ? GenshinInputScreen.Unknown
+                    : GenshinInputScreen.PaimonMenu);
+
+        private static GenshinInputModeDetection Detection(
+            GenshinInputMode mode,
+            GenshinInputScreen screen) =>
             new GenshinInputModeDetection(
                 mode,
-                mode == GenshinInputMode.Unknown ? GenshinInputScreen.Unknown : GenshinInputScreen.PaimonMenu,
+                screen,
                 Array.Empty<string>(),
                 Array.Empty<string>(),
                 "test");

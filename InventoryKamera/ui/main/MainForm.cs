@@ -644,16 +644,10 @@ namespace InventoryKamera
                         // The Data object of json object
                         currentScanner.GatherData();
 
-                        if (currentScanner.HasPendingInputModeRecovery)
-                        {
-                            // The virtual controller is deliberately still alive. Do not overwrite
-                            // the recovery status with Finished or open export/optimizer UI that
-                            // obscures the required manual Control Type recovery.
-                            currentScanner.StopImageProcessorWorkers();
-                            scanViewModel.SetProgramStatus(
-                                "Keyboard/Mouse restoration required", ok: false);
-                            return;
-                        }
+                        bool recoveryPending = currentScanner.HasPendingInputModeRecovery;
+                        ScanCompletionPlan completion = ScanCompletionPolicy.Evaluate(
+                            scanSession.IsCancellationRequested,
+                            recoveryPending);
 
                         // Tear down the global "Stop" hotkey as soon as the scan itself is done, not
                         // in the `finally` block below -- that only runs once OpenOptimizerDialog
@@ -665,14 +659,15 @@ namespace InventoryKamera
                         // still safe to call again in `finally` (e.g. on the cancelled/exception paths).
                         ResetUI();
 
-                        if (scanSession.IsCancellationRequested)
+                        if (!completion.ExportGood)
                         {
                             // Scan was stopped cooperatively (Stop hotkey). Matches the previous
                             // Thread.Abort behaviour: skip GOOD conversion/export/optimizer dialog.
                             // The user can still use "Export Scanned Data" to export what was collected.
                             currentScanner?.StopImageProcessorWorkers();
-                            scanViewModel.SetProgramStatus("Scan stopped");
-                            scanOverlay.ShowCompleted("Scan cancelled. Input cleanup is complete.");
+                            scanViewModel.SetProgramStatus(completion.Status, completion.StatusOk);
+                            if (completion.ShowCompletedOverlay)
+                                scanOverlay.ShowCompleted(completion.CompletionMessage);
                         }
                         else
                         {
@@ -684,9 +679,14 @@ namespace InventoryKamera
                             good.WriteToJSON(Properties.Settings.Default.OutputPath, scanViewModel);
                             Logger.Info("Exported data");
 
-                            scanViewModel.SetProgramStatus("Finished");
-                            scanOverlay.ShowCompleted("Scan finished. Input cleanup is complete.");
-                            OpenOptimizerDialog(good);
+                            scanViewModel.SetProgramStatus(completion.Status, completion.StatusOk);
+                            if (completion.ShowCompletedOverlay)
+                                scanOverlay.ShowCompleted(completion.CompletionMessage);
+                            if (completion.OpenOptimizer)
+                                OpenOptimizerDialog(good);
+                            else if (recoveryPending)
+                                Logger.Info(
+                                    "Scan data was exported; optimizer UI deferred while input-mode Recovery is active.");
                         }
                     }
                     catch (NotImplementedException ex)

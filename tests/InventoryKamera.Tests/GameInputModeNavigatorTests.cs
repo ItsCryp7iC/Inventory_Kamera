@@ -485,6 +485,24 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void ControllerRestore_CharacterWithUnknownModeDefersAllInputToRecovery()
+        {
+            var events = new List<string>();
+            var detector = new FakeModeDetector(
+                events,
+                new[] { Detection(GenshinInputMode.Unknown, GenshinInputScreen.Character) },
+                dropdownOpen: true);
+            var transition = CreateTransition(
+                detector, new RecordingSettingsInput(events), new UnusedPaimonDetector(), events);
+            var gameNavigator = new GameNavigator(new RecordingGameInput(events), _ => { });
+
+            Assert.False(transition.TryRestoreKeyboardMouse(gameNavigator, out string failure));
+
+            Assert.Contains("manual Recovery is required", failure);
+            Assert.DoesNotContain(events, entry => entry.StartsWith("Button:", StringComparison.Ordinal));
+        }
+
+        [Fact]
         public void ControllerRestore_NormalizationActionLimitIsBounded()
         {
             var events = new List<string>();

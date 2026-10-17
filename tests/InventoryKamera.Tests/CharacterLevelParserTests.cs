@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using Xunit;
 
 namespace InventoryKamera.Tests
@@ -54,6 +55,104 @@ namespace InventoryKamera.Tests
             Assert.False(result.Success);
             Assert.Equal(expectedFiltered, result.FilteredText);
             Assert.False(string.IsNullOrWhiteSpace(result.RejectionReason));
+        }
+
+        [Theory]
+        [InlineData("Level 80 / 90", 80, 90)]
+        [InlineData("Level 80/90", 80, 90)]
+        [InlineData("Level 80 / 90 9020/183175", 80, 90)]
+        [InlineData("9020/183175 Level 80 / 90", 80, 90)]
+        [InlineData("Level 90 / 90 2111/183175", 90, 90)]
+        [InlineData("Level 90 /'90", 90, 90)]
+        [InlineData("Level 80./ 90", 80, 90)]
+        public void Parse_SelectsTheOnlyPlausibleFractionCandidate(
+            string raw,
+            int expectedLevel,
+            int expectedMaxLevel)
+        {
+            CharacterLevelParseResult result = CharacterLevelParser.Parse(raw);
+
+            Assert.True(result.Success);
+            Assert.Equal(expectedLevel, result.Level);
+            Assert.Equal(expectedMaxLevel, result.MaxLevel);
+            Assert.Equal($"{expectedLevel}/{expectedMaxLevel}", result.SelectedPair);
+            Assert.Single(result.PlausiblePairs);
+        }
+
+        [Theory]
+        [InlineData("80/90 70/80", "multiple plausible")]
+        [InlineData("9020/183175", "no extracted")]
+        [InlineData("Level 80 / 183175", "no extracted")]
+        [InlineData("Level 105 / 110", "no extracted")]
+        public void Parse_RejectsAmbiguousOrImplausibleFractionCandidates(
+            string raw,
+            string expectedReasonFragment)
+        {
+            CharacterLevelParseResult result = CharacterLevelParser.Parse(raw);
+
+            Assert.False(result.Success);
+            Assert.Null(result.SelectedPair);
+            Assert.Contains(expectedReasonFragment, result.RejectionReason, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Parse_ReportsExtractedAndPlausiblePairsIndependently()
+        {
+            CharacterLevelParseResult result = CharacterLevelParser.Parse(
+                "Level 80 / 90 9020/183175");
+
+            Assert.Equal(new[] { "80/90", "9020/183175" }, result.ExtractedPairs);
+            Assert.Equal(new[] { "80/90" }, result.PlausiblePairs);
+            Assert.Equal("80/90", result.SelectedPair);
+        }
+
+        [Theory]
+        [InlineData("Level 80 / 90 902")]
+        [InlineData("Level 80 / 90 12s")]
+        [InlineData(": Level 80 / 90 211")]
+        [InlineData("Level 80 / 90 ‘121")]
+        public void Parse_AcceptsLevelPairFromKnownLiveExpContaminatedReads(string raw)
+        {
+            CharacterLevelParseResult result = CharacterLevelParser.Parse(raw);
+
+            Assert.True(result.Success);
+            Assert.Equal(80, result.Level);
+            Assert.Equal(90, result.MaxLevel);
+            Assert.Equal("80/90", result.SelectedPair);
+        }
+
+        [Fact]
+        public void Parse_DuplicatePlausiblePairsRemainAmbiguous()
+        {
+            CharacterLevelParseResult result = CharacterLevelParser.Parse("80/90 80/90");
+
+            Assert.False(result.Success);
+            Assert.Equal(new[] { "80/90", "80/90" }, result.PlausiblePairs);
+            Assert.Null(result.SelectedPair);
+        }
+
+        [Theory]
+        [InlineData(1919, 1079, true, 1463, 204, 191, 37)]
+        [InlineData(1920, 1080, true, 1464, 204, 191, 38)]
+        [InlineData(1280, 720, true, 976, 136, 127, 25)]
+        [InlineData(2560, 1440, true, 1952, 272, 254, 50)]
+        [InlineData(1680, 1050, false, 1281, 177, 167, 36)]
+        public void LevelCaptureRegion_ExcludesExpAcrossSupportedGeometry(
+            int width,
+            int height,
+            bool isNormalAspectRatio,
+            int expectedX,
+            int expectedY,
+            int expectedWidth,
+            int expectedHeight)
+        {
+            Rectangle actual = CharacterLevelCaptureRegions.Level(
+                new Size(width, height),
+                isNormalAspectRatio);
+
+            Assert.Equal(
+                new Rectangle(expectedX, expectedY, expectedWidth, expectedHeight),
+                actual);
         }
 
         [Fact]

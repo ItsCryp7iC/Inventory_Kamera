@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading;
 
@@ -35,32 +39,38 @@ namespace InventoryKamera
 		internal ConstellationNodeObservation(
 			IReadOnlyList<ConstellationOcrRead> activatedReads,
 			ConstellationOcrRead lockedRead,
+			ConstellationLockIconDetection lockIcon,
 			bool activatedEvidence,
-			bool lockedEvidence,
+			bool lockedTextEvidence,
 			ConstellationNodeState state,
 			string reason)
 		{
 			ActivatedReads = activatedReads ?? throw new ArgumentNullException(nameof(activatedReads));
 			LockedRead = lockedRead ?? throw new ArgumentNullException(nameof(lockedRead));
+			LockIcon = lockIcon;
 			ActivatedEvidence = activatedEvidence;
-			LockedEvidence = lockedEvidence;
+			LockedTextEvidence = lockedTextEvidence;
 			State = state;
 			Reason = reason ?? string.Empty;
 		}
 
 		internal IReadOnlyList<ConstellationOcrRead> ActivatedReads { get; }
 		internal ConstellationOcrRead LockedRead { get; }
+		internal ConstellationLockIconDetection LockIcon { get; }
 		internal bool ActivatedEvidence { get; }
-		internal bool LockedEvidence { get; }
+		internal bool LockIconEvidence => LockIcon.Accepted;
+		internal bool LockedTextEvidence { get; }
+		internal bool LockedEvidence => LockIconEvidence || LockedTextEvidence;
 		internal ConstellationNodeState State { get; }
 		internal string Reason { get; }
 	}
 
 	/// <summary>
-	/// Combines two independent semantic signals from one captured frame. The compact status-label
-	/// region may establish Activated through any deterministic preprocessing variant. The separate
-	/// left-description region may establish Locked only through the exact phrase "Activate required".
-	/// Absence is never treated as evidence, and conflicting positive signals remain unresolved.
+	/// Combines positive signals from one captured frame. The compact status-label region may
+	/// establish Activated through any deterministic preprocessing variant. Locked may be established
+	/// either by the fixed upper-left padlock or by the exact phrase "Activate required" in the
+	/// description. Absence is never treated as evidence, and conflicting positive signals remain
+	/// unresolved.
 	/// </summary>
 	internal static class ConstellationNodeStateResolver
 	{
@@ -68,22 +78,34 @@ namespace InventoryKamera
 			IReadOnlyList<ConstellationOcrRead> activatedReads,
 			ConstellationOcrRead lockedRead)
 		{
+			return Resolve(
+				activatedReads,
+				lockedRead,
+				ConstellationLockIconDetection.None(ConstellationLockIconDetector.AcceptanceThreshold));
+		}
+
+		internal static ConstellationNodeObservation Resolve(
+			IReadOnlyList<ConstellationOcrRead> activatedReads,
+			ConstellationOcrRead lockedRead,
+			ConstellationLockIconDetection lockIcon)
+		{
 			if (activatedReads == null) throw new ArgumentNullException(nameof(activatedReads));
 			if (lockedRead == null) throw new ArgumentNullException(nameof(lockedRead));
 
 			bool activatedEvidence = activatedReads.Any(
 				read => ContainsWord(read?.NormalizedText, "activated"));
-			bool lockedEvidence = ContainsPhrase(
+			bool lockedTextEvidence = ContainsPhrase(
 				lockedRead.NormalizedText,
 				"activate",
 				"required");
+			bool lockedEvidence = lockIcon.Accepted || lockedTextEvidence;
 
 			ConstellationNodeState state;
 			string reason;
 			if (activatedEvidence && lockedEvidence)
 			{
 				state = ConstellationNodeState.Unresolved;
-				reason = "conflicting Activated and Activate required evidence";
+				reason = "conflicting Activated and Locked evidence";
 			}
 			else if (activatedEvidence)
 			{
@@ -93,7 +115,12 @@ namespace InventoryKamera
 			else if (lockedEvidence)
 			{
 				state = ConstellationNodeState.Locked;
-				reason = "exact Activate required phrase recognized in the description region";
+				if (lockIcon.Accepted && lockedTextEvidence)
+					reason = "upper-left lock icon and exact Activate required phrase recognized";
+				else if (lockIcon.Accepted)
+					reason = "upper-left lock icon matched the deterministic template";
+				else
+					reason = "exact Activate required phrase recognized in the description region";
 			}
 			else
 			{
@@ -104,8 +131,9 @@ namespace InventoryKamera
 			return new ConstellationNodeObservation(
 				activatedReads,
 				lockedRead,
+				lockIcon,
 				activatedEvidence,
-				lockedEvidence,
+				lockedTextEvidence,
 				state,
 				reason);
 		}
@@ -160,6 +188,15 @@ namespace InventoryKamera
 	/// </summary>
 	internal static class ConstellationCaptureRegions
 	{
+		internal static Rectangle LockStatusIcon(Size captureSize) => Create(
+			captureSize,
+			// 1920x1080 live evidence: x=320..416, y=70..166. This includes the full
+			// fixed status circle plus padding while stopping well above the title text.
+			left: 0.1667,
+			top: 0.0649,
+			right: 0.2167,
+			bottom: 0.1538);
+
 		internal static Rectangle Activated(Size captureSize) => Create(
 			captureSize,
 			left: 0.1574,
@@ -198,6 +235,132 @@ namespace InventoryKamera
 			int rightPixel = (int)(right * captureSize.Width);
 			int bottomPixel = (int)(bottom * captureSize.Height);
 			return Rectangle.FromLTRB(x, y, rightPixel, bottomPixel);
+		}
+	}
+
+	internal readonly struct ConstellationLockIconDetection
+	{
+		internal ConstellationLockIconDetection(double score, double threshold, Rectangle region)
+		{
+			Score = score;
+			Threshold = threshold;
+			Region = region;
+		}
+
+		internal double Score { get; }
+		internal double Threshold { get; }
+		internal Rectangle Region { get; }
+		internal bool Accepted => Score >= Threshold;
+
+		internal static ConstellationLockIconDetection None(double threshold) =>
+			new ConstellationLockIconDetection(0.0, threshold, Rectangle.Empty);
+	}
+
+	/// <summary>
+	/// Detects the fixed upper-left white padlock through Dice similarity of near-white binary masks.
+	/// Only the inner icon area participates in scoring, excluding the element-colored status ring.
+	/// The template is a sanitized 96x96 status-icon crop embedded in the application assembly.
+	/// </summary>
+	internal sealed class ConstellationLockIconDetector
+	{
+		internal const int NormalizedSize = 96;
+		internal const double AcceptanceThreshold = 0.750;
+		internal const int WhiteLuminanceThreshold = 205;
+		internal const int MaximumChannelSpread = 45;
+		internal static readonly Rectangle ComparisonRegion = new Rectangle(26, 22, 44, 52);
+
+		private const string TemplateResourceName =
+			"InventoryKamera.assets.constellation_status_locked_template.png";
+		private readonly bool[] templateMask;
+
+		internal ConstellationLockIconDetector(Bitmap template)
+		{
+			if (template == null) throw new ArgumentNullException(nameof(template));
+			using Bitmap normalized = Normalize(template);
+			templateMask = CreateMask(normalized, processed: null);
+		}
+
+		internal static ConstellationLockIconDetector CreateDefault()
+		{
+			using Stream stream = Assembly.GetExecutingAssembly()
+				.GetManifestResourceStream(TemplateResourceName);
+			if (stream == null)
+				throw new InvalidOperationException(
+					$"Embedded constellation lock template was not found: {TemplateResourceName}");
+
+			using var template = new Bitmap(stream);
+			return new ConstellationLockIconDetector(template);
+		}
+
+		internal ConstellationLockIconDetection Detect(
+			Bitmap statusIcon,
+			Rectangle sourceRegion,
+			out Bitmap processedMask)
+		{
+			if (statusIcon == null) throw new ArgumentNullException(nameof(statusIcon));
+
+			using Bitmap normalized = Normalize(statusIcon);
+			processedMask = new Bitmap(NormalizedSize, NormalizedSize, PixelFormat.Format24bppRgb);
+			bool[] candidateMask = CreateMask(normalized, processedMask);
+
+			int candidatePixels = 0;
+			int templatePixels = 0;
+			int intersection = 0;
+			for (int y = ComparisonRegion.Top; y < ComparisonRegion.Bottom; y++)
+			{
+				for (int x = ComparisonRegion.Left; x < ComparisonRegion.Right; x++)
+				{
+					int index = y * NormalizedSize + x;
+					bool candidate = candidateMask[index];
+					bool expected = templateMask[index];
+					if (candidate) candidatePixels++;
+					if (expected) templatePixels++;
+					if (candidate && expected) intersection++;
+				}
+			}
+
+			double denominator = candidatePixels + templatePixels;
+			double score = denominator <= 0.0 ? 0.0 : 2.0 * intersection / denominator;
+			return new ConstellationLockIconDetection(score, AcceptanceThreshold, sourceRegion);
+		}
+
+		private static Bitmap Normalize(Bitmap source)
+		{
+			var normalized = new Bitmap(
+				NormalizedSize,
+				NormalizedSize,
+				PixelFormat.Format24bppRgb);
+			using Graphics graphics = Graphics.FromImage(normalized);
+			graphics.CompositingMode = CompositingMode.SourceCopy;
+			graphics.CompositingQuality = CompositingQuality.HighQuality;
+			graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+			graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+			graphics.DrawImage(
+				source,
+				new Rectangle(0, 0, NormalizedSize, NormalizedSize),
+				new Rectangle(0, 0, source.Width, source.Height),
+				GraphicsUnit.Pixel);
+			return normalized;
+		}
+
+		private static bool[] CreateMask(Bitmap source, Bitmap processed)
+		{
+			var mask = new bool[NormalizedSize * NormalizedSize];
+			for (int y = 0; y < NormalizedSize; y++)
+			{
+				for (int x = 0; x < NormalizedSize; x++)
+				{
+					Color color = source.GetPixel(x, y);
+					int maximum = Math.Max(color.R, Math.Max(color.G, color.B));
+					int minimum = Math.Min(color.R, Math.Min(color.G, color.B));
+					double luminance = 0.2126 * color.R + 0.7152 * color.G + 0.0722 * color.B;
+					bool nearWhite = luminance >= WhiteLuminanceThreshold &&
+						maximum - minimum <= MaximumChannelSpread;
+					mask[y * NormalizedSize + x] = nearWhite;
+					processed?.SetPixel(x, y, nearWhite ? Color.White : Color.Black);
+				}
+			}
+			return mask;
 		}
 	}
 

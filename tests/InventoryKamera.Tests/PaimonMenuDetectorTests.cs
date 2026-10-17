@@ -160,6 +160,44 @@ namespace InventoryKamera.Tests
         }
 
         [Theory]
+        [InlineData("Attributes")]
+        [InlineData("* Attributes F | * Attributes r")]
+        [InlineData("*** ATTRIBUTES !!!")]
+        public void CharacterDestinationVerifier_AttributesTokenSurvivesDuplicateCaseAndPunctuationNoise(
+            string text)
+        {
+            using var screenshot = new Bitmap(1919, 1079);
+            var detector = new CharacterScreenDetector(
+                new StubOcrService(text, 0.05f),
+                new ImageProcessor());
+
+            CharacterScreenDetection result = detector.Detect(screenshot);
+
+            Assert.True(result.IsCharacterOpen, result.RawText);
+            Assert.True(result.OcrAttempts[0].ExactSemanticMatch);
+            Assert.True(result.OcrAttempts[0].Accepted);
+        }
+
+        [Theory]
+        [InlineData("attrib")]
+        [InlineData("superattributespanel")]
+        [InlineData("attribute")]
+        public void CharacterDestinationVerifier_PartialOrEmbeddedFragmentsAreNotPositiveEvidence(
+            string text)
+        {
+            using var screenshot = new Bitmap(1919, 1079);
+            var detector = new CharacterScreenDetector(
+                new StubOcrService(text, 0.99f),
+                new ImageProcessor());
+
+            CharacterScreenDetection result = detector.Detect(screenshot);
+
+            Assert.False(result.IsCharacterOpen, result.RawText);
+            Assert.False(result.OcrAttempts[0].ExactSemanticMatch);
+            Assert.False(result.OcrAttempts[0].FuzzySemanticMatch);
+        }
+
+        [Theory]
         [InlineData("Ateributes", 0.10f, false)]
         [InlineData("Ateributes", 0.60f, true)]
         [InlineData("", 0.95f, false)]

@@ -274,6 +274,7 @@ namespace InventoryKamera.game
             details.Add($"keyboardPaimonLightRatio={backLightRatio:0.000}");
 
             bool controllerInventory = false;
+            bool characterOpen = false;
             bool controllerCharacter = false;
             if (!controlKeyboard && !controlController && !keyboardPaimon)
             {
@@ -294,14 +295,25 @@ namespace InventoryKamera.game
                     details.Add(
                         $"inventoryTab={inventory.TabName ?? "(none)"}; inventoryOcr=\"{CleanForLog(inventory.RawText)}\"");
 
-                    if (!controllerInventory)
-                    {
-                        var characterDetector = new CharacterScreenDetector(ocrService, imagePreprocessor);
-                        CharacterScreenDetection character = characterDetector.Detect(screenshot);
-                        controllerCharacter = character.IsCharacterOpen;
-                        details.Add(
-                            $"characterOpen={character.IsCharacterOpen}; characterOcr=\"{CleanForLog(character.RawText)}\"");
-                    }
+                }
+
+                // Screen and input-mode evidence are intentionally independent. A positive
+                // Attributes label still identifies a safe Character screen when its controller
+                // prompt colors are missing or inconclusive; mode then remains Unknown and
+                // automatic restoration stops for Recovery without sending a blind input.
+                if (!controllerInventory)
+                {
+                    var characterDetector = new CharacterScreenDetector(ocrService, imagePreprocessor);
+                    CharacterScreenDetection character = characterDetector.Detect(screenshot);
+                    characterOpen = character.IsCharacterOpen;
+                    controllerCharacter = characterOpen && controllerScanPrompts;
+                    string attempts = string.Join(",", character.OcrAttempts.Select(attempt =>
+                        $"{(attempt.Inverted ? "inverted" : "normal")}:{attempt.Confidence:0.000}/" +
+                        $"exact={attempt.ExactSemanticMatch}/fuzzy={attempt.FuzzySemanticMatch}/" +
+                        $"accepted={attempt.Accepted}"));
+                    details.Add(
+                        $"characterOpen={characterOpen}; characterOcr=\"{CleanForLog(character.RawText)}\"; " +
+                        $"characterAttempts=[{attempts}]");
                 }
             }
 
@@ -310,7 +322,7 @@ namespace InventoryKamera.game
 
             bool paimonLayout = false;
             if (!controlKeyboard && !controlController &&
-                !controllerInventory && !controllerCharacter &&
+                !controllerInventory && !characterOpen &&
                 !keyboardFreeRoam && !controllerFreeRoam)
             {
                 PaimonMenuDetection paimon = paimonMenuDetector.Detect(screenshot);
@@ -333,7 +345,7 @@ namespace InventoryKamera.game
             GenshinInputScreen screen = GenshinInputScreen.Unknown;
             if (controlKeyboard || controlController) screen = GenshinInputScreen.Controls;
             else if (controllerInventory) screen = GenshinInputScreen.Inventory;
-            else if (controllerCharacter) screen = GenshinInputScreen.Character;
+            else if (characterOpen) screen = GenshinInputScreen.Character;
             else if (paimonLayout || keyboardPaimon || controllerPaimon) screen = GenshinInputScreen.PaimonMenu;
             else if (keyboardFreeRoam || controllerFreeRoam) screen = GenshinInputScreen.FreeRoam;
 

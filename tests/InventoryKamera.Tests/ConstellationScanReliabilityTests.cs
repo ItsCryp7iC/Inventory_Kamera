@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Text;
+using System.IO;
 using System.Linq;
 using Tesseract;
 using Xunit;
@@ -54,6 +55,33 @@ namespace InventoryKamera.Tests
 
             Assert.True(observation.LockedEvidence);
             Assert.Equal(ConstellationNodeState.Locked, observation.State);
+        }
+
+        [Fact]
+        public void PositiveLockIconAloneResolvesLocked()
+        {
+            ConstellationNodeObservation observation = Observe(
+                new[] { ("legacy", "", 0.0f) },
+                "",
+                lockIconEvidence: true);
+
+            Assert.True(observation.LockIconEvidence);
+            Assert.False(observation.LockedTextEvidence);
+            Assert.True(observation.LockedEvidence);
+            Assert.Equal(ConstellationNodeState.Locked, observation.State);
+        }
+
+        [Fact]
+        public void MissingLockIconDoesNotBecomeActivatedEvidence()
+        {
+            ConstellationNodeObservation observation = Observe(
+                new[] { ("legacy", "", 0.0f) },
+                "",
+                lockIconEvidence: false);
+
+            Assert.False(observation.ActivatedEvidence);
+            Assert.False(observation.LockIconEvidence);
+            Assert.Equal(ConstellationNodeState.Unresolved, observation.State);
         }
 
         [Theory]
@@ -134,6 +162,19 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void ActivatedTextAndLockIconConflictRemainsUnresolved()
+        {
+            ConstellationNodeObservation observation = Observe(
+                new[] { ("alternate", "Activated", 0.90f) },
+                "",
+                lockIconEvidence: true);
+
+            Assert.True(observation.ActivatedEvidence);
+            Assert.True(observation.LockIconEvidence);
+            Assert.Equal(ConstellationNodeState.Unresolved, observation.State);
+        }
+
+        [Fact]
         public void LockedPhraseInActivatedRegionDoesNotCountAsActivated()
         {
             ConstellationNodeObservation observation = Observe(
@@ -211,6 +252,15 @@ namespace InventoryKamera.Tests
         public void CaptureRegionsMatchLive1920By1080Measurements()
         {
             Assert.Equal(
+                new Rectangle(320, 70, 96, 96),
+                ConstellationCaptureRegions.LockStatusIcon(new Size(1920, 1080)));
+            Assert.Equal(
+                new Rectangle(213, 46, 64, 64),
+                ConstellationCaptureRegions.LockStatusIcon(new Size(1280, 720)));
+            Assert.Equal(
+                new Rectangle(426, 93, 128, 128),
+                ConstellationCaptureRegions.LockStatusIcon(new Size(2560, 1440)));
+            Assert.Equal(
                 new Rectangle(302, 898, 128, 49),
                 ConstellationCaptureRegions.Activated(new Size(1920, 1080)));
             Assert.Equal(
@@ -219,6 +269,92 @@ namespace InventoryKamera.Tests
             Assert.Equal(
                 new Rectangle(86, 367, 547, 216),
                 ConstellationCaptureRegions.LockedDescription(new Size(1920, 1080)));
+        }
+
+        [Theory]
+        [MemberData(nameof(ActivatedStatusFixtures))]
+        public void ActivatedStatusFixturesStayBelowLockThreshold(string fixtureName)
+        {
+            ConstellationLockIconDetection detection = DetectFixture(fixtureName);
+
+            Assert.False(detection.Accepted);
+            Assert.True(
+                detection.Score <= 0.525,
+                $"{fixtureName} lock score {detection.Score:0.000} lost the benchmark margin.");
+        }
+
+        [Theory]
+        [MemberData(nameof(LockedStatusFixtures))]
+        public void LockedStatusFixturesExceedLockThresholdWithMargin(string fixtureName)
+        {
+            ConstellationLockIconDetection detection = DetectFixture(fixtureName);
+
+            Assert.True(detection.Accepted);
+            Assert.True(
+                detection.Score >= 0.990,
+                $"{fixtureName} lock score {detection.Score:0.000} lost the benchmark margin.");
+        }
+
+        [Theory]
+        [MemberData(nameof(AllStatusFixtures))]
+        public void StatusFixturesKeepClassificationWhenScaledTo720p(
+            string fixtureName,
+            bool expectedLocked)
+        {
+            ConstellationLockIconDetection detection = DetectFixture(
+                fixtureName,
+                new Size(64, 64));
+
+            Assert.Equal(expectedLocked, detection.Accepted);
+        }
+
+        [Theory]
+        [InlineData("constellation_status_locked_01.png", 1)]
+        [InlineData("constellation_status_locked_02.png", 1)]
+        [InlineData("constellation_status_locked_03.png", 2)]
+        [InlineData("constellation_status_locked_04.png", 1)]
+        [InlineData("constellation_status_locked_05.png", 1)]
+        [InlineData("constellation_status_locked_06.png", 1)]
+        [InlineData("constellation_status_locked_07.png", 1)]
+        [InlineData("constellation_status_locked_08.png", 1)]
+        [InlineData("constellation_status_locked_09.png", 1)]
+        [InlineData("constellation_status_locked_10.png", 1)]
+        [InlineData("constellation_status_locked_11.png", 6)]
+        [InlineData("constellation_status_locked_12.png", 6)]
+        [InlineData("constellation_status_locked_13.png", 4)]
+        [InlineData("constellation_status_locked_14.png", 6)]
+        public void KnownFailureNodesResolveLockedFromPositiveIconEvidence(
+            string fixtureName,
+            int node)
+        {
+            ConstellationLockIconDetection detection = DetectFixture(fixtureName);
+            ConstellationNodeObservation observation = ConstellationNodeStateResolver.Resolve(
+                new[] { new ConstellationOcrRead("fixture", string.Empty) },
+                new ConstellationOcrRead("locked_description", string.Empty),
+                detection);
+
+            Assert.InRange(node, 1, 6);
+            Assert.Equal(ConstellationNodeState.Locked, observation.State);
+        }
+
+        [Fact]
+        public void EmbeddedProductionTemplateClassifiesLockedFixture()
+        {
+            string path = Path.Combine(
+                AppContext.BaseDirectory,
+                "Fixtures",
+                "Constellation",
+                "constellation_status_locked_03.png");
+            using var fixture = new Bitmap(path);
+            ConstellationLockIconDetector detector = ConstellationLockIconDetector.CreateDefault();
+            ConstellationLockIconDetection detection = detector.Detect(
+                fixture,
+                new Rectangle(320, 70, 96, 96),
+                out Bitmap processed);
+            processed.Dispose();
+
+            Assert.True(detection.Accepted);
+            Assert.True(detection.Score >= 0.990);
         }
 
         [Theory]
@@ -560,14 +696,56 @@ namespace InventoryKamera.Tests
         private static ConstellationNodeObservation Observe(
             IReadOnlyList<(string Source, string Text, float Confidence)> activated,
             string lockedText,
-            float lockedConfidence = 0f)
+            float lockedConfidence = 0f,
+            bool lockIconEvidence = false)
         {
             IReadOnlyList<ConstellationOcrRead> activatedReads = activated
                 .Select(read => new ConstellationOcrRead(read.Source, read.Text, read.Confidence))
                 .ToList();
             return ConstellationNodeStateResolver.Resolve(
                 activatedReads,
-                new ConstellationOcrRead("locked_description", lockedText, lockedConfidence));
+                new ConstellationOcrRead("locked_description", lockedText, lockedConfidence),
+                new ConstellationLockIconDetection(
+                    lockIconEvidence ? 1.0 : 0.0,
+                    ConstellationLockIconDetector.AcceptanceThreshold,
+                    Rectangle.Empty));
+        }
+
+        public static IEnumerable<object[]> ActivatedStatusFixtures() =>
+            Enumerable.Range(1, 5)
+                .Select(index => new object[] { $"constellation_status_activated_{index:00}.png" });
+
+        public static IEnumerable<object[]> LockedStatusFixtures() =>
+            Enumerable.Range(1, 19)
+                .Select(index => new object[] { $"constellation_status_locked_{index:00}.png" });
+
+        public static IEnumerable<object[]> AllStatusFixtures() =>
+            ActivatedStatusFixtures()
+                .Select(values => new object[] { values[0], false })
+                .Concat(LockedStatusFixtures().Select(values => new object[] { values[0], true }));
+
+        private static ConstellationLockIconDetection DetectFixture(
+            string fixtureName,
+            Size? scaledSize = null)
+        {
+            string directory = Path.Combine(
+                AppContext.BaseDirectory,
+                "Fixtures",
+                "Constellation");
+            using var template = new Bitmap(Path.Combine(
+                directory,
+                "constellation_status_locked_02.png"));
+            using var fixture = new Bitmap(Path.Combine(directory, fixtureName));
+            var detector = new ConstellationLockIconDetector(template);
+            using Bitmap scaled = scaledSize.HasValue
+                ? new Bitmap(fixture, scaledSize.Value)
+                : null;
+            ConstellationLockIconDetection detection = detector.Detect(
+                scaled ?? fixture,
+                new Rectangle(320, 70, 96, 96),
+                out Bitmap processed);
+            processed.Dispose();
+            return detection;
         }
 
         private static IReadOnlyList<ConstellationNodeState> ForwardStates(int constellation)

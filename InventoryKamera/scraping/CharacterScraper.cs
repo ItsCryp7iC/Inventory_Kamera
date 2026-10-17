@@ -24,6 +24,7 @@ namespace InventoryKamera
 		private readonly ScanSession scanSession;
 		private readonly GameDataSnapshot gameData;
 		private readonly FailureDiagnosticStore diagnosticStore;
+		private readonly ConstellationLockIconDetector lockIconDetector;
 
         public CharacterScraper(
 			IOcrService ocrService,
@@ -41,6 +42,7 @@ namespace InventoryKamera
 			this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			this.diagnosticStore = diagnosticStore ?? FailureDiagnosticStore.CreateDefault();
+			lockIconDetector = ConstellationLockIconDetector.CreateDefault();
 			NumOfCharToScan = scanSettings.NumOfCharToScan;
 		}
 
@@ -1246,20 +1248,16 @@ namespace InventoryKamera
 		}
 
 		/// <summary>
-		/// Reads the level/ascension region on the Attributes sub-tab. 16:9 region measured
-		/// (2026-07-05), 16:10 Y position measured (2026-07-13, 1680x1050), both with
-		/// <c>ui/CoordinatePickerForm.cs</c>. Expressed as position + size: the crop's x/width/height are
-		/// shared across aspect ratios, so only the y position branches -- the window is letterboxed
-		/// vertically, but the horizontal axis and the box's dimensions don't change.
+		/// Reads the level/ascension region on the Attributes sub-tab. The fixed right boundary excludes
+		/// the neighboring EXP counter while retaining the complete level/max-level pair. The 16:9 region
+		/// and 16:10 Y position (1680x1050) use the shared normalized geometry helper; only the vertical
+		/// position branches because the 16:10 layout is letterboxed vertically.
 		/// </summary>
 		private int ScanLevel(CharacterNavigationTiming timing, string characterName, ref bool ascended)
 		{
-			// Shared x/width/height; only the y position shifts by aspect ratio (see doc comment).
-			Rectangle region = new Rectangle(
-				x:      (int)( 0.7626 * Navigation.GetWidth() ),
-				y:      (int)( (Navigation.IsNormal ? 0.1895 : 0.1695) * Navigation.GetHeight() ),   // 16:9 : 16:10
-				width:  (int)( 0.1209 * Navigation.GetWidth() ),
-				height: (int)( 0.0352 * Navigation.GetHeight() ));
+			Rectangle region = CharacterLevelCaptureRegions.Level(
+				new Size(Navigation.GetWidth(), Navigation.GetHeight()),
+				Navigation.IsNormal);
 
 			const int maxAttempts = 20; // reduced from 50 per user (2026-07-05), matching ScanNameAndElement's cap
 			Bitmap currentBitmap = null;
@@ -1291,13 +1289,13 @@ namespace InventoryKamera
 					(attempt, rejected) =>
 					{
 						Logger.Debug(
-							"Rejected character level attempt {0}/{1}: raw=\"{2}\"; filtered=\"{3}\"; level={4}; maxLevel={5}; reason={6}",
+							"Rejected character level attempt {0}/{1}: raw=\"{2}\"; extractedPairs=[{3}]; plausiblePairs=[{4}]; selected={5}; rejectionReason={6}",
 							attempt,
 							maxAttempts,
 							rejected.RawText,
-							rejected.FilteredText,
-							rejected.Level?.ToString() ?? "(unparsed)",
-							rejected.MaxLevel?.ToString() ?? "(unparsed)",
+							string.Join(", ", rejected.ExtractedPairs),
+							string.Join(", ", rejected.PlausiblePairs),
+							rejected.SelectedPair ?? "(none)",
 							rejected.RejectionReason);
 
 						rejectedCaptures.Add((Bitmap)currentBitmap.Clone());
@@ -1320,9 +1318,11 @@ namespace InventoryKamera
 				scanSession.CancellationToken.ThrowIfCancellationRequested();
 				progressReporter.SetCharacter_Level(currentBitmap, result.Level.Value, result.MaxLevel.Value);
 				Logger.Debug(
-					"Accepted character level: raw=\"{0}\"; filtered=\"{1}\"; level={2}; maxLevel={3}; ascended={4}",
+					"Accepted character level: raw=\"{0}\"; extractedPairs=[{1}]; plausiblePairs=[{2}]; selected={3}; level={4}; maxLevel={5}; ascended={6}",
 					result.RawText,
-					result.FilteredText,
+					string.Join(", ", result.ExtractedPairs),
+					string.Join(", ", result.PlausiblePairs),
+					result.SelectedPair,
 					result.Level.Value,
 					result.MaxLevel.Value,
 					result.Ascended);
@@ -1371,9 +1371,10 @@ namespace InventoryKamera
 		/// constellation already focused), then a single left-stick Down step advances focus to the
 		/// next constellation -- the same fixed on-screen region always shows whichever constellation
 		/// is currently focused, so there is no per-node capture-region math like the mouse path
-		/// needed. Unlock state is read through separate OCR evidence regions for the literal word
-		/// "Activated" and the locked-panel phrase "Activate required", rather than the mouse path's
-		/// white-background color sample. Exits via cancel (A) once done, once a locked
+		/// needed. Unlock state uses exact "Activated" OCR as positive activation evidence and the
+		/// fixed upper-left padlock icon, with exact "Activate required" OCR as secondary positive lock
+		/// evidence, rather than the mouse path's white-background color sample. Exits via cancel (A)
+		/// once done, once a locked
 		/// constellation is found, or once a node remains unresolved after bounded retries. Region
 		/// measured (2026-07-05) with <c>ui/CoordinatePickerForm.cs</c>.
 		/// </summary>
@@ -1476,9 +1477,10 @@ namespace InventoryKamera
 		/// see <see cref="ScanConstellations"/>'s doc comment history for why. Each fresh full-window
 		/// frame supplies both evidence regions. The compact Activated region is OCRed through a small
 		/// fixed set of local preprocessing variants, including a gold-text mask that rejects the
-		/// white/cyan constellation animation; the broader left-description region is accepted
-		/// as Locked only when it contains the exact normalized phrase "activate required". Any absent,
-		/// unrelated, or conflicting evidence remains unresolved. Shared by
+		/// white/cyan constellation animation. Locked is positive when either the fixed upper-left
+		/// padlock matches its deterministic template or the broader left-description region contains
+		/// the exact normalized phrase "activate required". Any absent, unrelated, or conflicting
+		/// evidence remains unresolved. Shared by
 		/// <see cref="ScanConstellations"/> and <see cref="ScanConstellationsGreedy"/>.
 		/// </summary>
 		private bool ReadConstellationNode(
@@ -1500,6 +1502,8 @@ namespace InventoryKamera
 					currentAttempt = attempt;
 					Bitmap full = Navigation.CaptureWindow();
 					Bitmap rawActivated = null;
+					Bitmap rawLockIcon = null;
+					Bitmap processedLockIcon = null;
 					Bitmap rawLocked = null;
 					Bitmap processedLocked = null;
 					List<ConstellationActivatedDiagnosticVariant> activatedVariants =
@@ -1508,9 +1512,15 @@ namespace InventoryKamera
 					{
 						scanSession.CancellationToken.ThrowIfCancellationRequested();
 						Rectangle activatedRegion = ConstellationCaptureRegions.ActivatedText(full.Size);
+						Rectangle lockIconRegion = ConstellationCaptureRegions.LockStatusIcon(full.Size);
 						Rectangle lockedRegion = ConstellationCaptureRegions.LockedDescription(full.Size);
 						rawActivated = full.Clone(activatedRegion, full.PixelFormat);
+						rawLockIcon = full.Clone(lockIconRegion, full.PixelFormat);
 						rawLocked = full.Clone(lockedRegion, full.PixelFormat);
+						ConstellationLockIconDetection lockIcon = lockIconDetector.Detect(
+							rawLockIcon,
+							lockIconRegion,
+							out processedLockIcon);
 
 						AddActivatedVariant(
 							activatedVariants,
@@ -1547,7 +1557,8 @@ namespace InventoryKamera
 							lockedConfidence);
 						ConstellationNodeObservation observation = ConstellationNodeStateResolver.Resolve(
 							activatedVariants.Select(variant => variant.Read).ToList(),
-							lockedRead);
+							lockedRead,
+							lockIcon);
 
 						diagnosticFrames.Add(new ConstellationNodeDiagnosticFrame(
 							node,
@@ -1555,11 +1566,15 @@ namespace InventoryKamera
 							full,
 							rawActivated,
 							activatedVariants,
+							rawLockIcon,
+							processedLockIcon,
 							rawLocked,
 							processedLocked));
 						full = null;
 						rawActivated = null;
 						activatedVariants = null;
+						rawLockIcon = null;
+						processedLockIcon = null;
 						rawLocked = null;
 						processedLocked = null;
 						return observation;
@@ -1573,25 +1588,36 @@ namespace InventoryKamera
 							foreach (ConstellationActivatedDiagnosticVariant variant in activatedVariants)
 								variant.Dispose();
 						}
+						rawLockIcon?.Dispose();
+						processedLockIcon?.Dispose();
 						rawLocked?.Dispose();
 						processedLocked?.Dispose();
 					}
 				},
 				(attempt, observation) => Logger.Debug(
-					"Constellation OCR: character={0}; node={1}; attempt={2}/{3}; " +
-					"activatedVariants=[{4}]; lockedRaw=\"{5}\"; lockedNormalized=\"{6}\"; " +
-					"lockedConfidence={7:0.0}%; activatedEvidence={8}; lockedEvidence={9}; " +
-					"state={10}; reason={11}",
+					"Constellation classification: character={0}; node={1}; attempt={2}/{3}; " +
+					"activatedTextReads=[{4}]; " +
+					"lockIcon:region={5},score={6:0.000},threshold={7:0.000},accepted={8}; " +
+					"lockedDescription:region={9},raw=\"{10}\",normalized=\"{11}\",confidence={12:0.0}%,accepted={13}; " +
+					"final:activatedEvidence={14},lockEvidence={15},lockedTextEvidence={16},state={17},reason={18}",
 					character.NameGOOD,
 					node,
 					attempt,
 					ConstellationNodeRetry.MaximumAttempts,
 					FormatActivatedReads(observation.ActivatedReads),
+					FormatRegion(observation.LockIcon.Region),
+					observation.LockIcon.Score,
+					observation.LockIcon.Threshold,
+					observation.LockIcon.Accepted,
+					FormatRegion(ConstellationCaptureRegions.LockedDescription(
+						new Size(Navigation.GetWidth(), Navigation.GetHeight()))),
 					ForDiagnosticLog(observation.LockedRead.RawText),
 					observation.LockedRead.NormalizedText,
 					observation.LockedRead.Confidence * 100f,
+					observation.LockedTextEvidence,
 					observation.ActivatedEvidence,
-					observation.LockedEvidence,
+					observation.LockIconEvidence,
+					observation.LockedTextEvidence,
 					observation.State,
 					observation.Reason),
 				() => CharacterCancellation.Wait(scanSession.CancellationToken, timing.Scale(200)),
@@ -1677,6 +1703,9 @@ namespace InventoryKamera
 					read.NormalizedText,
 					read.Confidence * 100f)));
 		}
+
+		private static string FormatRegion(Rectangle region) =>
+			$"x={region.X},y={region.Y},width={region.Width},height={region.Height}";
 
 		/// <summary>
 		/// Greedy variant of <see cref="ScanConstellations"/>: instead of walking C1 to
@@ -1802,6 +1831,8 @@ namespace InventoryKamera
 							prefix + "_activated_" + variant.Read.Source + ".png",
 							variant.Processed);
 					}
+					failure.SaveBitmap(prefix + "_lock_icon_raw.png", frame.RawLockIcon);
+					failure.SaveBitmap(prefix + "_lock_icon_processed.png", frame.ProcessedLockIcon);
 					failure.SaveBitmap(prefix + "_locked_raw.png", frame.RawLocked);
 					failure.SaveBitmap(prefix + "_locked_processed.png", frame.ProcessedLocked);
 				}
@@ -1826,6 +1857,8 @@ namespace InventoryKamera
 				Bitmap full,
 				Bitmap rawActivated,
 				IReadOnlyList<ConstellationActivatedDiagnosticVariant> activatedVariants,
+				Bitmap rawLockIcon,
+				Bitmap processedLockIcon,
 				Bitmap rawLocked,
 				Bitmap processedLocked)
 			{
@@ -1835,6 +1868,9 @@ namespace InventoryKamera
 				RawActivated = rawActivated ?? throw new ArgumentNullException(nameof(rawActivated));
 				ActivatedVariants = activatedVariants ??
 					throw new ArgumentNullException(nameof(activatedVariants));
+				RawLockIcon = rawLockIcon ?? throw new ArgumentNullException(nameof(rawLockIcon));
+				ProcessedLockIcon = processedLockIcon ??
+					throw new ArgumentNullException(nameof(processedLockIcon));
 				RawLocked = rawLocked ?? throw new ArgumentNullException(nameof(rawLocked));
 				ProcessedLocked = processedLocked ?? throw new ArgumentNullException(nameof(processedLocked));
 			}
@@ -1844,6 +1880,8 @@ namespace InventoryKamera
 			internal Bitmap Full { get; }
 			internal Bitmap RawActivated { get; }
 			internal IReadOnlyList<ConstellationActivatedDiagnosticVariant> ActivatedVariants { get; }
+			internal Bitmap RawLockIcon { get; }
+			internal Bitmap ProcessedLockIcon { get; }
 			internal Bitmap RawLocked { get; }
 			internal Bitmap ProcessedLocked { get; }
 
@@ -1853,6 +1891,8 @@ namespace InventoryKamera
 				RawActivated.Dispose();
 				foreach (ConstellationActivatedDiagnosticVariant variant in ActivatedVariants)
 					variant.Dispose();
+				RawLockIcon.Dispose();
+				ProcessedLockIcon.Dispose();
 				RawLocked.Dispose();
 				ProcessedLocked.Dispose();
 			}
