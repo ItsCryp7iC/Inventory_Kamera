@@ -4,12 +4,20 @@ using Newtonsoft.Json;
 
 namespace InventoryKamera
 {
+    internal enum CharacterScanPhaseStatus
+    {
+        NotAttempted,
+        Succeeded,
+        Failed,
+    }
+
     [Serializable]
     public class Character
     {
         private string _nameKey;
         private string _element;
         private WeaponType _weaponType;
+        private GameDataSnapshot gameData;
 
         [JsonProperty("key")]
         public string NameGOOD
@@ -23,6 +31,15 @@ namespace InventoryKamera
                 _nameKey = value;
             }
         }
+
+        [JsonIgnore]
+        internal string CanonicalName => _nameKey;
+
+        [JsonIgnore]
+        internal CharacterScanPhaseStatus ConstellationScanStatus { get; private set; }
+
+        [JsonIgnore]
+        internal CharacterScanPhaseStatus TalentScanStatus { get; private set; }
 
         [JsonProperty("level")]
         public int Level { get; internal set; }
@@ -53,9 +70,11 @@ namespace InventoryKamera
         public Dictionary<string, Artifact> Artifacts { get; internal set; }
 
         [JsonIgnore]
+        public bool HasGameData => gameData != null;
+
+        [JsonIgnore]
         public WeaponType WeaponType { 
-            
-            get => GenshinProcesor.Characters[_nameKey.ToLower()]["WeaponType"].ToObject<WeaponType>();
+            get => RequireGameData().Characters[_nameKey.ToLower()]["WeaponType"].ToObject<WeaponType>();
             
             internal set { WeaponType = value; } 
         }
@@ -69,6 +88,11 @@ namespace InventoryKamera
                 ["burst"] = 0
             };
             Artifacts = new Dictionary<string, Artifact>();
+        }
+
+        public Character(GameDataSnapshot gameData) : this()
+        {
+            AttachGameData(gameData);
         }
 
         public Character(string _name, string _element, int _level, bool _ascension, int _experience, int _constellation, int[] _talents) : this()
@@ -95,7 +119,8 @@ namespace InventoryKamera
 
         public bool HasValidName()
         {
-            return !string.IsNullOrWhiteSpace(NameGOOD) && GenshinProcesor.IsValidCharacter(NameGOOD);
+            return !string.IsNullOrWhiteSpace(NameGOOD) &&
+                LookupService.IsValidCharacter(NameGOOD, RequireGameData());
         }
 
         public bool HasValidLevel()
@@ -105,7 +130,8 @@ namespace InventoryKamera
 
         public bool HasValidElement()
         {
-            return !string.IsNullOrWhiteSpace(Element) && GenshinProcesor.IsValidElement(Element);
+            return !string.IsNullOrWhiteSpace(Element) &&
+                LookupService.IsValidElement(Element, RequireGameData());
         }
 
         public bool HasValidConstellation()
@@ -122,10 +148,78 @@ namespace InventoryKamera
             return true;
         }
 
+        internal void MarkConstellationScanSucceeded()
+        {
+            if (!HasValidConstellation())
+                throw new InvalidOperationException("A successful constellation scan must contain a value from 0 through 6.");
+            ConstellationScanStatus = CharacterScanPhaseStatus.Succeeded;
+        }
+
+        internal void MarkConstellationScanFailed() =>
+            ConstellationScanStatus = CharacterScanPhaseStatus.Failed;
+
+        internal void MarkTalentScanSucceeded()
+        {
+            if (!HasValidTalents())
+                throw new InvalidOperationException("A successful talent scan must contain three talent levels from 1 through 15.");
+            TalentScanStatus = CharacterScanPhaseStatus.Succeeded;
+        }
+
+        internal void MarkTalentScanFailed() =>
+            TalentScanStatus = CharacterScanPhaseStatus.Failed;
+
+        internal bool IsExportableToGood(out string reason)
+        {
+            if (ConstellationScanStatus != CharacterScanPhaseStatus.Succeeded)
+            {
+                reason = $"constellation scan status is {ConstellationScanStatus}";
+                return false;
+            }
+
+            if (TalentScanStatus != CharacterScanPhaseStatus.Succeeded)
+            {
+                reason = $"talent scan status is {TalentScanStatus}";
+                return false;
+            }
+
+            try
+            {
+                if (!IsValid())
+                {
+                    reason = "character model validation failed";
+                    return false;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                reason = $"character model validation could not run: {ex.Message}";
+                return false;
+            }
+
+            reason = null;
+            return true;
+        }
+
         public void AssignWeapon(Weapon newWeapon)
         {
             Weapon = newWeapon;
         }
+
+        /// <summary>
+        /// Explicitly binds lookup data after parameterless construction or deserialization.
+        /// A model cannot be rebound to a different snapshot after lookup data is attached.
+        /// </summary>
+        public void AttachGameData(GameDataSnapshot data)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (gameData != null && !ReferenceEquals(gameData, data))
+                throw new InvalidOperationException("Character game data is already attached.");
+            gameData = data;
+        }
+
+        private GameDataSnapshot RequireGameData() => gameData ??
+            throw new InvalidOperationException(
+                "Character lookup data is not attached. Call AttachGameData before using lookup-dependent properties or validation.");
 
         public void AssignArtifact(Artifact artifact)
         {

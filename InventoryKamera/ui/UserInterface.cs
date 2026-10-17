@@ -9,11 +9,6 @@ namespace InventoryKamera
 	{
 		private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
-		// Artifacts and Weapons
-		private static PictureBox gear_PictureBox;
-
-		private static TextBox gear_TextBox;
-
 		// Character
 		private static PictureBox cName_PictureBox;
 
@@ -21,52 +16,13 @@ namespace InventoryKamera
 		private static PictureBox[] cTalent_PictureBoxes = new PictureBox[3];
 		private static TextBox character_TextBox;
 
-		// Counters
-		private static Label weaponCount_Label;
-
-		private static Label weaponMax_Label;
-
-		private static Label artifactCount_Label;
-		private static Label artifactMax_Label;
-
-		private static Label characterCount_Label;
-
-		// Status
-		private static Label programStatus_Label;
-
-		// Error box
-		private static TextBox error_TextBox;
-
-		// Current Images
-		private static PictureBox navigation_PictureBox;
-
-		public static void Init(PictureBox _gear_PictureBox, TextBox _a_textbox, PictureBox _c_name, PictureBox _c_level, PictureBox[] _c_talent, TextBox _c_textbox, Label _weaponCount, Label _weaponMax, Label _artifactCount, Label _artifactMax, Label _characterCount, Label _programStatus, TextBox _error_textBox, PictureBox _navigation_Image)
+		public static void Init(PictureBox _c_name, PictureBox _c_level, PictureBox[] _c_talent, TextBox _c_textbox)
 		{
-			// Artifacts and Weapons
-			gear_PictureBox = _gear_PictureBox;
-			gear_TextBox = _a_textbox;
-
 			// Characters
 			cName_PictureBox = _c_name;
 			cLevel_PictureBox = _c_level;
 			cTalent_PictureBoxes = _c_talent;
 			character_TextBox = _c_textbox;
-
-			// Counters
-			weaponCount_Label = _weaponCount;
-			weaponMax_Label = _weaponMax;
-			artifactCount_Label = _artifactCount;
-			artifactMax_Label = _artifactMax;
-			characterCount_Label = _characterCount;
-
-			// Status
-			programStatus_Label = _programStatus;
-
-			// Error
-			error_TextBox = _error_textBox;
-
-			// Navigation Image
-			navigation_PictureBox = _navigation_Image;
 		}
 
 		private static void UpdateElements(Bitmap bm, string text, PictureBox pictureBox, TextBox textBox)
@@ -93,7 +49,7 @@ namespace InventoryKamera
 			}
 			catch (Exception e)
 			{
-				Logger.Debug($"Problem updating picturebox {0}\n{1}", pictureBox.Name, e);
+				Logger.Debug(e, "Problem updating picturebox {0}", pictureBox.Name);
 			}
 		}
 
@@ -111,7 +67,7 @@ namespace InventoryKamera
 			}
 			catch (Exception e)
 			{
-				Logger.Debug($"Problem updating picturebox {0}\n{1}", textBox.Name, e);
+				Logger.Debug(e, "Problem updating textbox {0}", textBox.Name);
 			}
 		}
 
@@ -128,33 +84,9 @@ namespace InventoryKamera
 			}
 			catch (Exception e)
 			{
-				Logger.Debug($"Problem updating picturebox {0}\n{1}", label.Name, e);
+				Logger.Debug(e, "Problem updating label {0}", label.Name);
 
 			}
-		}
-
-		public static void SetGear(Bitmap bm, Weapon weapon)
-		{
-			ResetGearDisplay();
-			SetGearPictureBox(bm);
-			SetGearTextBox(weapon.ToString());
-		}
-
-		public static void SetGear(Bitmap bm, Artifact artifact)
-		{
-			ResetGearDisplay();
-			SetGearPictureBox(bm);
-			SetGearTextBox(artifact.ToString());
-		}
-
-		public static void SetGearPictureBox(Bitmap bm)
-		{
-			UpdatePictureBox(bm, gear_PictureBox);
-		}
-
-		public static void SetGearTextBox(string text)
-		{
-			UpdateTextBox(text, gear_TextBox);
 		}
 
 		internal static void SetMainCharacterName(string text)
@@ -177,145 +109,47 @@ namespace InventoryKamera
 			UpdateTextBox($"Constellation: {level}", character_TextBox);
 		}
 
-		internal static void SetMaterial(Bitmap nameplate, Bitmap quantity, string name, int count)
+		public static void SetCharacter_Constellation(Bitmap bm, int level)
 		{
-			UpdateElements(nameplate, $"Name: {name}", cName_PictureBox, character_TextBox);
-			UpdateElements(quantity, $"Count: {count}", cLevel_PictureBox, character_TextBox);
+			if (bm == null)
+			{
+				SetCharacter_Constellation(level);
+				return;
+			}
+			// Reuse the character-level PictureBox to show the activated-constellation capture:
+			// constellations are scanned in a later phase than level, so the two never contend for it.
+			UpdateElements(bm, $"Constellation: {level}", cLevel_PictureBox, character_TextBox);
 		}
-
-		public static void SetMora(Bitmap mora, int count)
-		{
-			UpdateElements(mora, $"Mora: {count}", navigation_PictureBox, character_TextBox);
-		}
-
 
 		public static void SetCharacter_Talent(Bitmap bm, string text, int i)
 		{
-			if (i > -1 && i < 3)
-			{
+			if (i < 0 || i > 2) return;
+
+			// Only update a talent PictureBox if one exists for this slot: the UI can have fewer
+			// talent PictureBoxes than the 3 talents (auto/skill/burst) that always get scanned.
+			// The talent level still goes to the text box regardless of how many boxes there are.
+			if (i < cTalent_PictureBoxes.Length)
 				UpdatePictureBox(bm, cTalent_PictureBoxes[i]);
-				UpdateTextBox($"Talent {i + 1}: {text}", character_TextBox);
-			}
-		}
 
-		public static void SetWeapon_Max(int value)
-		{
-			UpdateLabel(value.ToString(), weaponMax_Label);
-			Logger.Info("Parsed {value} weapons to scan", value);
-		}
-
-		public static void SetArtifact_Max(int value)
-		{
-			UpdateLabel(value.ToString(), artifactMax_Label);
-			Logger.Info("Parsed {value} artifacts to scan", value);
-		}
-
-		public static void IncrementArtifactCount()
-		{
-			lock (artifactCount_Label)
-			{
-				UpdateLabel($"{Int32.Parse(artifactCount_Label.Text) + 1}", artifactCount_Label);
-			}
-		}
-
-		public static void IncrementWeaponCount()
-		{
-			lock (weaponCount_Label)
-			{
-				UpdateLabel($"{Int32.Parse(weaponCount_Label.Text) + 1}", weaponCount_Label);
-			}
-		}
-
-		public static void IncrementCharacterCount()
-		{
-			lock (characterCount_Label)
-			{
-				UpdateLabel($"{Int32.Parse(characterCount_Label.Text) + 1}", characterCount_Label);
-			}
-		}
-
-		public static void SetProgramStatus(string status, bool ok = true)
-		{
-			MethodInvoker statusAction = delegate
-			{
-				programStatus_Label.Text = status;
-				programStatus_Label.ForeColor = ok ? Color.Green : Color.Red;
-				programStatus_Label.Font = new Font(programStatus_Label.Font.FontFamily, 15);
-				programStatus_Label.Refresh();
-			};
-
-			programStatus_Label.Invoke(statusAction);
-		}
-
-		public static void AddError(string error)
-		{
-			UpdateTextBox($"{error.Replace("\n", Environment.NewLine)}" + Environment.NewLine, error_TextBox);
-			Logger.Error(error);
-		}
-
-		public static void SetNavigation_Image(Bitmap bm)
-		{
-			UpdatePictureBox(bm, navigation_PictureBox);
+			UpdateTextBox($"Talent {i + 1}: {text}", character_TextBox);
 		}
 
 		public static void ResetCharacterDisplay()
 		{
 			MethodInvoker nameAction = delegate { cName_PictureBox.Image = null; };
 			MethodInvoker levelAction = delegate { cLevel_PictureBox.Image = null; };
-			MethodInvoker talentAction_1 = delegate { cTalent_PictureBoxes[0].Image = null; };
-			MethodInvoker talentAction_2 = delegate { cTalent_PictureBoxes[1].Image = null; };
-			MethodInvoker talentAction_3 = delegate { cTalent_PictureBoxes[2].Image = null; };
 			MethodInvoker textAction = delegate { character_TextBox.Clear(); };
 
 			cName_PictureBox.Invoke(nameAction);
 			cLevel_PictureBox.Invoke(levelAction);
-			cTalent_PictureBoxes[0].Invoke(talentAction_1);
-			cTalent_PictureBoxes[1].Invoke(talentAction_2);
-			cTalent_PictureBoxes[2].Invoke(talentAction_3);
+			// Clear however many talent PictureBoxes the UI actually has (may be fewer than 3).
+			foreach (var talentPictureBox in cTalent_PictureBoxes)
+			{
+				var pb = talentPictureBox;
+				pb.Invoke((MethodInvoker)delegate { pb.Image = null; });
+			}
 			character_TextBox.Invoke(textAction);
 		}
 
-		public static void ResetGearDisplay()
-		{
-			MethodInvoker gearAction = delegate { gear_PictureBox.Image = null; };
-
-			MethodInvoker textAction = delegate { gear_TextBox.Clear(); };
-
-			gear_PictureBox.Invoke(gearAction);
-			gear_TextBox.Invoke(textAction);
-		}
-
-		public static void ResetCounters()
-		{
-			MethodInvoker characterCountAction = delegate { characterCount_Label.Text = "0"; weaponMax_Label.Refresh(); };
-			MethodInvoker weaponCountAction = delegate { weaponCount_Label.Text = "0"; weaponMax_Label.Refresh(); };
-			MethodInvoker weaponMaxAction = delegate { weaponMax_Label.Text = "?"; weaponMax_Label.Refresh(); };
-			MethodInvoker artifactCountAction = delegate { artifactCount_Label.Text = "0"; artifactMax_Label.Refresh(); };
-			MethodInvoker artifactMaxAction = delegate { artifactMax_Label.Text = "?"; artifactMax_Label.Refresh(); };
-
-			characterCount_Label.Invoke(characterCountAction);
-			weaponCount_Label.Invoke(weaponCountAction);
-			weaponMax_Label.Invoke(weaponMaxAction);
-			artifactCount_Label.Invoke(artifactCountAction);
-			artifactMax_Label.Invoke(artifactMaxAction);
-		}
-
-		public static void ResetErrors()
-		{
-			MethodInvoker textAction = delegate { error_TextBox.Clear(); };
-
-			error_TextBox.Invoke(textAction);
-		}
-
-		public static void ResetAll()
-		{
-			ResetGearDisplay();
-
-			ResetCharacterDisplay();
-
-			ResetCounters();
-
-			ResetErrors();
-		}
 	}
 }

@@ -1,4 +1,5 @@
 ﻿using InventoryKamera.ui;
+using InventoryKamera.game;
 using Microsoft.WindowsAPICodePack.Dialogs;
 using Newtonsoft.Json;
 using NHotkey;
@@ -6,6 +7,7 @@ using NHotkey.WindowsForms;
 using Octokit;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -13,7 +15,6 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using WindowsInput.Native;
@@ -24,43 +25,304 @@ namespace InventoryKamera
     public partial class MainForm : Form
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
-        private static Thread scannerThread;
-        private static InventoryKamera data = new InventoryKamera();
-        private static DatabaseManager databaseManager = new DatabaseManager();
 
-        private int Delay;
-
-        private bool running = false;
+        // Owns the weapon/artifact/character counter state (first real slice of the MVVM redesign,
+        // Phase 2 §2.5) -- long-lived across scans (unlike the scanner, which is recreated per scan)
+        // so subscribers never need to re-subscribe. Constructed in the constructor (in dependency
+        // order rather than via field initializers,
+        // so the WinForms designer -- which instantiates this form to render it -- doesn't run
+        // DatabaseManager's constructor, which touches the filesystem and can trigger a blocking network
+        // data download that hangs/breaks the designer.
+        private ScanViewModel scanViewModel;
+        private GameScanner lastScanData;
+        private DatabaseManager databaseManager;
+        private GameDataSnapshotProvider gameDataProvider;
+        private readonly ScanRunOwner scanRunOwner = new ScanRunOwner();
+        private readonly IGenshinWindowController genshinWindowController =
+            new WindowsGenshinWindowController();
+        private readonly CorrectionDialogPositioner correctionDialogPositioner;
+        private readonly CorrectionDialogForegroundService correctionDialogForeground;
+        private ScanCompanionOverlay scanOverlay;
 
         public MainForm()
         {
             InitializeComponent();
 
+            correctionDialogPositioner = new CorrectionDialogPositioner(genshinWindowController);
+            correctionDialogForeground = new CorrectionDialogForegroundService();
+
+            // The WinForms designer instantiates this form in its designer process to render it. Bail
+            // out before any runtime-only wiring -- above all the scanViewModel/data/databaseManager
+            // construction below: DatabaseManager's constructor creates folders, reads/writes files and,
+            // when the data files are absent (as in the designer's working directory), kicks off a
+            // blocking network download that hangs/breaks the designer. LicenseManager is the reliable
+            // design-time signal inside a constructor (this.DesignMode is still false this early).
+            if (LicenseManager.UsageMode == LicenseUsageMode.Designtime) return;
+
+            scanViewModel = new ScanViewModel();
+            databaseManager = new DatabaseManager();
+            var gameDataFactory = new GameDataSnapshotFactory(databaseManager);
+            gameDataProvider = new GameDataSnapshotProvider(gameDataFactory.Load);
+
+            BindSettings();
+
             Language_ComboBox.SelectedItem = "ENG";
 
-            var version = Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
+            var version = AppInfo.Version;
 #if DEBUG
-            version = Assembly.GetExecutingAssembly().GetName().Version.ToString(4);
+            version += $" ({Assembly.GetExecutingAssembly().GetName().Version})";
 #endif
             Logger.Info("Inventory Kamera version {0}", version);
 
             Text = $"Inventory Kamera V{version}";
 
             UserInterface.Init(
-                GearPictureBox,
-                ArtifactOutput_TextBox,
                 CharacterName_PictureBox,
                 CharacterLevel_PictureBox,
-                new[] { CharacterTalent1_PictureBox, CharacterTalent2_PictureBox, CharacterTalent3_PictureBox },
-                CharacterOutput_TextBox,
-                WeaponsScannedCount_Label,
-                WeaponsMax_Labell,
-                ArtifactsScanned_Label,
-                ArtifactsMax_Label,
-                CharactersScanned_Label,
-                ProgramStatus_Label,
-                ErrorLog_TextBox,
-                Navigation_Image);
+                new[] { CharacterTalent1_PictureBox },
+                CharacterOutput_TextBox);
+
+            scanViewModel.CountersChanged += OnCountersChanged;
+            scanViewModel.ProgramStatusChanged += OnProgramStatusChanged;
+            scanViewModel.ErrorAdded += OnErrorAdded;
+            scanViewModel.ErrorsReset += OnErrorsReset;
+            scanViewModel.GearChanged += OnGearChanged;
+            scanViewModel.MaterialChanged += OnMaterialChanged;
+            scanViewModel.MoraChanged += OnMoraChanged;
+            scanViewModel.NavigationImageChanged += OnNavigationImageChanged;
+            scanViewModel.CorrectionRequested += OnCorrectionRequested;
+            scanViewModel.CorrectionInteractionCompleted += OnCorrectionInteractionCompleted;
+
+            UiTheme.RoundCorners(StartScan_Button, 8);
+            UiTheme.RoundCorners(ManualExportButton, 6);
+            UiTheme.RoundCorners(button1, 6);
+            UiTheme.ApplyTheme(this);
+
+            // Phase 3 §6c's controller-navigation debug tools (MODERNIZATION_PLAN.md §6c) are not
+            // meant for end users. DebugMenuItem is defined in the designer but left out of the
+            // always-on menu bar; only Debug builds insert it (after the Options menu).
+#if DEBUG
+            menuStrip1.Items.Insert(2, DebugMenuItem);
+#endif
+        }
+
+        // Binds the settings-backed controls to Properties.Settings.Default in code rather than the
+        // WinForms designer. The designer rewrites these bindings to a throwaway `new Settings()`
+        // snapshot on every round-trip, silently disconnecting them from Settings.Default -- the
+        // instance ScanSettings/GameScanner actually read -- so e.g. unchecking a scan box stopped
+        // taking effect. Keeping the bindings here puts them out of the designer's reach. Adding a
+        // Binding also pulls each control's initial value from the saved setting.
+        private void BindSettings()
+        {
+            var settings = Properties.Settings.Default;
+
+            void Bind(Control control, string controlProperty, string settingName) =>
+                control.DataBindings.Add(new Binding(
+                    controlProperty, settings, settingName, true, DataSourceUpdateMode.OnPropertyChanged));
+
+            Bind(Weapons_CheckBox, "Checked", "ScanWeapons");
+            Bind(Artifacts_Checkbox, "Checked", "ScanArtifacts");
+            Bind(Characters_CheckBox, "Checked", "ScanCharacters");
+            Bind(Materials_CheckBox, "Checked", "ScanMaterials");
+            Bind(CharDevItems_CheckBox, "Checked", "ScanCharDevItems");
+
+            Bind(EquipWeaponsCheckBox, "Checked", "EquipWeapons");
+            Bind(EquipArtifactsCheckBox, "Checked", "EquipArtifacts");
+
+            Bind(NumOfCharToScanControl, "Value", "NumOfCharToScan");
+            Bind(SortByObtainedControl, "Value", "SortByObtained");
+            Bind(numericUpDown1, "Value", "MinimumArtifactLevel");
+            Bind(MinimumWeaponLevelControl, "Value", "MinimumWeaponLevel");
+            Bind(ArtifactRarityControl, "Value", "MinimumArtifactRarity");
+            Bind(WeaponRarityControl, "Value", "MinimumWeaponRarity");
+        }
+
+        // Renders scanViewModel's counter state into the labels MainForm owns directly -- the
+        // counterpart to UserInterface's Control.Invoke-based updates, but for the one control group
+        // that's been carved out into real observable state (Phase 2 §2.5, first slice).
+        private void OnCountersChanged()
+        {
+            System.Windows.Forms.MethodInvoker render = delegate
+            {
+                WeaponsScannedCount_Label.Text = scanViewModel.WeaponCount.ToString();
+                WeaponsMax_Labell.Text = scanViewModel.WeaponMax?.ToString() ?? "?";
+                ArtifactsScanned_Label.Text = scanViewModel.ArtifactCount.ToString();
+                ArtifactsMax_Label.Text = scanViewModel.ArtifactMax?.ToString() ?? "?";
+                CharactersScanned_Label.Text = scanViewModel.CharacterCount.ToString();
+                MaterialsScanned_Label.Text = scanViewModel.MaterialCount.ToString();
+                EstimatedTimeRemaining_Label.Text = "ETA: " + FormatEta(scanViewModel.EstimatedTimeRemaining);
+            };
+            WeaponsScannedCount_Label.Invoke(render);
+        }
+
+        private static string FormatEta(TimeSpan? eta)
+        {
+            if (!eta.HasValue) return "--";
+            if (eta.Value < TimeSpan.FromSeconds(1)) return "almost done";
+            return eta.Value.TotalHours >= 1
+                ? $"{(int)eta.Value.TotalHours}h {eta.Value.Minutes}m"
+                : eta.Value.TotalMinutes >= 1
+                    ? $"{(int)eta.Value.TotalMinutes}m {eta.Value.Seconds}s"
+                    : $"{eta.Value.Seconds}s";
+        }
+
+        private void OnProgramStatusChanged()
+        {
+            System.Windows.Forms.MethodInvoker render = delegate
+            {
+                ProgramStatus_Label.Text = scanViewModel.ProgramStatus;
+                ProgramStatus_Label.ForeColor = scanViewModel.ProgramStatusOk ? Color.Green : Color.Red;
+                ProgramStatus_Label.Font = new Font(ProgramStatus_Label.Font.FontFamily, 15);
+            };
+            ProgramStatus_Label.Invoke(render);
+        }
+
+        private void OnErrorAdded(string error)
+        {
+            System.Windows.Forms.MethodInvoker render = delegate
+            {
+                ErrorLog_TextBox.AppendText(error.Replace("\n", Environment.NewLine) + Environment.NewLine);
+            };
+            ErrorLog_TextBox.Invoke(render);
+        }
+
+        // Runs on ScanViewModel's correction task. Invoke() marshals the dialog to the UI thread and
+        // blocks that correction task until the user closes it. The scan thread waits separately for
+        // either this interaction or its ScanSession cancellation token, so cancellation need not
+        // force-close or silently answer the dialog. If the form is closing/disposed, ResolvedText
+        // stays null and ScanViewModel falls back to the original OCR text.
+        private void OnCorrectionRequested(OcrCorrectionEventArgs args)
+        {
+            try
+            {
+                CorrectionDialogLifecycle.Run(scanOverlay, () =>
+                {
+                    Invoke((System.Windows.Forms.MethodInvoker)delegate
+                    {
+                        using (var dialog = new ui.OcrCorrectionForm(
+                            args.Image,
+                            args.RecognizedText,
+                            args.ConfidencePercent,
+                            args.FieldLabel))
+                        {
+                            void PositionDialog()
+                            {
+                                if (!correctionDialogPositioner.TryPosition(dialog))
+                                    dialog.StartPosition = FormStartPosition.CenterParent;
+                            }
+
+                            EventHandler shown = (_, _) =>
+                            {
+                                PositionDialog();
+                                if (!correctionDialogForeground.RequestForeground(dialog))
+                                    Logger.Warn("Windows did not confirm the OCR correction foreground request.");
+                                dialog.FocusCorrectionInput();
+                            };
+                            DpiChangedEventHandler dpiChanged = (_, _) => PositionDialog();
+                            dialog.Shown += shown;
+                            dialog.DpiChanged += dpiChanged;
+                            try
+                            {
+                                PositionDialog();
+                                correctionDialogForeground.PrepareForShow(dialog);
+                                if (dialog.ShowDialog(this) == DialogResult.OK)
+                                    args.ResolvedText = dialog.CorrectedText;
+                            }
+                            finally
+                            {
+                                correctionDialogForeground.Release(dialog);
+                                dialog.Shown -= shown;
+                                dialog.DpiChanged -= dpiChanged;
+                            }
+                        }
+                    });
+                });
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
+        private void OnCorrectionInteractionCompleted()
+        {
+            // This callback runs before the correction task releases the scanner loop. Deferred
+            // post-scan corrections safely no-op after the controller backend has been released.
+            if (!scanRunOwner.TryResumeAfterInteractiveDialog(out string handoffFailure))
+                Logger.Warn("Post-correction controller handoff failed: {0}", handoffFailure);
+        }
+
+        private void OnErrorsReset()
+        {
+            System.Windows.Forms.MethodInvoker render = delegate { ErrorLog_TextBox.Clear(); };
+            ErrorLog_TextBox.Invoke(render);
+        }
+
+        private void OnGearChanged()
+        {
+            // CloneGearImage() (not the GearImage property) so this control owns an independent copy
+            // -- concurrent scan worker threads can dispose-and-replace scanViewModel's image at any
+            // time, and a shared reference here would risk the PictureBox painting a disposed Bitmap.
+            var image = scanViewModel.CloneGearImage();
+            System.Windows.Forms.MethodInvoker render = delegate
+            {
+                var previous = GearPictureBox.Image;
+                GearPictureBox.Image = image;
+                previous?.Dispose();
+                // ToString() separates each field with '\n', but a WinForms multiline TextBox only
+                // breaks lines on '\r\n' -- convert so name/level/refinement/etc. each land on their
+                // own line instead of running together (same fix the error log uses).
+                ArtifactOutput_TextBox.Text = scanViewModel.GearText?.Replace("\n", Environment.NewLine);
+            };
+            GearPictureBox.Invoke(render);
+        }
+
+        private void OnMaterialChanged()
+        {
+            // Same clone-not-reference reasoning as OnGearChanged -- material images are also written
+            // from scan logic, so this control needs its own independently-owned copy.
+            var nameplate = scanViewModel.CloneMaterialNameplateImage();
+            var quantity = scanViewModel.CloneMaterialQuantityImage();
+            System.Windows.Forms.MethodInvoker render = delegate
+            {
+                var previousName = CharacterName_PictureBox.Image;
+                CharacterName_PictureBox.Image = nameplate;
+                previousName?.Dispose();
+
+                var previousLevel = CharacterLevel_PictureBox.Image;
+                CharacterLevel_PictureBox.Image = quantity;
+                previousLevel?.Dispose();
+
+                CharacterOutput_TextBox.Text = scanViewModel.MaterialText;
+            };
+            CharacterName_PictureBox.Invoke(render);
+        }
+
+        private void OnMoraChanged()
+        {
+            var image = scanViewModel.CloneMoraImage();
+            System.Windows.Forms.MethodInvoker render = delegate
+            {
+                var previous = Navigation_Image.Image;
+                Navigation_Image.Image = image;
+                previous?.Dispose();
+
+                CharacterOutput_TextBox.Text = scanViewModel.MoraText;
+            };
+            Navigation_Image.Invoke(render);
+        }
+
+        private void OnNavigationImageChanged()
+        {
+            // Shares Navigation_Image with OnMoraChanged -- the original UserInterface.SetMora and
+            // SetNavigation_Image wrote into the same navigation_PictureBox too, so this preserves the
+            // existing coupling rather than introducing a new one.
+            var image = scanViewModel.CloneNavigationImage();
+            System.Windows.Forms.MethodInvoker render = delegate
+            {
+                var previous = Navigation_Image.Image;
+                Navigation_Image.Image = image;
+                previous?.Dispose();
+            };
+            Navigation_Image.Invoke(render);
         }
 
         private double ScannerDelayValue(int value)
@@ -85,15 +347,13 @@ namespace InventoryKamera
         {
             Logger.Info("Hotkey pressed");
             e.Handled = true;
-            // Check if scanner is running
-            if (scannerThread.IsAlive)
+            if (scanRunOwner.RequestCancellation())
             {
-                // Stop navigating weapons/artifacts
-                scannerThread.Abort();
+                // .NET no longer supports Thread.Abort, so request cooperative cancellation from
+                // the owner of the currently active run.
 
-                UserInterface.SetProgramStatus("Scan Stopped");
-
-                Navigation.Reset();
+                scanViewModel.SetProgramStatus("Stopping scan...");
+                scanOverlay?.ShowCancelling();
             }
         }
 
@@ -102,7 +362,7 @@ namespace InventoryKamera
             Navigation.Reset();
 
             // Need to invoke method from the UI's handle, not the worker thread
-            BeginInvoke((MethodInvoker)delegate { RemoveHotkey(); });
+            BeginInvoke((System.Windows.Forms.MethodInvoker)delegate { RemoveHotkey(); });
             Logger.Info("Hotkey removed");
         }
 
@@ -111,12 +371,10 @@ namespace InventoryKamera
             HotkeyManager.Current.Remove("Stop");
         }
 
-        public static void UnexpectedError(string error)
+        private void RegisterScanCancellationHotkey()
         {
-            if (scannerThread.IsAlive)
-            {
-                UserInterface.AddError(error);
-            }
+            HotkeyManager.Current.AddOrReplace("Stop", Keys.Enter, Hotkey_Pressed);
+            Logger.Info("Scan cancellation hotkey registered");
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -133,131 +391,199 @@ namespace InventoryKamera
                 Properties.Settings.Default.Save();
             }
 
-            UpdateKeyTextBoxes();
-
-            Delay = ScannerDelay_TrackBar.Value;
+            SyncNavigationKeysFromSettings();
 
             ProgramStatus_Label.Text = "";
-            if (string.IsNullOrWhiteSpace(OutputPath_TextBox.Text))
+            if (string.IsNullOrWhiteSpace(Properties.Settings.Default.OutputPath))
             {
-                OutputPath_TextBox.Text = Directory.GetCurrentDirectory() + @"\GenshinData";
+                Properties.Settings.Default.OutputPath = Directory.GetCurrentDirectory() + @"\GenshinData";
             }
-            
+
+            ScanAllArtifactPages_CheckBox.Checked = SortByObtainedControl.Value == 0;
+            ScanAllCharacters_CheckBox.Checked = NumOfCharToScanControl.Value == 0;
         }
 
-        private void UpdateKeyTextBoxes()
-        { 
+        private void ScanAllArtifactPages_CheckBox_CheckedChanged(object sender, EventArgs e)
+        {
+            SortByObtainedControl.Enabled = !ScanAllArtifactPages_CheckBox.Checked;
+            if (ScanAllArtifactPages_CheckBox.Checked)
+            {
+                SortByObtainedControl.Value = 0;
+            }
+            else if (SortByObtainedControl.Value == 0)
+            {
+                SortByObtainedControl.Value = 1;
+            }
+        }
+
+        private void ScanAllCharacters_CheckBox_CheckedChanged(object sender, EventArgs e)
+        {
+            NumOfCharToScanControl.Enabled = !ScanAllCharacters_CheckBox.Checked;
+            if (ScanAllCharacters_CheckBox.Checked)
+            {
+                NumOfCharToScanControl.Value = 0;
+            }
+            else if (NumOfCharToScanControl.Value == 0)
+            {
+                NumOfCharToScanControl.Value = 1;
+            }
+        }
+
+        // Pushes the persisted key bindings into the live Navigation keys at startup. The bindings are
+        // edited (and displayed) in the Settings dialog now; MainForm only needs Navigation kept in sync.
+        private void SyncNavigationKeysFromSettings()
+        {
             Navigation.inventoryKey = (VirtualKeyCode)Properties.Settings.Default.InventoryKey;
             Navigation.characterKey = (VirtualKeyCode)Properties.Settings.Default.CharacterKey;
             Navigation.slotOneKey = (VirtualKeyCode)Properties.Settings.Default.Slot1Key;
-
-            inventoryToolStripTextBox.Text = new KeysConverter().ConvertToString((Keys)Navigation.inventoryKey);
-            characterToolStripTextBox.Text = new KeysConverter().ConvertToString((Keys)Navigation.characterKey);
-            slot1StripTextBox.Text = new KeysConverter().ConvertToString((Keys)Navigation.slotOneKey);
-
-            // Make sure text boxes show key glyph and not "OEM..."
-            if (inventoryToolStripTextBox.Text.ToUpper().Contains("OEM"))
-            {
-                inventoryToolStripTextBox.Text = KeyCodeToUnicode((Keys)Navigation.inventoryKey);
-            }
-            if (characterToolStripTextBox.Text.ToUpper().Contains("OEM"))
-            {
-                characterToolStripTextBox.Text = KeyCodeToUnicode((Keys)Navigation.characterKey);
-            }
-            if (slot1StripTextBox.Text.ToUpper().Contains("OEM"))
-            {
-                slot1StripTextBox.Text = KeyCodeToUnicode((Keys)Navigation.slotOneKey);
-            }
         }
 
-        private void ValidateCustomName(object sender, EventArgs e)
+        // Phase 3 §3.2 pre-flight validation. Runs synchronously on the UI thread, before any scan
+        // state is touched (hotkey registration, "Scanning" status, etc.), so a bad setup fails
+        // immediately and visibly instead of surfacing as a generic error a few seconds into a scan
+        // that already looked like it started. Locates the game window as a side effect (via
+        // Navigation.Initialize()) -- the scan thread re-initializes on its own right after, which is
+        // redundant but harmless (the window won't move in that split second) and keeps this check
+        // fully independent of the scan thread's own error handling.
+        private bool PreflightChecksPass()
         {
-            var textbox = sender as TextBox;
-            var name = textbox.Text;
-
-            if (!string.IsNullOrWhiteSpace(name))
+            var settings = Properties.Settings.Default;
+            int[] navigationKeys = { settings.InventoryKey, settings.CharacterKey, settings.Slot1Key };
+            if (navigationKeys.Distinct().Count() != navigationKeys.Length)
             {
-                if (GenshinProcesor.Characters.ContainsKey(name.ConvertToGood().ToLower()))
+                MessageBox.Show(
+                    "Two or more of your Inventory/Character Screen/Slot 1 keybinds are set to the " +
+                    "same key. Set them to different keys under Options.",
+                    "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            if (navigationKeys.Contains((int)Keys.Enter))
+            {
+                MessageBox.Show(
+                    "One of your keybinds is set to Enter, which is reserved for stopping a scan in " +
+                    "progress. Choose a different key under Options.",
+                    "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            try
+            {
+                Navigation.Initialize();
+            }
+            catch (NullReferenceException)
+            {
+                MessageBox.Show("Genshin Impact isn't running. Please start the game and try again.",
+                    "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            catch (NotImplementedException ex)
+            {
+                MessageBox.Show(ex.Message, "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            List<Size> supportedAspectRatios = new List<Size> { new Size(16, 9), new Size(8, 5) };
+            if (!supportedAspectRatios.Contains(Navigation.GetAspectRatio()))
+            {
+                MessageBox.Show(
+                    $"{Navigation.GetSize().Width}x{Navigation.GetSize().Height} is an unsupported resolution. " +
+                    "Inventory Kamera supports 16:9 and 8:5 (16:10) aspect ratios.",
+                    "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            // CaptureWindow() downscales above 1080p (Navigation.CaptureScale), so compare against the
+            // expected scaled size rather than the real window size directly.
+            using (var capture = Navigation.CaptureWindow())
+            {
+                var expectedSize = new Size(
+                    (int)(Navigation.GetSize().Width * Navigation.CaptureScale),
+                    (int)(Navigation.GetSize().Height * Navigation.CaptureScale));
+                if (capture.Size != expectedSize)
                 {
-                    textbox.BackColor = Color.Yellow;
-                }
-                else
-                {
-                    textbox.BackColor = Color.White;
+                    MessageBox.Show(
+                        "Window size and screenshot size mismatch. Please make sure the game is not in fullscreen mode.",
+                        "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
                 }
             }
+
+            return true;
         }
 
-        private void ValidateCustomName1(object sender, EventArgs e)
+        private bool ScanSetupAccepted()
         {
-            var textbox = sender as TextBox;
-            var name = textbox.Text;
+            using var dialog = new ScanSetupForm(gameDataProvider.Current);
+            if (dialog.ShowDialog(this) == DialogResult.OK) return true;
 
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                if (GenshinProcesor.Characters.ContainsKey(name.ConvertToGood().ToLower()))
-                {
-                    textbox.BackColor = Color.Yellow;
-                }
-                else
-                {
-                    textbox.BackColor = Color.White;
-                }
-            }
-        }
-        private void ValidateCustomName2(object sender, EventArgs e)
-        {
-            var textbox = sender as TextBox;
-            var name = textbox.Text;
-
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                if (GenshinProcesor.Characters.ContainsKey(name.ConvertToGood().ToLower()))
-                {
-                    textbox.BackColor = Color.Yellow;
-                }
-                else
-                {
-                    textbox.BackColor = Color.White;
-                }
-            }
-        }
-
-
-        private void DisplayCustomNameTooltip(object sender, EventArgs e)
-        {
-            var textbox = sender as TextBox;
-            
-            if (textbox.BackColor == Color.Yellow)
-            {
-                var tooltip = new ToolTip();
-                tooltip.Show($"{textbox.Text} already exists as a character's name.\n" +
-                    $"This may affect equipping items to characters and is not fully supported yet.", textbox);
-            }
+            Logger.Info("Scan start cancelled in Scan Setup.");
+            return false;
         }
 
         private void StartButton_Clicked(object sender, EventArgs e)
         {
+            if (scanRunOwner.HasActiveRun)
+            {
+                Logger.Debug("Already running");
+                return;
+            }
+
+            if (lastScanData?.HasPendingInputModeRecovery == true)
+            {
+                Logger.Info("Scan start ignored while the Recovery overlay owns the temporary controller.");
+                return;
+            }
+
+            var startSettings = Properties.Settings.Default;
+            bool controllerScanSelected = startSettings.ScanWeapons || startSettings.ScanArtifacts ||
+                startSettings.ScanCharacters || startSettings.ScanCharDevItems || startSettings.ScanMaterials;
+            if (!ControllerScanPreflight.TryProceed(
+                    controllerScanSelected,
+                    ScanSetupAccepted,
+                    PreflightChecksPass))
+                return;
+
             GC.Collect();
 
-            UserInterface.ResetAll();
+            scanViewModel.ResetAll();
 
-            UserInterface.SetProgramStatus("Scanning");
+            if (scanOverlay != null)
+            {
+                if (ReferenceEquals(Navigation.CaptureOverlayGuard, scanOverlay))
+                    Navigation.CaptureOverlayGuard = null;
+                scanOverlay.Dispose();
+            }
+            scanOverlay = new ScanCompanionOverlay(
+                scanViewModel,
+                gameWindow: genshinWindowController,
+                beforeRecoveryHotkeys: RemoveHotkey,
+                onScanning: RegisterScanCancellationHotkey);
+            scanOverlay.ShowAttachedToGame();
+            Navigation.CaptureOverlayGuard = scanOverlay;
+            DeclaredInputMode declaredInputMode = DeclaredInputModeOptions.FromPersistedValue(
+                Properties.Settings.Default.DeclaredOriginalInputMode);
+            scanOverlay.ShowPreparing(declaredInputMode);
+
+            scanViewModel.SetProgramStatus("Scanning");
             Logger.Info("Starting scan");
 
-            if (Directory.Exists(OutputPath_TextBox.Text) || Directory.CreateDirectory(OutputPath_TextBox.Text).Exists)
+            if (Directory.Exists(Properties.Settings.Default.OutputPath) || Directory.CreateDirectory(Properties.Settings.Default.OutputPath).Exists)
             {
-                if (running)
+                if (!scanRunOwner.TryCreate(
+                    scanViewModel,
+                    out ScanRun scanRun,
+                    declaredInputMode,
+                    scanOverlay))
                 {
                     Logger.Debug("Already running");
                     return;
                 }
-                running = true;
+                // Capture exactly one coherent application snapshot for this run. A database update
+                // can atomically replace the provider later without changing this scan's lookup data.
+                GameDataSnapshot scanGameData = gameDataProvider.Current;
 
-                HotkeyManager.Current.AddOrReplace("Stop", Keys.Enter, Hotkey_Pressed);
-                Logger.Info("Hotkey registered");
                 var settings = Properties.Settings.Default;
-                var gameVersion = new DatabaseManager().LocalVersion.ToString(2);
+                var gameVersion = databaseManager.LocalVersion.ToString(2);
                 var options =
                     $"\n\tGame Version Data:\t\t\t {gameVersion}\n" +
                     $"\tWeapons:\t\t\t\t {settings.ScanWeapons}\n" +
@@ -275,8 +601,10 @@ namespace InventoryKamera
 
                 Logger.Info("Scan settings: {0}", options);
 
-                scannerThread = new Thread(() =>
+                scanRun.Start(() =>
                 {
+                    GameScanner currentScanner = null;
+                    ScanSession scanSession = scanRun.Session;
                     try
                     {
                         // Get Screen Location and Size
@@ -293,125 +621,170 @@ namespace InventoryKamera
                             throw new NotImplementedException($"{Navigation.GetSize().Width}x{Navigation.GetSize().Height} is an unsupported resolution.");
                         }
 
-                        if (Navigation.GetSize() != Navigation.CaptureWindow().Size) throw new FormatException("Window size and screenshot size mismatch. Please make sure the game is not in a fullscreen mode.");
+                        using (var capture = Navigation.CaptureWindow())
+                        {
+                            var expectedSize = new Size(
+                                (int)(Navigation.GetSize().Width * Navigation.CaptureScale),
+                                (int)(Navigation.GetSize().Height * Navigation.CaptureScale));
+                            if (capture.Size != expectedSize) throw new FormatException("Window size and screenshot size mismatch. Please make sure the game is not in a fullscreen mode.");
+                        }
 
-                        data = new InventoryKamera();
+                        // Retain this run's scanner for manual export, matching the previous `data`
+                        // behavior. Assignment stays after navigation validation so a pre-scan
+                        // setup failure does not replace the last successfully-started scan.
+                        currentScanner = scanRun.InitializeScanner(scanGameData);
+                        lastScanData = currentScanner;
 
                         Logger.Info("Resolution: {0}x{1}", Navigation.GetSize().Width, Navigation.GetSize().Height);
 
                         // Add navigation delay
-                        Navigation.SetDelay(ScannerDelayValue(Delay));
+                        Navigation.SetDelay(ScannerDelayValue(Properties.Settings.Default.ScannerDelay));
 
 
                         // The Data object of json object
-                        data.GatherData();
+                        currentScanner.GatherData();
 
-                        // Covert to GOOD
-                        GOOD good = new GOOD(data);
-                        Logger.Info("Data converted to GOOD");
+                        bool recoveryPending = currentScanner.HasPendingInputModeRecovery;
+                        ScanCompletionPlan completion = ScanCompletionPolicy.Evaluate(
+                            scanSession.IsCancellationRequested,
+                            recoveryPending);
 
-                        // Make Json File
-                        good.WriteToJSON(OutputPath_TextBox.Text);
-                        Logger.Info("Exported data");
+                        // Tear down the global "Stop" hotkey as soon as the scan itself is done, not
+                        // in the `finally` block below -- that only runs once OpenOptimizerDialog
+                        // returns, which (since it now blocks on Invoke+MessageBox.Show) doesn't
+                        // happen until the completion dialog is dismissed. A registered global hotkey
+                        // (RegisterHotKey) intercepts Enter system-wide, for every application, not
+                        // just this one -- leaving it registered for the dialog's whole lifetime meant
+                        // Enter didn't work in *other* programs either while it was up. ResetUI() is
+                        // still safe to call again in `finally` (e.g. on the cancelled/exception paths).
+                        ResetUI();
 
-                        UserInterface.SetProgramStatus("Finished");
-                        OpenOptimizerDialog(good);
-                    }
-                    catch (ThreadAbortException)
-                    {
-                        // Workers can get stuck if the thread is aborted or an exception is raised
-                        data?.StopImageProcessorWorkers();
-                        UserInterface.SetProgramStatus("Scan stopped");
+                        if (!completion.ExportGood)
+                        {
+                            // Scan was stopped cooperatively (Stop hotkey). Matches the previous
+                            // Thread.Abort behaviour: skip GOOD conversion/export/optimizer dialog.
+                            // The user can still use "Export Scanned Data" to export what was collected.
+                            currentScanner?.StopImageProcessorWorkers();
+                            scanViewModel.SetProgramStatus(completion.Status, completion.StatusOk);
+                            if (completion.ShowCompletedOverlay)
+                                scanOverlay.ShowCompleted(completion.CompletionMessage);
+                        }
+                        else
+                        {
+                            // Covert to GOOD
+                            GOOD good = new GOOD(currentScanner);
+                            Logger.Info("Data converted to GOOD");
+
+                            // Make Json File
+                            good.WriteToJSON(Properties.Settings.Default.OutputPath, scanViewModel);
+                            Logger.Info("Exported data");
+
+                            scanViewModel.SetProgramStatus(completion.Status, completion.StatusOk);
+                            if (completion.ShowCompletedOverlay)
+                                scanOverlay.ShowCompleted(completion.CompletionMessage);
+                            if (completion.OpenOptimizer)
+                                OpenOptimizerDialog(good);
+                            else if (recoveryPending)
+                                Logger.Info(
+                                    "Scan data was exported; optimizer UI deferred while input-mode Recovery is active.");
+                        }
                     }
                     catch (NotImplementedException ex)
                     {
-                        UserInterface.AddError(ex.ToString());
+                        currentScanner?.StopImageProcessorWorkers();
+                        scanViewModel.AddError(ex.ToString());
+                        if (currentScanner?.HasPendingInputModeRecovery == true)
+                            scanViewModel.SetProgramStatus("Keyboard/Mouse restoration required", ok: false);
+                        else
+                            scanOverlay.ShowError(ex.Message);
                     }
                     catch (Exception ex)
                     {
                         // Workers can get stuck if the thread is aborted or an exception is raised
-                        data?.StopImageProcessorWorkers();
+                        currentScanner?.StopImageProcessorWorkers();
                         while (ex.InnerException != null) ex = ex.InnerException;
-                        UserInterface.AddError(ex.ToString());
-                        UserInterface.SetProgramStatus("Scan aborted", ok: false);
+                        scanViewModel.AddError(ex.ToString());
+                        if (currentScanner?.HasPendingInputModeRecovery == true)
+                            scanViewModel.SetProgramStatus("Keyboard/Mouse restoration required", ok: false);
+                        else
+                        {
+                            scanViewModel.SetProgramStatus("Scan aborted", ok: false);
+                            scanOverlay.ShowError(ex.Message);
+                        }
                     }
                     finally
                     {
+                        scanRunOwner.Complete(scanRun);
                         ResetUI();
-                        running = false;
-                        ManualExportButton.Invoke((MethodInvoker)delegate
+                        ManualExportButton.Invoke((System.Windows.Forms.MethodInvoker)delegate
                         {
-                            ManualExportButton.Enabled = data.HasData;
+                            ManualExportButton.Enabled = lastScanData?.HasData == true;
                         });
-                        MainForm_Activate();
+                        if (lastScanData?.HasPendingInputModeRecovery != true)
+                            MainForm_Activate();
                     }
-                })
-                {
-                    IsBackground = true
-                };
-                scannerThread.Start();
+                });
             }
             else
             {
-                if (string.IsNullOrWhiteSpace(OutputPath_TextBox.Text))
-                    UserInterface.AddError("Please set an output directory");
+                if (string.IsNullOrWhiteSpace(Properties.Settings.Default.OutputPath))
+                    scanViewModel.AddError("Please set an output directory");
                 else
-                    UserInterface.AddError($"{OutputPath_TextBox.Text} is not a valid directory");
+                    scanViewModel.AddError($"{Properties.Settings.Default.OutputPath} is not a valid directory");
             }
         }
 
         private void OpenOptimizerDialog(GOOD data, bool skip = false)
         {
-            if (!skip)
+            // Marshaled onto the UI thread -- this is called from the background scan thread (scan
+            // finishing normally) as well as directly from a button click (Export_Button_Click).
+            // Previously ran unmarshaled MessageBox.Show calls with no owner window when called from
+            // the scan thread: that meant the dialog had no owner to size/foreground itself against
+            // (it wouldn't reliably come to the front over the game/other windows), and it was running
+            // its own message loop on a thread the rest of the UI -- including the global "Stop" hotkey
+            // (Enter) registered via HotkeyManager on this form's handle -- doesn't expect to be
+            // competing with. Passing `this` as owner and running on the UI thread fixes both.
+            Invoke((System.Windows.Forms.MethodInvoker)delegate
             {
-                var message = "Scan complete! Would you like to upload the database to Genshin Optimizer?";
-                var result = MessageBox.Show(message, "Scan Complete", MessageBoxButtons.YesNo);
-                if (result == DialogResult.No)
-                    return;
-            }
-            var t = new Thread(() => Clipboard.SetText(data.ToString()));
-            t.SetApartmentState(ApartmentState.STA);
-            t.Start();
-            t.Join();
-            MessageBox.Show("Content copied to your clipboard! Paste the content into the textbox when prompted.", "Data Copied", MessageBoxButtons.OK);
-            Process.Start(new ProcessStartInfo("https://frzyc.github.io/genshin-optimizer/#/setting") { UseShellExecute = true });
-
+                if (!skip)
+                {
+                    Activate();
+                    var message = "Scan complete! Would you like to upload the database to Genshin Optimizer?";
+                    var result = MessageBox.Show(this, message, "Scan Complete", MessageBoxButtons.YesNo);
+                    if (result == DialogResult.No)
+                        return;
+                }
+                var t = new Thread(() => Clipboard.SetText(data.ToString()));
+                t.SetApartmentState(ApartmentState.STA);
+                t.Start();
+                t.Join();
+                MessageBox.Show(this, "Content copied to your clipboard! Paste the content into the textbox when prompted.", "Data Copied", MessageBoxButtons.OK);
+                Process.Start(new ProcessStartInfo("https://frzyc.github.io/genshin-optimizer/#/setting") { UseShellExecute = true });
+            });
         }
 
         private void Github_Label_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
-            Process.Start("https://github.com/taiwenlee/Inventory_Kamera/");
+            Process.Start(new ProcessStartInfo("https://github.com/taiwenlee/Inventory_Kamera/") { UseShellExecute = true });
         }
 
         private void Releases_Label_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
-            Process.Start("https://github.com/taiwenlee/Inventory_Kamera/releases");
+            Process.Start(new ProcessStartInfo("https://github.com/taiwenlee/Inventory_Kamera/releases") { UseShellExecute = true });
         }
 
         private void IssuesPage_Label_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
-            Process.Start("https://github.com/taiwenlee/Inventory_Kamera/issues");
-        }
-
-        private void FileSelectButton_Click(object sender, EventArgs e)
-        {
-            // A nicer file browser
-            CommonOpenFileDialog d = new CommonOpenFileDialog
-            {
-                InitialDirectory = !Directory.Exists(OutputPath_TextBox.Text) ? Directory.GetCurrentDirectory() : OutputPath_TextBox.Text,
-                IsFolderPicker = true
-            };
-
-            if (d.ShowDialog() == CommonFileDialogResult.Ok)
-            {
-                OutputPath_TextBox.Text = d.FileName;
-            }
+            Process.Start(new ProcessStartInfo("https://github.com/taiwenlee/Inventory_Kamera/issues") { UseShellExecute = true });
         }
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             SaveSettings();
             RemoveHotkey();
+            if (ReferenceEquals(Navigation.CaptureOverlayGuard, scanOverlay))
+                Navigation.CaptureOverlayGuard = null;
+            scanOverlay?.Dispose();
             NLog.LogManager.Shutdown();
         }
 
@@ -420,71 +793,9 @@ namespace InventoryKamera
             Properties.Settings.Default.Save();
         }
 
-        private void ScannerDelay_TrackBar_ValueChanged(object sender, EventArgs e)
-        {
-            Delay = ((TrackBar)sender).Value;
-        }
-
         private void Exit_MenuItem_Click(object sender, EventArgs e)
         {
             Application.Exit();
-        }
-
-        private void OptionsMenuItem_KeyDown(object sender, KeyEventArgs e)
-        {
-            e.Handled = true;
-            e.SuppressKeyPress = true;
-
-            // Virtual keys for 0-9, A-Z
-            bool vk = e.KeyCode >= Keys.D0 && e.KeyCode <= Keys.Z;
-            // Numpad keys and function keys (internally accepts up to F24)
-            bool np = e.KeyCode >= Keys.NumPad0 && e.KeyCode <= Keys.F24;
-            // OEM keys (Keys that vary depending on keyboard layout)
-            bool oem = e.KeyCode >= Keys.Oem1 && e.KeyCode <= Keys.Oem7;
-            // Arrow keys, spacebar, INS, DEL, HOME, END, PAGEUP, PAGEDOWN
-            bool misc = e.KeyCode == Keys.Space || (e.KeyCode >= Keys.Left && e.KeyCode <= Keys.Down) || (e.KeyCode >= Keys.Prior && e.KeyCode <= Keys.Home) || e.KeyCode == Keys.Insert || e.KeyCode == Keys.Delete || e.KeyCode == Keys.Back;
-
-            // Validate that key is an acceptable Genshin keybind.
-            if (!vk && !np && !oem && !misc)
-            {
-                Logger.Debug("Invalid {key} key pressed", e.KeyCode);
-                return;
-            }
-            ToolStripTextBox s = (ToolStripTextBox)sender;
-
-            // Needed to differentiate between NUMPAD numbers and numbers at top of keyboard
-            s.Text = np || e.KeyCode == Keys.Back ? new KeysConverter().ConvertToString(e.KeyCode) : KeyCodeToUnicode(e.KeyData);
-
-            // Spacebar or upper navigation keys (INSERT-PAGEDOWN keys) make textbox empty
-            if (string.IsNullOrWhiteSpace(s.Text) || string.IsNullOrEmpty(s.Text))
-            {
-                s.Text = new KeysConverter().ConvertToString(e.KeyCode);
-            }
-
-
-            switch (s.Tag)
-            {
-                case "InventoryKey":
-                    Navigation.inventoryKey = (VirtualKeyCode)e.KeyCode;
-                    Logger.Debug("Inv key set to: {key}", Navigation.inventoryKey);
-                    Properties.Settings.Default.InventoryKey = e.KeyValue;
-                    break;
-
-                case "CharacterKey":
-                    Navigation.characterKey = (VirtualKeyCode)e.KeyCode;
-                    Logger.Debug("Char key set to: {key}", Navigation.characterKey);
-                    Properties.Settings.Default.CharacterKey = e.KeyValue;
-                    break;
-
-                case "slot1Key":
-                    Navigation.slotOneKey = (VirtualKeyCode)e.KeyCode;
-                    Logger.Debug("Slot 1 key set to: {key}", Navigation.slotOneKey);
-                    Properties.Settings.Default.Slot1Key = e.KeyValue;
-                    break;
-
-                default:
-                    break;
-            }
         }
 
         private void DatabaseUpdateMenuItem_Click(object sender, EventArgs e)
@@ -496,6 +807,7 @@ namespace InventoryKamera
                     MessageBox.Show("Unable to update game data. Please check the log for more details", "Update failed", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Stop);
                     break;
                 case UpdateStatus.Success:
+                    if (!ReloadApplicationGameData()) break;
                     MessageBox.Show($"Update for game version {databaseManager.LocalVersion.ToString(2)} successful.", "Update status", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Information);
                     Logger.Info("Updated game date to {0}", databaseManager.LocalVersion.ToString(2));
                     break;
@@ -512,9 +824,13 @@ namespace InventoryKamera
                             case UpdateStatus.Fail:
                                 MessageBox.Show("Unable to update game data. Please check the log for more details", "Update failed", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Stop);
                                 break;
+                            case UpdateStatus.Success:
+                                if (!ReloadApplicationGameData()) break;
+                                MessageBox.Show($"Update for game version {databaseManager.LocalVersion.ToString(2)} successful.", "Update success", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Information);
+                                Logger.Info("Successfully updated game data to {0}", databaseManager.LocalVersion.ToString(2));
+                                break;
                             default:
                                 MessageBox.Show($"Update for game version {databaseManager.LocalVersion.ToString(2)} successful.", "Update success", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Information);
-                                Logger.Info("Successfully updated game data to {0}", new DatabaseManager().LocalVersion.ToString(2));
                                 break;
                         }
                     }
@@ -524,54 +840,40 @@ namespace InventoryKamera
             }
         }
 
-        #region Unicode Helper Functions
-
-        // Needed to display OEM keys as glyphs from keyboard. Should work for other languages
-        // and keyboard layouts but only tested with QWERTY layout.
-        private string KeyCodeToUnicode(Keys key)
-        {
-            byte[] keyboardState = new byte[255];
-            bool keyboardStateStatus = GetKeyboardState(keyboardState);
-
-            if (!keyboardStateStatus)
-            {
-                return "";
-            }
-            uint virtualKeyCode = (uint)key;
-            uint scanCode = MapVirtualKey(virtualKeyCode, 0);
-            IntPtr inputLocaleIdentifier = GetKeyboardLayout(0);
-
-            StringBuilder result = new StringBuilder();
-            ToUnicodeEx(virtualKeyCode, scanCode, keyboardState, result, 5, 0, inputLocaleIdentifier);
-
-            return result.ToString();
-        }
-
-        [DllImport("user32.dll")]
-        private static extern bool GetKeyboardState(byte[] lpKeyState);
-
-        [DllImport("user32.dll")]
-        private static extern uint MapVirtualKey(uint uCode, uint uMapType);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetKeyboardLayout(uint idThread);
-
-        [DllImport("user32.dll")]
-        private static extern int ToUnicodeEx(uint wVirtKey, uint wScanCode, byte[] lpKeyState, [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pwszBuff, int cchBuff, uint wFlags, IntPtr dwhkl);
-
-        #endregion Unicode Helper Functions
-
         private void ExportFolderMenuItem_Click(object sender, EventArgs e)
         {
-            if (Directory.Exists(OutputPath_TextBox.Text) || Directory.CreateDirectory(OutputPath_TextBox.Text).Exists)
+            if (Directory.Exists(Properties.Settings.Default.OutputPath) || Directory.CreateDirectory(Properties.Settings.Default.OutputPath).Exists)
             {
-                Process.Start($@"{OutputPath_TextBox.Text}");
+                Process.Start(new ProcessStartInfo(Properties.Settings.Default.OutputPath) { UseShellExecute = true });
             }
             else
             {
                 Process.Start("explorer.exe");
             }
         }
+
+        private void AdvancedSettingsMenuItem_Click(object sender, EventArgs e)
+        {
+            new ui.SettingsForm(gameDataProvider.Current).ShowDialog(this);
+
+            // The Settings dialog can change key bindings and dark mode; re-sync Navigation and
+            // re-theme MainForm now that it's closed. ProgramStatus_Label's color is semantic
+            // (green/red), not part of the base palette, so re-render it against the new background.
+            SyncNavigationKeysFromSettings();
+            UiTheme.ApplyTheme(this);
+            OnProgramStatusChanged();
+        }
+
+        // Phase 3 §6c controller-navigation test handlers. Logic lives in
+        // game/ControllerNavigationTests.cs, not here -- keeps this file (and especially
+        // MainForm.Designer.cs) untouched by frequent coordinate/timing tweaks, since editing either
+        // risks tripping the WinForms Designer regeneration bug (see MODERNIZATION_PLAN.md §3.0).
+        private void TestControllerMashBackMenuItem_Click(object sender, EventArgs e) => game.ControllerNavigationTests.RunMashBackTest();
+        private void TestControllerCharacterScanMenuItem_Click(object sender, EventArgs e) =>
+            game.ControllerNavigationTests.RunControllerCharacterScanTest(
+                scanViewModel,
+                gameDataProvider.Current);
+        private void CoordinatePickerMenuItem_Click(object sender, EventArgs e) => new ui.CoordinatePickerForm().Show(this);
 
         private void MainForm_Shown(object sender, EventArgs e)
         {
@@ -584,12 +886,24 @@ namespace InventoryKamera
             var client = new GitHubClient(new ProductHeaderValue("Inventory_Kamera"));
             try
             {
-                var releases = await client.Repository.Release.GetAll("Andrewthe13th", "Inventory_Kamera");
-                var latest = releases.First();
+                var releases = await client.Repository.Release.GetAll("taiwenlee", "Inventory_Kamera");
+                if (!ReleaseVersionSelector.TrySelectFirst(
+                    releases,
+                    release => release.TagName,
+                    tag => Logger.Warn("Could not parse Kamera release tag '{0}'.", tag),
+                    out var latest,
+                    out var latestVersion))
+                {
+                    Logger.Warn("No Kamera releases had a valid version tag.");
+                    return;
+                }
 
+                if (!ReleaseVersion.TryParse(AppInfo.Version, out var currentVersion))
+                {
+                    Logger.Warn("Could not parse the current Kamera version '{0}'.", AppInfo.Version);
+                    return;
+                }
 
-                Version latestVersion = new Version(Regex.Replace(latest.TagName, "[a-zA-Z]", string.Empty));
-                Version currentVersion = Assembly.GetExecutingAssembly().GetName().Version;
                 if (currentVersion.CompareTo(latestVersion) < 0)
                 {
                     var message = $"A new version of Inventory Kamera is available.\n\n" +
@@ -603,12 +917,11 @@ namespace InventoryKamera
                 }
             }
             catch (RateLimitExceededException) { Logger.Warn("Rate limit exceeded checking for Kamera Update!!!! This warning should be resolved in an hour."); }
-            
+
         }
 
         private void CheckForGenshinUpdates()
         {
-            var databaseManager = new DatabaseManager();
             try
             {
                 var updatesAvailable = databaseManager.UpdateAvailable();
@@ -624,7 +937,8 @@ namespace InventoryKamera
                                 MessageBox.Show("Unable to update game data. Please check the log for more details", "Update failed", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Stop);
                                 break;
                             case UpdateStatus.Success:
-                                MessageBox.Show($"Update for game version {databaseManager.LocalVersion.ToString(2) } successful.", "Update status", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Information);
+                                if (!ReloadApplicationGameData()) break;
+                                MessageBox.Show($"Update for game version {databaseManager.LocalVersion.ToString(2)} successful.", "Update status", buttons: MessageBoxButtons.OK, icon: MessageBoxIcon.Information);
                                 Logger.Info("Updated game data to {0}", databaseManager.LocalVersion.ToString(2));
                                 break;
                             default:
@@ -649,24 +963,102 @@ namespace InventoryKamera
             Properties.Settings.Default.LastUpdateCheck = DateTime.Now;
         }
 
+        private bool ReloadApplicationGameData()
+        {
+            if (gameDataProvider.TryReload(out Exception error))
+            {
+                Logger.Info("Installed updated game-data snapshot for future scans.");
+                return true;
+            }
+
+            Logger.Error(error, "Game-data files were updated, but the application snapshot could not be reloaded. Keeping the previous snapshot.");
+            MessageBox.Show(
+                "The game-data files were updated, but Inventory Kamera could not load the new data. " +
+                "The previous in-memory data will remain active. Please check the log for more details.",
+                "Game Data Reload Failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return false;
+        }
+
         private void Export_Button_Click(object sender, EventArgs e)
         {
-            OpenOptimizerDialog(new GOOD(data), true);
+            OpenOptimizerDialog(new GOOD(lastScanData), true);
         }
 
         private void MainForm_Activate()
         {
-            BeginInvoke((MethodInvoker)delegate { Activate(); });
+            BeginInvoke((System.Windows.Forms.MethodInvoker)delegate { Activate(); });
         }
 
         private void ErrorLog_Label_Click(object sender, EventArgs e)
         {
-            Process.Start($@"logging");
+            Process.Start(new ProcessStartInfo("logging") { UseShellExecute = true });
         }
 
         private void updateExecutablesToolStripMenuItem_Click(object sender, EventArgs e)
         {
             new ExecutablesForm().Show();
+        }
+
+        private void label2_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void WeaponsScannedCount_Label_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void EquipWeaponsCheckBox_CheckedChanged(object sender, EventArgs e)
+        {
+
+        }
+
+        private void ArtifactsScanned_Label_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void ArtifactOutput_TextBox_TextChanged(object sender, EventArgs e)
+        {
+
+        }
+
+        private void CharacterOutput_TextBox_TextChanged(object sender, EventArgs e)
+        {
+
+        }
+
+        private void CharacterTalent1_PictureBox_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void CharacterLevel_PictureBox_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void Language_ComboBox_SelectedIndexChanged(object sender, EventArgs e)
+        {
+
+        }
+
+        private void SortByObtained_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void label3_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void Character_Label_Click(object sender, EventArgs e)
+        {
+
         }
     }
 }

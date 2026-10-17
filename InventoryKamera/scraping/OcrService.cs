@@ -1,0 +1,182 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using Tesseract;
+
+namespace InventoryKamera
+{
+    /// <inheritdoc cref="IOcrService"/>
+    internal sealed class OcrService : IOcrService, IPositionalOcrService, IDisposable
+    {
+        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+
+        private readonly string tesseractDatapath;
+        private readonly string tesseractLanguage;
+        private readonly int engineCount;
+
+        private BlockingCollection<TesseractEngine> engines;
+
+        internal string TesseractDataPath => tesseractDatapath;
+
+        /// <param name="tesseractDatapath">
+        /// Directory containing the trained data files. Defaults to the tessdata directory beside
+        /// the application executable.
+        /// </param>
+        /// <param name="tesseractLanguage">Trained data file name (without extension).</param>
+        /// <param name="engineCount">
+        /// Engine pool size. Defaults to roughly one engine per logical processor, clamped so tiny
+        /// machines still get a usable pool and huge ones don't load an excessive number of models.
+        /// </param>
+        public OcrService(string tesseractDatapath = null, string tesseractLanguage = "genshin_fast_09_04_21", int? engineCount = null)
+        {
+            this.tesseractDatapath = tesseractDatapath ?? Path.Combine(AppContext.BaseDirectory, "tessdata");
+            this.tesseractLanguage = tesseractLanguage;
+            this.engineCount = engineCount ?? Math.Max(4, Math.Min(12, Environment.ProcessorCount));
+        }
+
+        public void Restart()
+        {
+            if (engines is null) engines = new BlockingCollection<TesseractEngine>();
+            lock (engines)
+            {
+                while (engines.TryTake(out TesseractEngine e))
+                {
+                    e.Dispose();
+                }
+
+                try
+                {
+                    for (int i = 0; i < engineCount; i++)
+                    {
+                        engines.Add(new TesseractEngine(tesseractDatapath, tesseractLanguage, EngineMode.LstmOnly));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex, "Failed to initialize Tesseract engines.");
+                    throw;
+                }
+            }
+            Logger.Debug("{EngineCount} engines restarted", engineCount);
+        }
+
+        public string AnalyzeText(Bitmap bitmap, PageSegMode pageMode = PageSegMode.SingleLine, bool numbersOnly = false)
+        {
+            return AnalyzeTextWithConfidence(bitmap, pageMode, numbersOnly).Text;
+        }
+
+        public (string Text, float Confidence) AnalyzeTextWithConfidence(Bitmap bitmap, PageSegMode pageMode = PageSegMode.SingleLine, bool numbersOnly = false)
+        {
+            // Lazily start the pool if a caller reaches AnalyzeTextWithConfidence before Restart() --
+            // normal production flow always calls Restart() once per scan first, but this keeps the
+            // service safe (and directly usable in tests) even if that ordering isn't followed.
+            if (engines is null) Restart();
+
+            string text = "";
+            float confidence;
+            // Blocks efficiently until an engine is free, instead of busy-polling with Thread.Sleep.
+            TesseractEngine e = engines.Take();
+
+            try
+            {
+                // Set the variable for every use of this pooled engine. Otherwise an engine used by
+                // numeric OCR can retain its digit whitelist when it later serves ordinary text OCR.
+                e.SetVariable("tessedit_char_whitelist", numbersOnly ? "0123456789" : string.Empty);
+                using (var pix = BitmapToPix(bitmap))
+                using (var page = e.Process(pix, pageMode))
+                {
+                    using (var iter = page.GetIterator())
+                    {
+                        iter.Begin();
+                        do
+                        {
+                            text += iter.GetText(PageIteratorLevel.TextLine);
+                        }
+                        while (iter.Next(PageIteratorLevel.TextLine));
+                    }
+                    confidence = page.GetMeanConfidence();
+                }
+            }
+            finally
+            {
+                // Return pooled engines to a neutral state for positional OCR and other callers
+                // that do not pass through this method before using the same engine.
+                try
+                {
+                    e.SetVariable("tessedit_char_whitelist", string.Empty);
+                }
+                finally
+                {
+                    engines.Add(e);
+                }
+            }
+
+            return (text, confidence);
+        }
+
+        public IReadOnlyList<PositionalOcrResult> AnalyzeTextRegions(Bitmap bitmap)
+        {
+            if (engines is null) Restart();
+
+            var results = new List<PositionalOcrResult>();
+            TesseractEngine engine = engines.Take();
+            try
+            {
+                using (var pix = BitmapToPix(bitmap))
+                using (var page = engine.Process(pix, PageSegMode.SparseText))
+                using (var iterator = page.GetIterator())
+                {
+                    iterator.Begin();
+                    do
+                    {
+                        string text = iterator.GetText(PageIteratorLevel.Word)?.Trim();
+                        if (string.IsNullOrWhiteSpace(text) ||
+                            !iterator.TryGetBoundingBox(PageIteratorLevel.Word, out Rect bounds))
+                        {
+                            continue;
+                        }
+
+                        results.Add(new PositionalOcrResult(
+                            text,
+                            new Rectangle(bounds.X1, bounds.Y1, bounds.Width, bounds.Height),
+                            iterator.GetConfidence(PageIteratorLevel.Word) / 100f));
+                    }
+                    while (iterator.Next(PageIteratorLevel.Word));
+                }
+            }
+            finally
+            {
+                engines.Add(engine);
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Convert a <see cref="Bitmap"/> to a Tesseract <see cref="Pix"/> for OCR. The Tesseract
+        /// package's netstandard2.0 target (used on modern .NET) has no direct Bitmap overload of
+        /// <c>TesseractEngine.Process</c> (that only exists in its net47/net48 targets), so the image
+        /// is round-tripped through an in-memory PNG — lossless, so pixel values are unchanged.
+        /// </summary>
+        private static Pix BitmapToPix(Bitmap bitmap)
+        {
+            using (var stream = new MemoryStream())
+            {
+                bitmap.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
+                return Pix.LoadFromMemory(stream.ToArray());
+            }
+        }
+
+        public void Dispose()
+        {
+            if (engines is null) return;
+            while (engines.TryTake(out var e))
+            {
+                e.Dispose();
+            }
+            engines.Dispose();
+        }
+    }
+}

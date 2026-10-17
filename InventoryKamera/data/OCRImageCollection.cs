@@ -1,102 +1,52 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Threading;
 
 namespace InventoryKamera
 {
-	public class OCRImageCollection
-	{
-		public List<Bitmap> Bitmaps { get; set; }
-		public string Type { get; set; }
-		public int Id { get; private set; }
+    /// <summary>
+    /// Owns the captured images for one queued weapon/artifact OCR item. Ownership transfers to
+    /// <see cref="ScanSession.TryQueueWork"/> when it is called; disposing the work item releases
+    /// every distinct bitmap exactly once.
+    /// </summary>
+    public sealed class OCRImageCollection : IDisposable
+    {
+        private readonly Action<Bitmap> disposeBitmap;
+        private int disposed;
 
-		public OCRImageCollection(List<Bitmap> _bm, string _type, int _id)
-		{
-			Bitmaps = _bm;
-			Type = _type;
-			Id = _id;
-		}
-	}
+        public List<Bitmap> Bitmaps { get; }
+        public string Type { get; }
+        public int Id { get; }
 
-	public class Queue<T>
-	{
-		/// <summary>Used as a lock target to ensure thread safety.</summary>
-		private readonly object _Locker = new object();
+        public OCRImageCollection(List<Bitmap> bitmaps, string type, int id)
+            : this(bitmaps, type, id, bitmap => bitmap.Dispose())
+        {
+        }
 
-		private readonly System.Collections.Generic.Queue<T> _Queue = new System.Collections.Generic.Queue<T>();
+        internal OCRImageCollection(
+            List<Bitmap> bitmaps,
+            string type,
+            int id,
+            Action<Bitmap> bitmapDisposer)
+        {
+            Bitmaps = bitmaps ?? throw new ArgumentNullException(nameof(bitmaps));
+            Type = type;
+            Id = id;
+            disposeBitmap = bitmapDisposer ?? throw new ArgumentNullException(nameof(bitmapDisposer));
+        }
 
-		/// <summary></summary>
-		public void Enqueue(T item)
-		{
-			lock (_Locker)
-			{
-				_Queue.Enqueue(item);
-			}
-		}
+        internal bool IsDisposed => Volatile.Read(ref disposed) != 0;
 
-		/// <summary>Enqueues a collection of items into this queue.</summary>
-		public virtual void EnqueueRange(IEnumerable<T> items)
-		{
-			lock (_Locker)
-			{
-				if (items == null)
-				{
-					return;
-				}
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
 
-				foreach (T item in items)
-				{
-					_Queue.Enqueue(item);
-				}
-			}
-		}
-
-		/// <summary></summary>
-		public T Dequeue()
-		{
-			lock (_Locker)
-			{
-				return _Queue.Dequeue();
-			}
-		}
-
-		/// <summary></summary>
-		public void Clear()
-		{
-			lock (_Locker)
-			{
-				_Queue.Clear();
-			}
-		}
-
-		/// <summary></summary>
-		public Int32 Count
-		{
-			get
-			{
-				lock (_Locker)
-				{
-					return _Queue.Count;
-				}
-			}
-		}
-
-		/// <summary></summary>
-		public Boolean TryDequeue(out T item)
-		{
-			lock (_Locker)
-			{
-				if (_Queue.Count > 0)
-				{
-					item = _Queue.Dequeue();
-					return true;
-				}
-				else
-				{
-					item = default(T);
-					return false;
-				}
-			}
-		}
-	}
+            var released = new HashSet<Bitmap>(ReferenceEqualityComparer.Instance);
+            foreach (Bitmap bitmap in Bitmaps)
+            {
+                if (bitmap != null && released.Add(bitmap)) disposeBitmap(bitmap);
+            }
+        }
+    }
 }

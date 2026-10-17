@@ -1,4 +1,5 @@
 ﻿using System;
+using InventoryKamera.game;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -19,6 +20,7 @@ namespace InventoryKamera
 		private static RECT WindowSize;
 		private static RECT WindowPosition;
 		private static Size AspectRatio;
+		internal static ICaptureOverlayGuard CaptureOverlayGuard { get; set; }
 		public static bool IsNormal { get; private set; }
 
         private static double delay = 1;
@@ -34,6 +36,18 @@ namespace InventoryKamera
 		[DllImport("user32.dll", SetLastError = true)]
 		private static extern bool ClientToScreen(IntPtr hWnd, ref RECT Rect);
 
+		[DllImport("user32.dll", SetLastError = true)]
+		private static extern bool GetWindowRect(IntPtr hWnd, ref RECT Rect);
+
+		[DllImport("user32.dll")]
+		private static extern uint GetDpiForWindow(IntPtr hWnd);
+
+		[DllImport("user32.dll")]
+		private static extern IntPtr GetThreadDpiAwarenessContext();
+
+		[DllImport("user32.dll")]
+		private static extern int GetAwarenessFromDpiAwarenessContext(IntPtr dpiContext);
+
 		public static void Initialize()
 		{
 			var executables = Properties.Settings.Default.Executables;
@@ -42,10 +56,25 @@ namespace InventoryKamera
 				Logger.Debug("Checking for {0}.exe", processName);
 				if (InitializeProcess(processName, out IntPtr handle))
 				{
-					// Get area and position
+					// Get area and position. WindowPosition must be zeroed immediately before this
+					// ClientToScreen call: it treats WindowPosition's current value as the client-space
+					// point to convert, so if Initialize() runs twice without an intervening Reset()
+					// (as it does: PreflightChecksPass() calls it, then the scan thread calls it again),
+					// a stale already-converted screen coordinate gets converted a second time,
+					// compounding the window's offset. This was invisible in fullscreen (origin ~(0,0),
+					// doubling has no effect) but broke windowed mode outright (captured region shifted
+					// by roughly the window's own screen offset).
+					WindowPosition = new RECT();
 					ClientToScreen(handle, ref WindowPosition);
 					GetClientRect(handle, ref WindowSize);
-					
+
+					RECT windowRect = new RECT();
+					GetWindowRect(handle, ref windowRect);
+					uint gameDpi = GetDpiForWindow(handle);
+					int ourAwareness = GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
+					Logger.Debug("DPI diagnostics: our process awareness={0} (2=PerMonitorAware, 3=PerMonitorAwareV2), game window DPI={1}, GetWindowRect=({2},{3})-({4},{5})",
+						ourAwareness, gameDpi, windowRect.Left, windowRect.Top, windowRect.Right, windowRect.Bottom);
+
 					try
 					{
 						AspectRatio = GetAspectRatio();
@@ -79,31 +108,101 @@ namespace InventoryKamera
 
 		#region Window Capturing
 
+		/// <summary>
+		/// Max real window height before capture output gets downscaled. Above this, every capture
+		/// (grid detection AND the OCR crops taken from real-coordinate regions) works with fewer
+		/// pixels -- Kirsch edge detection, blob connected-component labeling, per-pixel filters, and
+		/// Tesseract itself are all O(pixel count), and at 4K a region that's e.g. 5% of screen width
+		/// is proportionally 4x more pixels than the same UI text at 1080p for no recognition benefit.
+		/// 1.0 (no downscaling) at or below this height.
+		/// </summary>
+		private const int MaxCaptureHeight = 1080;
+
+		/// <summary>
+		/// Ratio applied to every <see cref="CaptureWindow"/>/<see cref="CaptureRegion(RECT, PixelFormat)"/>
+		/// result relative to the real window. Every consumer either crops proportionally within an
+		/// already-captured bitmap or computes its region from <see cref="GetWidth"/>/
+		/// <see cref="GetHeight"/> directly, both of which stay correct automatically since capture
+		/// position (not just size) is still sourced from the real screen.
+		/// </summary>
+		public static double CaptureScale => Math.Min(1.0, MaxCaptureHeight / (double)GetHeight());
+
+		// Scale per-call, based on the captured bitmap's own height, not CaptureScale (which reflects
+		// the whole real window). Most CaptureRegion crops are small UI-element regions (nameplate,
+		// stat lines, item counts) that stay well under MaxCaptureHeight even at 4K -- resizing those
+		// costs more (bitmap allocation + a high-quality bicubic blit) than it saves (they're already
+		// too small for downscaling to meaningfully cut per-pixel filter/OCR time), and doing it on
+		// every one of the many small captures a scan makes measurably slowed scans down. Only
+		// genuinely large captures -- chiefly the whole-window CaptureWindow() used for grid detection,
+		// whose raw height always equals GetHeight() and therefore exactly matches CaptureScale -- are
+		// worth downscaling.
+		private static Bitmap DownscaleCapture(Bitmap source)
+		{
+			if (source.Height <= MaxCaptureHeight) return source;
+
+			double scale = MaxCaptureHeight / (double)source.Height;
+			int width = (int)(source.Width * scale);
+			int height = MaxCaptureHeight;
+			var downscaled = new Bitmap(width, height, source.PixelFormat);
+			using (var g = Graphics.FromImage(downscaled))
+			{
+				// Bilinear, not HighQualityBicubic -- this runs on every large capture in the scan's
+				// hottest paths (once per item, not once per page), and bicubic's extra quality buys
+				// nothing OCR/detection care about at this downscale ratio while costing meaningfully
+				// more CPU per call.
+				g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+				g.DrawImage(source, 0, 0, width, height);
+			}
+			source.Dispose();
+			return downscaled;
+		}
+
 		public static Bitmap CaptureWindow(PixelFormat format = PixelFormat.Format24bppRgb)
 		{
-			Bitmap bmp = new Bitmap(GetWidth(), GetHeight(), format);
-			using (Graphics gfxBmp = Graphics.FromImage(bmp))
+			return CaptureWithoutOverlay(() =>
 			{
-				gfxBmp.CopyFromScreen(GetPosition().Left, GetPosition().Top, 0, 0, bmp.Size);
+				Bitmap bmp = new Bitmap(GetWidth(), GetHeight(), format);
+				using (Graphics gfxBmp = Graphics.FromImage(bmp))
+				{
+					Logger.Debug("CaptureWindow: capturing {0}x{1} from screen position ({2},{3})",
+						bmp.Width, bmp.Height, GetPosition().Left, GetPosition().Top);
+					gfxBmp.CopyFromScreen(GetPosition().Left, GetPosition().Top, 0, 0, bmp.Size);
 
-				var uidRegion = new RECT(
-					Left: (int)( 1070 / 1280.0 * bmp.Width ),
-					Top: (int)( 695 / 720.0 * bmp.Height ),
-					Right: bmp.Width,
-					Bottom: bmp.Height);
-				gfxBmp.FillRectangle(new SolidBrush(Color.Black), uidRegion);
-			}
-			return bmp;
+					var uidRegion = new RECT(
+						Left: (int)(1070 / 1280.0 * bmp.Width),
+						Top: (int)(695 / 720.0 * bmp.Height),
+						Right: bmp.Width,
+						Bottom: bmp.Height);
+					using var brush = new SolidBrush(Color.Black);
+					gfxBmp.FillRectangle(brush, uidRegion);
+				}
+				return DownscaleCapture(bmp);
+			});
 		}
 
 		public static Bitmap CaptureRegion(RECT region, PixelFormat format = PixelFormat.Format24bppRgb)
 		{
-			Bitmap bmp = new Bitmap(region.Width, region.Height, format);
-			using (Graphics gfxBmp = Graphics.FromImage(bmp))
+			return CaptureWithoutOverlay(() =>
 			{
-				gfxBmp.CopyFromScreen(GetPosition().Left + region.Left, GetPosition().Top + region.Top, 0, 0, bmp.Size);
-			}
-			return bmp;
+				Bitmap bmp = new Bitmap(region.Width, region.Height, format);
+				using (Graphics gfxBmp = Graphics.FromImage(bmp))
+				{
+					gfxBmp.CopyFromScreen(GetPosition().Left + region.Left, GetPosition().Top + region.Top, 0, 0, bmp.Size);
+				}
+				return DownscaleCapture(bmp);
+			});
+		}
+
+		internal static T CaptureWithoutOverlay<T>(Func<T> capture)
+		{
+			return CaptureWithoutOverlay(capture, CaptureOverlayGuard);
+		}
+
+		internal static T CaptureWithoutOverlay<T>(Func<T> capture, ICaptureOverlayGuard guard)
+		{
+			if (capture == null) throw new ArgumentNullException(nameof(capture));
+			using IDisposable suspension = guard?.SuspendForCapture();
+			return capture();
 		}
 
 		public static Bitmap CaptureRegion(int x, int y, int width, int height, PixelFormat format = PixelFormat.Format24bppRgb)
@@ -141,132 +240,6 @@ namespace InventoryKamera
 		}
 
 		#endregion Image Displaying
-
-		#region Game Menu Navigation
-
-		public static void SelectWeaponInventory()
-		{
-			int buttonX = (int)(385 / 1280.0 * GetWidth());
-			int buttonY = (int)(35  / 720.0 * GetHeight());
-			SetCursor(buttonX, buttonY);
-			Click();
-			SystemWait(Speed.UI);
-		}
-
-		public static void SelectArtifactInventory()
-		{
-			int buttonX = (int)(448 / 1280.0 * GetWidth());
-			int buttonY = (int)(31 / 720.0 * GetHeight());
-			SetCursor(buttonX, buttonY);
-			Click();
-			SystemWait(Speed.UI);
-		}
-
-		public static void SelectCharacterDevelopmentInventory()
-		{
-			int buttonX = (int)(512 / 1280.0 * GetWidth());
-			int buttonY = (int)(40  / 720.0 * GetHeight());
-			SetCursor(buttonX, buttonY);
-			Click();
-			SystemWait(Speed.UI);
-		}
-
-		public static void SelectMaterialInventory()
-		{
-			int buttonX = (int)(636 / 1280.0 * GetWidth());
-			int buttonY = (int)(30  / 720.0 * GetHeight());
-			SetCursor(buttonX, buttonY);
-			Click();
-			SystemWait(Speed.UI);
-		}
-
-		public static void SelectCharacterAttributes()
-		{
-			int xOffset = (int)(170 / 1280.0 * GetWidth());
-			int yOffset = (int)(105 / 720.0 * GetHeight());
-
-			if (GetAspectRatio() == new Size(8, 5))
-			{
-				yOffset = (int)( 105 / 800.0 * GetHeight() );
-			}
-
-			SetCursor(xOffset, yOffset);
-			Click();
-			SystemWait(Speed.CharacterUI);
-		}
-
-		public static void SelectCharacterConstellation()
-		{
-			int xOffset = (int)(170 / 1280.0 * GetWidth());
-			int yOffset = (int)(245 / 720.0 * GetHeight());
-
-			if (GetAspectRatio() == new Size(8, 5))
-			{
-				yOffset = (int)( 245 / 800.0 * GetHeight() );
-			}
-
-			SetCursor(xOffset, yOffset);
-			Click();
-			SystemWait(Speed.CharacterUI);
-		}
-
-		public static void SelectCharacterTalents()
-		{
-			int xOffset = (int)(135 / 1280.0 * GetWidth());
-			int yOffset = (int)(290 / 720.0 * GetHeight());
-
-			if (GetAspectRatio() == new Size(8, 5))
-			{
-				yOffset = (int)( 290 / 800.0 * GetHeight() );
-			}
-
-			SetCursor(xOffset, yOffset);
-			Click();
-			SystemWait(Speed.CharacterUI);
-		}
-
-		public static void SelectNextCharacter()
-		{
-			int xOffset = (int)(1230 / 1280.0 * GetWidth());
-			int yOffset = (int)(350 / 720.0 * GetHeight());
-
-			if (GetAspectRatio() == new Size(8, 5))
-			{
-				yOffset = (int)( 400 / 800.0 * GetHeight() );
-			}
-
-			SetCursor(xOffset, yOffset);
-			Click();
-			SystemWait(Speed.SelectNextCharacter);
-		}
-
-		public static void CharacterScreen()
-		{
-			sim.Keyboard.KeyPress(escapeKey);
-			SystemWait(Speed.UI);
-			sim.Keyboard.KeyPress(slotOneKey);
-			SystemWait(Speed.UI);
-			sim.Keyboard.KeyPress(characterKey);
-			SystemWait(Speed.UI);
-		}
-
-		public static void InventoryScreen()
-		{
-			sim.Keyboard.KeyPress(escapeKey);
-			SystemWait(Speed.UI);
-			sim.Keyboard.KeyPress(inventoryKey);
-			SystemWait(Speed.UI);
-		}
-
-		public static void MainMenuScreen()
-		{
-			sim.Keyboard.KeyPress(escapeKey);
-			SystemWait(Speed.UI);
-			sim.Keyboard.KeyPress(escapeKey);
-			SystemWait(Speed.UI);
-		}
-
-		#endregion Game Menu Navigation
 
 		#region Window Size Accessing
 
@@ -380,76 +353,6 @@ namespace InventoryKamera
 
 		#endregion Window Focusing
 
-		#region Mouse
-
-		[DllImport("user32.dll")]
-		public static extern bool SetCursorPos(int X, int Y);
-
-		public static bool SetCursor(int X, int Y)
-        {
-			return SetCursorPos(GetPosition().Left + X, GetPosition().Top + Y);
-		}
-
-		public static bool SetCursor(Point point)
-		{
-			return SetCursor(point.X, point.Y);
-		}
-
-		public static void Click()
-		{
-			if (SystemInformation.MouseButtonsSwapped)
-				sim.Mouse.RightButtonClick();
-			else
-				sim.Mouse.LeftButtonClick();
-		}
-
-		public static void Click(int x, int y)
-		{
-			SetCursor(x, y);
-			Click();
-		}
-
-		public static void Click(Point point)
-		{
-			Click(point.X, point.Y);
-		}
-
-		public static void Scroll(Direction direction, int scrolls, int delay = 1)
-        {
-			Action Scroll;
-            switch (direction)
-            {
-                case Direction.UP:
-					Scroll = () => sim.Mouse.VerticalScroll(1);
-					break;
-                case Direction.DOWN:
-					Scroll = () => sim.Mouse.VerticalScroll(-1);
-                    break;
-                case Direction.LEFT:
-					Scroll = () => sim.Mouse.HorizontalScroll(-1);
-                    break;
-                case Direction.RIGHT:
-					Scroll = () => sim.Mouse.HorizontalScroll(1);
-                    break;
-                default:
-                    return;
-            }
-            for (int i = 0; i < scrolls; i++)
-            {
-				Scroll();
-				Wait(delay);
-            }
-        }
-
-		public enum Direction
-        {
-			UP = 0,
-			DOWN = 1,
-			LEFT = 2,
-			RIGHT = 3,
-        }
-
-        #endregion Mouse
 
         #region Delays
 
@@ -498,10 +401,6 @@ namespace InventoryKamera
 					value = 2000;
 					break;
 
-				case Speed.SelectNextCharacter:
-					value = 700;
-					break;
-
 				case Speed.InventoryScroll:
 					value = 10;
 					break;
@@ -539,30 +438,6 @@ namespace InventoryKamera
 			return delay;
 		}
 
-        internal static void ClearArtifactFilters()
-        {
-            var x = (IsNormal ? 0.0875 : 0.0868) * GetWidth();
-			var y = (IsNormal ? 0.9389 : 0.9444) * GetHeight();
-
-			for (var i = 0; i < 2; ++i)
-			{
-				Click((int)x, (int)y);
-				SystemWait(Speed.Normal);
-			}
-			sim.Keyboard.KeyPress(escapeKey);
-			SystemWait(Speed.Fast);
-        }
-
-		internal static void ChangeArtifactSortObtained()
-		{
-            var x = 0.6437 * GetWidth();
-            var y = (IsNormal ? 0.1278 : 0.1150) * GetHeight();
-
-            Click((int)x, (int)y);
-
-            SystemWait(Speed.Slow);
-        }
-
         public enum Speed
 		{
 			Slowest,
@@ -574,7 +449,6 @@ namespace InventoryKamera
 			Fastest,
 			UI,
 			ArtifactIgnore,
-			SelectNextCharacter,
 			SelectNextInventoryItem,
 			InventoryScroll,
 			CharacterUI,

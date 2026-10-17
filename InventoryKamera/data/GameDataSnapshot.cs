@@ -1,0 +1,246 @@
+using Newtonsoft.Json.Linq;
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Linq;
+using System.Text.RegularExpressions;
+
+namespace InventoryKamera
+{
+    /// <summary>
+    /// One coherent, read-only view of game lookup data used by a scan. Collection topology is copied
+    /// and wrapped, so consumers cannot add, remove, or replace entries and later file reloads cannot
+    /// affect this instance. The retained <see cref="JObject"/> values are technically mutable; scanner
+    /// consumers must treat them as read-only. Per-scan custom names clone only the affected objects.
+    /// </summary>
+    public sealed class GameDataSnapshot
+    {
+        public IReadOnlyDictionary<string, JObject> Characters { get; }
+        public IReadOnlyDictionary<string, JObject> Artifacts { get; }
+        public IReadOnlyDictionary<string, string> Weapons { get; }
+        public IReadOnlyDictionary<string, string> CharacterDevelopmentItems { get; }
+        public IReadOnlyDictionary<string, string> Materials { get; }
+        public IReadOnlyDictionary<string, string> Stats { get; }
+        public IReadOnlyDictionary<string, string> Elements { get; }
+        public IReadOnlyCollection<string> GearSlots { get; }
+        public IReadOnlyCollection<string> EnhancementMaterials { get; }
+
+        public GameDataSnapshot(
+            IReadOnlyDictionary<string, JObject> characters,
+            IReadOnlyDictionary<string, JObject> artifacts,
+            IReadOnlyDictionary<string, string> weapons,
+            IReadOnlyDictionary<string, string> characterDevelopmentItems,
+            IReadOnlyDictionary<string, string> materials,
+            IReadOnlyDictionary<string, string> stats,
+            IReadOnlyDictionary<string, string> elements,
+            IEnumerable<string> gearSlots,
+            IEnumerable<string> enhancementMaterials)
+        {
+            Characters = Wrap(characters, nameof(characters));
+            Artifacts = Wrap(artifacts, nameof(artifacts));
+            Weapons = Wrap(weapons, nameof(weapons));
+            CharacterDevelopmentItems = Wrap(characterDevelopmentItems, nameof(characterDevelopmentItems));
+            Materials = Wrap(materials, nameof(materials));
+            Stats = Wrap(stats, nameof(stats));
+            Elements = Wrap(elements, nameof(elements));
+            GearSlots = Array.AsReadOnly((gearSlots ?? throw new ArgumentNullException(nameof(gearSlots))).ToArray());
+            EnhancementMaterials = Array.AsReadOnly(
+                (enhancementMaterials ?? throw new ArgumentNullException(nameof(enhancementMaterials))).ToArray());
+        }
+
+        internal GameDataSnapshot WithCharacterCustomNames(IReadOnlyDictionary<string, string> customNames)
+        {
+            if (customNames == null || customNames.Count == 0) return this;
+
+            var characters = new Dictionary<string, JObject>(Characters);
+            foreach (var pair in customNames)
+            {
+                string target = NormalizeKey(pair.Key);
+                string name = NormalizeKey(pair.Value);
+                if (target == name) continue;
+                if (!characters.TryGetValue(target, out JObject existing))
+                    throw new KeyNotFoundException($"Could not find '{target}' entry in characters.json");
+
+                var customized = (JObject)existing.DeepClone();
+                customized["CustomName"] = name;
+                characters[target] = customized;
+            }
+
+            return new GameDataSnapshot(
+                characters,
+                Artifacts,
+                Weapons,
+                CharacterDevelopmentItems,
+                Materials,
+                Stats,
+                Elements,
+                GearSlots,
+                EnhancementMaterials);
+        }
+
+        internal static string NormalizeKey(string text)
+        {
+            text = (text ?? string.Empty).ToLower();
+            string pascal = CultureInfo.GetCultureInfo("en-US").TextInfo.ToTitleCase(text);
+            return Regex.Replace(pascal, @"[\W]", string.Empty).ToLower();
+        }
+
+        private static IReadOnlyDictionary<TKey, TValue> Wrap<TKey, TValue>(
+            IReadOnlyDictionary<TKey, TValue> source,
+            string parameterName)
+        {
+            if (source == null) throw new ArgumentNullException(parameterName);
+            return new ReadOnlyDictionary<TKey, TValue>(new Dictionary<TKey, TValue>(source));
+        }
+    }
+
+    /// <summary>
+    /// Loads the current on-disk lookup files into one snapshot. DatabaseManager remains responsible
+    /// for downloading/updating those files; this factory only defines the scan-consumption boundary.
+    /// </summary>
+    internal sealed class GameDataSnapshotFactory
+    {
+        private static readonly string[] ManequinKeys = { "manequin1", "manequin2" };
+        private readonly DatabaseManager databaseManager;
+
+        internal GameDataSnapshotFactory(DatabaseManager databaseManager)
+        {
+            this.databaseManager = databaseManager ?? throw new ArgumentNullException(nameof(databaseManager));
+        }
+
+        internal GameDataSnapshot Load()
+        {
+            DatabaseManager manager = databaseManager;
+            Dictionary<string, JObject> characters = NormalizeSpecialCharacterMetadata(manager.LoadCharacters());
+
+            return new GameDataSnapshot(
+                characters,
+                manager.LoadArtifacts(),
+                manager.LoadWeapons(),
+                manager.LoadDevItems(),
+                manager.LoadMaterials(),
+                CreateStats(),
+                CreateElements(),
+                new[] { "flower", "plume", "sands", "goblet", "circlet" },
+                new[]
+                {
+                    "enhancementore",
+                    "fineenhancementore",
+                    "mysticenhancementore",
+                    "sanctifyingunction",
+                    "sanctifyingessence",
+                });
+        }
+
+        internal static JObject BuildManequinEntry(string key)
+        {
+            string good = char.ToUpper(key[0]) + key.Substring(1);
+            return new JObject
+            {
+                ["GOOD"] = good,
+                ["ConstellationName"] = new JArray(
+                    "Support entry to omit manequins during scanning; GOOD does not support manequins."),
+                ["ConstellationOrder"] = new JArray("burst", "skill"),
+                ["Element"] = new JArray("electro", "pyro", "dendro", "geo", "hydro", "anemo", "cryo"),
+                ["WeaponType"] = 0,
+            };
+        }
+
+        internal static Dictionary<string, JObject> NormalizeSpecialCharacterMetadata(
+            IReadOnlyDictionary<string, JObject> characters)
+        {
+            if (characters == null) throw new ArgumentNullException(nameof(characters));
+
+            // These records can lag behind newly available special-character elements in downloaded
+            // or persisted data. Clone only the affected values so snapshot construction neither
+            // mutates its source JObjects nor rewrites characters.json.
+            var normalized = new Dictionary<string, JObject>(characters);
+            if (normalized.TryGetValue("traveler", out JObject traveler))
+                normalized["traveler"] = NormalizeTravelerMetadata(traveler);
+
+            foreach (string key in ManequinKeys)
+            {
+                normalized[key] = normalized.TryGetValue(key, out JObject existing)
+                    ? WithRequiredElement(existing, "cryo")
+                    : BuildManequinEntry(key);
+            }
+
+            return normalized;
+        }
+
+        internal static JObject NormalizeTravelerMetadata(JObject source)
+        {
+            JObject normalized = WithRequiredElement(source, "cryo");
+            if (!(normalized["ConstellationOrder"] is JObject elementOrders))
+            {
+                elementOrders = new JObject();
+                normalized["ConstellationOrder"] = elementOrders;
+            }
+
+            // Current game data: Cryo Traveler C3 raises Burst and C5 raises Skill.
+            // Repair persisted/downloaded records locally so scans do not depend on a database
+            // refresh, while preserving every existing non-Cryo element order verbatim.
+            if (!(elementOrders["cryo"] is JArray cryoOrder)
+                || cryoOrder.Count != 2
+                || !string.Equals((string)cryoOrder[0], "burst", StringComparison.Ordinal)
+                || !string.Equals((string)cryoOrder[1], "skill", StringComparison.Ordinal))
+            {
+                elementOrders["cryo"] = new JArray("burst", "skill");
+            }
+
+            return normalized;
+        }
+
+        private static JObject WithRequiredElement(JObject source, string requiredElement)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+
+            var normalized = (JObject)source.DeepClone();
+            if (!(normalized["Element"] is JArray elements))
+            {
+                elements = new JArray();
+                normalized["Element"] = elements;
+            }
+
+            if (!elements.Values<string>().Any(element =>
+                string.Equals(element, requiredElement, StringComparison.OrdinalIgnoreCase)))
+            {
+                elements.Add(requiredElement);
+            }
+
+            return normalized;
+        }
+
+        private static Dictionary<string, string> CreateStats()
+        {
+            var stats = new Dictionary<string, string>
+            {
+                ["hp"] = "hp",
+                ["hp%"] = "hp_",
+                ["atk"] = "atk",
+                ["atk%"] = "atk_",
+                ["def"] = "def",
+                ["def%"] = "def_",
+                ["energyrecharge"] = "enerRech_",
+                ["elementalmastery"] = "eleMas",
+                ["healingbonus"] = "heal_",
+                ["critrate"] = "critRate_",
+                ["critdmg"] = "critDMG_",
+                ["physicaldmgbonus"] = "physical_dmg_",
+            };
+            foreach (string element in ElementNames)
+                stats[$"{element}dmgbonus"] = $"{element}_dmg_";
+            return stats;
+        }
+
+        private static Dictionary<string, string> CreateElements() => ElementNames.ToDictionary(
+            element => element,
+            element => char.ToUpper(element[0]) + element.Substring(1));
+
+        private static readonly string[] ElementNames =
+        {
+            "pyro", "hydro", "dendro", "electro", "anemo", "cryo", "geo",
+        };
+    }
+}

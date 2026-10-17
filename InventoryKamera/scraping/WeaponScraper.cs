@@ -1,10 +1,9 @@
-﻿using Accord.Imaging;
+﻿using InventoryKamera.game;
 using NLog;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
@@ -13,221 +12,325 @@ namespace InventoryKamera
     internal class WeaponScraper : InventoryScraper
     {
 		private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
+		private readonly GameDataSnapshot gameData;
+		private readonly WeaponSortModeVerifier sortModeVerifier;
 
-		public WeaponScraper()
+		// Set by ScanWeapons from SetSortMode's result; QueueScan
+		// only trusts the sorted-order early-stop optimization when this is true.
+		private bool sortModeConfirmed;
+
+		public WeaponScraper(
+            IOcrService ocrService,
+            IImagePreprocessor imagePreprocessor,
+            IScanSettings scanSettings,
+            IScanProgressReporter progressReporter,
+            ScanSession scanSession,
+            GameDataSnapshot gameData,
+            FailureDiagnosticStore diagnosticStore = null)
+            : base(ocrService, imagePreprocessor, scanSettings, progressReporter, scanSession, diagnosticStore)
         {
+			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
+			sortModeVerifier = new WeaponSortModeVerifier(
+				new NavigationWeaponSortModeCapture(),
+				new WeaponSortModeDetector(ocrService, imagePreprocessor),
+				new WeaponSortModeDiagnostics(this.diagnosticStore));
             inventoryPage = InventoryPage.Weapons;
-            SortByLevel = Properties.Settings.Default.MinimumWeaponLevel > 1;
+            SortByLevel = scanSettings.MinimumWeaponLevel > 1;
         }
 
-        public void ScanWeapons(int count = 0)
+        /// <summary>
+        /// Controller-mode equivalent of <see cref="QueueScan"/>: takes an already-captured card
+        /// (from <see cref="ScanWeapons"/>'s navigation loop) instead of re-capturing via
+        /// <see cref="InventoryScraper.GetItemCard"/>'s mouse-hover-popup region. Same filtering/queue
+        /// dispatch as the mouse path so both feed the identical worker/cataloguing pipeline.
+        /// </summary>
+        private void QueueScan(Bitmap card, int id)
         {
-            // Determine maximum number of weapons to scan
-            int weaponCount = count == 0 ? ScanItemCount() : count;
-            int page = 0;
-            var (rectangles, cols, rows) = GetPageOfItems(page);
-            int fullPage = cols * rows;
-            int totalRows = (int)Math.Ceiling(weaponCount / (decimal)cols);
-            int cardsQueued = 0;
-            int rowsQueued = 0;
-            int offset = 0;
-            UserInterface.SetWeapon_Max(weaponCount);
+            var createdImages = new List<Bitmap> { card };
+            OCRImageCollection work = null;
+            bool ownershipTransferred = false;
+            try
+            {
+                Bitmap name = GetItemNameBitmap(card);
+                createdImages.Add(name);
+                Bitmap level = GetLevelBitmap(card);
+                createdImages.Add(level);
 
-            // Determine Delay if delay has not been found before
-            // Scraper.FindDelay(rectangles);
+                WeaponThresholdObservation firstEvidence = ReadThresholdObservation(name, level);
+                Bitmap confirmationCard = null;
+                Bitmap confirmationName = null;
+                Bitmap confirmationLevel = null;
+                WeaponThresholdDecision filterDecision;
+                try
+                {
+                    filterDecision = WeaponThresholdEvidence.Evaluate(
+                    firstEvidence,
+                    scanSettings.MinimumWeaponRarity,
+                    scanSettings.MinimumWeaponLevel,
+                    sortModeConfirmed,
+                    SortByLevel,
+                    () =>
+                    {
+                        scanSession.CancellationToken.ThrowIfCancellationRequested();
+                        confirmationCard = GetItemCard();
+                        confirmationName = GetItemNameBitmap(confirmationCard);
+                        confirmationLevel = GetLevelBitmap(confirmationCard);
+                        return ReadThresholdObservation(confirmationName, confirmationLevel);
+                    },
+                    scanSession.CancellationToken);
+					scanSession.CancellationToken.ThrowIfCancellationRequested();
 
+                    Logger.Debug(
+                        "Weapon scan #{0}: threshold decision={1}; sortConfirmed={2}; sort={3}; " +
+                        "firstRarity={4}; firstLevel={5}; confirmationRarity={6}; confirmationLevel={7}.",
+                        id,
+                        filterDecision.ReasonCode,
+                        sortModeConfirmed,
+                        SortByLevel ? "Level" : "Quality",
+                        FormatRarity(firstEvidence),
+                        FormatLevel(firstEvidence),
+                        FormatRarity(filterDecision.Confirmation),
+                        FormatLevel(filterDecision.Confirmation));
+
+                    if (filterDecision.Reason == WeaponThresholdDecisionReason.ConfirmationConflictContinue ||
+                        filterDecision.Reason == WeaponThresholdDecisionReason.ConfirmationUnresolvedContinue)
+                    {
+                        SaveThresholdDiagnostics(
+                            id,
+                            filterDecision,
+                            name,
+                            level,
+                            confirmationName,
+                            confirmationLevel);
+                    }
+
+                    // A conflict means the original stop-triggering frame is not trustworthy. Feed
+                    // the newest complete card to the normal worker instead of exporting data from
+                    // the suspect first frame. An unresolved confirmation will then fail ordinary
+                    // model validation visibly rather than silently terminating the inventory scan.
+                    if (!filterDecision.ShouldDiscard && filterDecision.ConfirmationRequested &&
+                        confirmationCard != null && confirmationName != null && confirmationLevel != null)
+                    {
+                        foreach (Bitmap image in createdImages.Distinct(ReferenceEqualityComparer.Instance))
+                            image?.Dispose();
+                        createdImages.Clear();
+
+                        card = confirmationCard;
+                        name = confirmationName;
+                        level = confirmationLevel;
+                        confirmationCard = null;
+                        confirmationName = null;
+                        confirmationLevel = null;
+                        createdImages.Add(card);
+                        createdImages.Add(name);
+                        createdImages.Add(level);
+                    }
+                }
+                finally
+                {
+                    confirmationLevel?.Dispose();
+                    confirmationName?.Dispose();
+                    confirmationCard?.Dispose();
+                }
+
+                StopScanning = filterDecision.ShouldStop;
+
+                Bitmap refinement = GetRefinementBitmap(card);
+                createdImages.Add(refinement);
+                Bitmap equipped = GetEquippedBitmap(card);
+                createdImages.Add(equipped);
+                Bitmap locked = GetLockedBitmap(card);
+                createdImages.Add(locked);
+
+                var weaponImages = new List<Bitmap>
+                {
+                    name, //0
+                    level,
+                    refinement,
+                    locked,
+                    equipped,
+                    card //5
+                };
+                work = new OCRImageCollection(weaponImages, "weapon", id);
+
+                if (filterDecision.ShouldDiscard)
+                {
+                    Logger.Info("Weapon scan #{0}: filtered out (reason={1}, stopping={2}).",
+                        id, filterDecision.Reason, StopScanning);
+                    // Filtered-out items never reached ProcessImageCollectionAsync (GameScanner.cs),
+                    // which is the only place that normally saves per-region crops -- without this, a
+                    // wrong belowLevel/belowRarity read (e.g. a miscalibrated crop) filtered (or, worse,
+                    // via StopScanning, silently ended) a scan with zero visual evidence of what was
+                    // actually captured.
+                    SaveDebugScreenshot(name, $"weapons/weapon{id}/name/name");
+                    SaveDebugScreenshot(level, $"weapons/weapon{id}/level/level");
+                    SaveDebugScreenshot(locked, $"weapons/weapon{id}/locked/locked");
+                    SaveDebugScreenshot(card, $"weapons/weapon{id}/card");
+                    return;
+                }
+
+                Logger.Info("Weapon scan #{0}: queued for cataloguing.", id);
+				scanSession.CancellationToken.ThrowIfCancellationRequested();
+                scanSession.TryQueueWork(work);
+                ownershipTransferred = true;
+            }
+            finally
+            {
+                if (!ownershipTransferred)
+                {
+                    if (work != null)
+                    {
+                        work.Dispose();
+                    }
+                    else
+                    {
+                        foreach (Bitmap image in createdImages.Distinct(ReferenceEqualityComparer.Instance))
+                            image?.Dispose();
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Sets the weapon list's sort mode via controller (per user, 2026-07-04, live-tested
+        /// working): D-pad Down opens the dropdown, the left stick moves the highlighted selection
+        /// up/down within it, B confirms/closes it (the established confirm button everywhere else in
+        /// this codebase). No-ops if already on <paramref name="targetMode"/>. Assumes the dropdown
+        /// opens with the currently-active mode pre-highlighted, so the up/down step count can be
+        /// computed from a visually detected current mode. Detection and post-change verification
+        /// use bounded fresh-screen retries; if either remains uncertain, sorting is not trusted.
+        /// </summary>
+        /// <returns>True only if the visible mode is verified as <paramref name="targetMode"/> before
+        /// or after the bounded change attempt; false if either the initial read or post-change
+        /// verification remains uncertain, in which case callers must not assume the grid is sorted.</returns>
+        private bool SetSortMode(GameNavigator navigator, string targetMode)
+        {
+            var timing = new WeaponSortModeTiming(
+                dropdownHoldMs: ScaledControllerDelay(80),
+                dropdownSettleMs: ScaledControllerDelay(300),
+                preConfirmSettleMs: ScaledControllerDelay(100),
+                confirmHoldMs: ScaledControllerDelay(80),
+                postConfirmSettleMs: ScaledControllerDelay(300),
+                detectionRetryMs: ScaledControllerDelay(300));
+            return sortModeVerifier.ConfirmSortMode(navigator, targetMode, timing);
+        }
+
+        /// <summary>
+        /// Controller-driven weapon scan (Phase 3 §6c) -- real replacement for <see cref="ScanWeapons"/>'s
+        /// mouse click/scroll loop, wired into <c>InventoryKamera.GatherData</c>. Takes an
+        /// already-connected <paramref name="navigator"/> that's already inside Inventory (per user,
+        /// 2026-07-04: switching between Weapons/Artifacts tabs shouldn't back all the way out to the
+        /// unpaused game state and re-enter -- <c>GatherData</c> now owns one <see cref="GameNavigator"/>
+        /// and one <see cref="InventoryScraper.EnterInventory"/> call spanning every
+        /// controller-driven scan phase. The caller visually verifies Weapons through
+        /// <see cref="InventoryTabNavigator"/> before invoking this method. It then repeatedly reads
+        /// the selected item's card and advances to the next
+        /// item with a single left-stick push to the Right -- per user (2026-07-03, live-tested), the
+        /// grid auto-advances/wraps to the next item in inventory order on its own, including across row
+        /// boundaries, so no column/row bookkeeping is needed (an earlier Down+Left-to-column-0 manual
+        /// wrap scheme, never live-tested past 3 sequential items, has been removed).
+        /// STILL UNVERIFIED: end-of-list behavior for the last partial row/end of inventory, and
+        /// <see cref="SetSortMode"/>'s pre-highlighted-dropdown assumption. Sorts by
+        /// Level or Quality first (matching <see cref="SortByLevel"/>, the same flag the mouse path
+        /// uses) via <see cref="SetSortMode"/> (2026-07-04), which is what makes
+        /// <see cref="QueueScan"/>'s early-stop-on-threshold safe again.
+        /// </summary>
+        /// <param name="verifiedCurrentTab">The tab already verified by the shared state-aware
+        /// navigator. A missing or different value prevents the phase from starting.</param>
+        /// <returns>Weapons after a verified scan, or the supplied tab when the precondition failed.</returns>
+        public string ScanWeapons(GameNavigator navigator, int count = 0, string verifiedCurrentTab = null)
+        {
             StopScanning = false;
 
-            Logger.Info("Found {0} for weapon count.", weaponCount);
-
-            SelectSortingMethod();
-
-            // Go through weapon list
-            while (cardsQueued < weaponCount)
+            string currentTab = SwitchToTab("Weapons", verifiedCurrentTab);
+            if (StopScanning) return currentTab;
+            sortModeConfirmed = SetSortMode(navigator, SortByLevel ? "Level" : "Quality");
+            if (!sortModeConfirmed)
             {
-                Logger.Debug("Scanning weapon page {0}", page);
-                Logger.Debug("Located {0} possible item locations on page.", rectangles.Count);
-
-                int cardsRemaining = weaponCount - cardsQueued;
-                // Go through each "page" of items and queue. In the event that not a full page of
-                // items are scrolled to, offset the index of rectangle to start clicking from
-                for (int i = cardsRemaining < fullPage ? (rows - (totalRows - rowsQueued)) * cols : 0; i < rectangles.Count; i++)
-                {
-                    Rectangle item = rectangles[i];
-                    Navigation.SetCursor(item.Center().X, item.Center().Y + offset);
-                    Navigation.Click();
-                    Navigation.SystemWait(Navigation.Speed.SelectNextInventoryItem);
-
-                    // Queue card for scanning
-                    QueueScan(cardsQueued);
-                    cardsQueued++;
-                    if (cardsQueued >= weaponCount || this.StopScanning)
-                    {
-                        if (StopScanning) Logger.Info("Stopping weapon scan based on filtering");
-                        else Logger.Info("Stopping weapon scan based on scans queued ({0} of {1})", cardsQueued, weaponCount);
-                        return;
-                    }
-                }
-                Logger.Debug("Finished queuing page of weapons. Scrolling...");
-
-                rowsQueued += rows;
-
-                // Page done, now scroll
-                // If the number of remaining scans is shorter than a full page then
-                // only scroll a few rows
-                if (totalRows - rowsQueued <= rows)
-                {
-                    if (Navigation.GetAspectRatio() == new Size(8, 5))
-                    {
-                        offset = 35; // Lazy fix
-                    }
-                    for (int i = 0; i < 10 * (totalRows - rowsQueued) - 1; i++)
-                    {
-                        Navigation.sim.Mouse.VerticalScroll(-1);
-                        Navigation.Wait(1);
-                    }
-                    Navigation.SystemWait(Navigation.Speed.Fast);
-                }
-                else
-                {
-                    // Scroll back one to keep it from getting too crazy
-                    if (rowsQueued % 15 == 0)
-                    {
-                        Navigation.sim.Mouse.VerticalScroll(1);
-                    }
-                    for (int i = 0; i < 10 * rows - 1; i++)
-                    {
-                        Navigation.sim.Mouse.VerticalScroll(-1);
-                        Navigation.Wait(1);
-                    }
-                    Navigation.SystemWait(Navigation.Speed.Fast);
-                }
-                ++page;
-                (rectangles, cols, rows) = GetPageOfItems(page, acceptLess: totalRows - rowsQueued <= fullPage);
+                Logger.Error("Weapon sort mode could not be confirmed -- early-stop-on-threshold is disabled, so the full weapon grid will be scanned. See ./logging/failures/ for attempt crops.");
+                progressReporter.AddError("Could not confirm weapon sort mode; scanning all weapons (filter early-stop disabled). See logging/failures.");
             }
 
-            void SelectLevelSorting()
+            int weaponCount = count == 0 ? ScanItemCount() : count;
+            progressReporter.SetWeapon_Max(weaponCount);
+
+            int scanned = 0;
+
+            while (scanned < weaponCount && scanSession.ShouldContinue(StopScanning))
             {
-                Navigation.SetCursor(
-                    X: (int)(230 / 1280.0 * Navigation.GetWidth()),
-                    Y: (int)(680 / 720.0 * Navigation.GetHeight()));
-                Navigation.Click();
-                Navigation.Wait();
-                Navigation.SetCursor(
-                    X: (int)(250 / 1280.0 * Navigation.GetWidth()),
-                    Y: (int)(575 / 720.0 * Navigation.GetHeight()));
-                Navigation.Click();
-                Navigation.Wait();
+                if (!progressReporter.WaitIfCorrectionPending(scanSession.CancellationToken)) break;
+
+                // Not wrapped in `using` -- QueueScan hands `card` into weaponImages,
+                // which either gets disposed immediately (filtered out) or flows into the worker
+                // channel for async cataloguing/disposal, matching QueueScan's mouse-path pattern.
+                // Disposing it here would race the worker thread.
+                Bitmap card = GetItemCard();
+                QueueScan(card, scanned);
+                scanned++;
+
+                if (scanned >= weaponCount) break;
+
+                // Per user (2026-07-03, live-tested): the grid auto-advances to the next item in
+                // inventory order on its own, including across row boundaries -- a single left
+                // stick push to the Right is all that's needed. Supersedes an earlier, never-live-
+                // tested Down+Left-to-column-0 manual row-wrap scheme (and the column/
+                // GetPageOfItems bookkeeping it needed). Timing is scaled by the app's existing
+                // scan-speed setting via ScaledControllerDelay (2026-07-04) rather than fixed --
+                // see that method's doc comment for the base values and the Fast-tier reasoning.
+                // An extra fixed animation-settle wait was tried here (2026-07-04, for the
+                // lock-icon check's benefit) and reverted -- measured as the direct cause of a
+                // significant scan slowdown, so MoveStep's own settle is relied on alone. If lock
+                // status proves unreliable live, that's the first place to look again.
+                navigator.MoveStep(GameNavigator.MenuDirection.Right,
+                    holdMs: ScaledControllerDelay(80), settleMs: ScaledControllerDelay(100));
             }
 
-            void SelectQualitySorting()
-            {
-                Navigation.SetCursor(
-                                        X: (int)(230 / 1280.0 * Navigation.GetWidth()),
-                                        Y: (int)(680 / 720.0 * Navigation.GetHeight()));
-                Navigation.Click();
-                Navigation.Wait();
-                Navigation.SetCursor(
-                    X: (int)(250 / 1280.0 * Navigation.GetWidth()),
-                    Y: (int)(615 / 720.0 * Navigation.GetHeight()));
-                Navigation.Click();
-                Navigation.Wait();
-            }
+            Logger.Info("Controller weapon scan finished: {0} of {1} scanned (cancelled={2}, stopped={3})",
+                scanned, weaponCount, scanSession.IsCancellationRequested, StopScanning);
 
-            void SelectSortingMethod()
-            {
-                if (SortByLevel)
-                {
-                    Logger.Debug("Sorting by level to optimize scan time.");
-                    // Check if sorted by level
-                    if (CurrentSortingMethod() != "level")
-                    {
-                        Logger.Debug("Not already sorting by level...");
-                        // If not, sort by level
-                        SelectLevelSorting();
-                    }
-                    Logger.Debug("Inventory is sorted by level.");
-                }
-                else
-                {
-                    Logger.Debug("Sorting by quality to optimize scan time.");
-                    // Check if sorted by quality
-                    if (CurrentSortingMethod() != "quality")
-                    {
-                        Logger.Debug("Not already sorting by quality...");
-                        // If not, sort by quality
-                        SelectQualitySorting();
-                    }
-                    Logger.Debug("Inventory is sorted by quality");
-                }
-            }
+            // The state-aware transition gate verified Weapons before this phase was invoked.
+            return "Weapons";
         }
 
-        private void QueueScan(int id)
-        {
-			var card = GetItemCard();
-
-            Bitmap name, level, refinement, equipped, locked;
-            name = GetItemNameBitmap(card);
-            locked = GetLockedBitmap(card);
-            equipped = GetEquippedBitmap(card);
-            level = GetLevelBitmap(card);
-            refinement = GetRefinementBitmap(card);
-
-            //Navigation.DisplayBitmap(name);
-            //Navigation.DisplayBitmap(locked);
-            //Navigation.DisplayBitmap(equipped);
-            //Navigation.DisplayBitmap(level);
-            //Navigation.DisplayBitmap(refinement);
-
-            // Separate to all pieces of card
-            List<Bitmap> weaponImages = new List<Bitmap>
-            {
-                name, //0
-                level,
-                refinement,
-                locked,
-                equipped,
-                card //5
-            };
-
-            bool a = false;
-
-            bool belowRarity = GetQuality(name) < Properties.Settings.Default.MinimumWeaponRarity;
-            bool belowLevel = ScanLevel(level, ref a) < Properties.Settings.Default.MinimumWeaponLevel;
-            StopScanning = (SortByLevel && belowLevel) || (!SortByLevel && belowRarity);
-
-            if (StopScanning || belowRarity || belowLevel)
-            {
-                weaponImages.ForEach(i => i.Dispose());
-                return;
-            }
-
-            // Send images to worker queue
-            InventoryKamera.workerQueue.Enqueue(new OCRImageCollection(weaponImages, "weapon", id));
-        }
-
+        /// <summary>Extracts a bitmap copy of the weapon level readout, measured with the
+        /// coordinate-picker tool (2026-07-03).</summary>
         Bitmap GetLevelBitmap(Bitmap card)
         {
             return GenshinProcesor.CopyBitmap(card,
                 new Rectangle(
-                    x: (int)(card.Width * 0.060),
-                    y: (int)(card.Height * (Navigation.IsNormal ? 0.367 : 0.320)),
-                    width: (int)(card.Width * 0.262),
-                    height: (int)(card.Height * (Navigation.IsNormal ? 0.035 : 0.033))));
+                    x: (int)(card.Width * 0.0564),
+                    y: (int)(card.Height * (Navigation.IsNormal ? 0.3102 : 0.2747)),
+                    width: (int)(card.Width * 0.2618),
+                    height: (int)(card.Height * 0.0352)));
         }
 
+        /// <summary>Extracts a bitmap copy of the weapon refinement rank readout, measured with the
+        /// coordinate-picker tool (2026-07-03).</summary>
         Bitmap GetRefinementBitmap(Bitmap card)
         {
             return GenshinProcesor.CopyBitmap(card,
                 new Rectangle(
-                    x: (int)(card.Width * (Navigation.IsNormal ? 0.058 : 0.057)),
-                    y: (int)(card.Height * (Navigation.IsNormal ? 0.417 : 0.364)),
-                    width: (int)(card.Width * (Navigation.IsNormal ? 0.074 : 0.075)),
-                    height: (int)(card.Height * (Navigation.IsNormal ? 0.038 : 0.034))));
+                    x: (int)(card.Width * 0.0564),
+                    y: (int)(card.Height * (Navigation.IsNormal ? 0.3556 : 0.3114)),
+                    width: (int)(card.Width * 0.0691),
+                    height: (int)(card.Height * 0.0324)));
         }
 
-        public async Task<Weapon> CatalogueFromBitmapsAsync(List<Bitmap> bm, int id)
+        /// <summary>Extracts a bitmap copy of an item card's lock status icon, measured with the
+        /// coordinate-picker tool (2026-07-04). Uses the same lock-color pixel check
+        /// (<c>CatalogueFromBitmapsAsync</c>'s <c>lockedColor</c>/<c>CompareColors</c> at pixel
+        /// (5,5)) as the in-game lock badge asset elsewhere in this codebase.</summary>
+        Bitmap GetLockedBitmap(Bitmap card)
+        {
+            return GenshinProcesor.CopyBitmap(card,
+                new Rectangle(
+                    x: (int)(card.Width * 0.8545),
+                    y: (int)(card.Height * (Navigation.IsNormal ? 0.3083: 0.2674)),
+                    width: (int)(card.Width * 0.0764),
+                    height: (int)(card.Height * 0.0389)));
+        }
+
+        public async Task<(Weapon weapon, PendingNameCorrection pending)> CatalogueFromBitmapsAsync(List<Bitmap> bm, int id)
 		{
 			// Init Variables
 			string name = null;
@@ -237,6 +340,7 @@ namespace InventoryKamera
 			bool locked = false;
 			string equippedCharacter = null;
 			int rarity = 0;
+			PendingNameCorrection pendingName = null;
 
 			if (bm.Count >= 4)
 			{
@@ -259,7 +363,7 @@ namespace InventoryKamera
 
 				var taskName = Task.Run(() =>
 				{
-					name = ScanWeaponName(ScanItemName(bm[w_name]));
+					(name, pendingName) = ScanWeaponNameDeferred(bm[w_name]);
 				});
 				var taskLevel = Task.Run(() => level = ScanLevel(bm[w_level], ref ascended));
 				var taskRefinement = Task.Run(() => refinementLevel = ScanRefinement(bm[w_refinement]));
@@ -276,19 +380,19 @@ namespace InventoryKamera
 
 				await Task.WhenAll(tasks.ToArray());
 			}
-			return new Weapon(name, level, ascended, refinementLevel, locked, equippedCharacter, id, rarity);
+			return (new Weapon(name, level, ascended, refinementLevel, locked, equippedCharacter, id, rarity, gameData), pendingName);
 		}
 
         public bool IsEnhancementMaterial(Bitmap nameBitmap)
 		{
 			string material = ScanEnchancementOreName(nameBitmap);
-			return !string.IsNullOrWhiteSpace(material) && GenshinProcesor.enhancementMaterials.Contains(material.ToLower());
+			return !string.IsNullOrWhiteSpace(material) && gameData.EnhancementMaterials.Contains(material.ToLower());
 		}
 
 		public string ScanEnchancementOreName(Bitmap bm)
 		{
 			// Analyze
-			string name = GenshinProcesor.FindClosestMaterialName(ScanItemName(bm), minConfidence: 95);
+			string name = TextNormalizer.FindClosestMaterialName(ScanItemName(bm), gameData, minConfidence: 95);
 
 			return name;
 		}
@@ -297,33 +401,116 @@ namespace InventoryKamera
 
 		private string ScanWeaponName(string name)
         {
-            return GenshinProcesor.FindClosestWeapon(name);
+            return TextNormalizer.FindClosestWeapon(name, gameData);
         }
 
-        public int ScanLevel(Bitmap bm, ref bool ascended)
+        /// <summary>
+        /// Weapon name recognition (Phase 3 §3.3) since a misread name silently corrupts export data --
+        /// unlike <see cref="ScanEnchancementOreName"/> (fed dozens of times per scan by enhancement
+        /// fodder), this runs once per weapon actually being cataloged. Returns the raw best-guess name
+        /// immediately; if it's below the confidence threshold, it also returns a
+        /// <see cref="PendingNameCorrection"/> so the correction dialog can be deferred to the end of
+        /// the scan instead of interrupting the click/scroll loop mid-scan. Returns a null pending when
+        /// the recognition is confident enough to need no correction.
+        /// </summary>
+        private (string name, PendingNameCorrection pending) ScanWeaponNameDeferred(Bitmap nameBitmap)
+        {
+            var (rawName, confidencePercent) = ScanItemNameWithConfidence(nameBitmap);
+            string name = ScanWeaponName(rawName);
+
+            Logger.Debug("Weapon name OCR: rawText=\"{0}\" matchedName=\"{1}\" confidence={2:0.0}% threshold={3}%", rawName, name, confidencePercent, scanSettings.OcrConfidenceThreshold);
+            if (string.IsNullOrWhiteSpace(name) || confidencePercent < scanSettings.OcrConfidenceThreshold)
+            {
+                Logger.Debug("Weapon name below confidence threshold -- deferring inline correction to end of scan");
+                var pending = new PendingNameCorrection(rawName, confidencePercent, "Weapon name", corrected =>
+                {
+                    if (string.IsNullOrWhiteSpace(corrected) || corrected == rawName) return null;
+                    string normalized = Regex.Replace(corrected.ToLower(), @"[\W]", string.Empty);
+                    return ScanWeaponName(normalized) ?? corrected;
+                });
+                return (name, pending);
+            }
+
+            return (name, null);
+        }
+
+		public int ScanLevel(Bitmap bm, ref bool ascended)
 		{
-			Bitmap n = GenshinProcesor.ConvertToGrayscale(bm);
-			GenshinProcesor.SetInvert(ref n);
+			WeaponLevelParseResult result = ReadLevel(bm);
+			if (!result.Success) return -1;
 
-			string text = GenshinProcesor.AnalyzeText(n).Trim();
-			n.Dispose();
-			text = Regex.Replace(text, @"(?![\d/]).", string.Empty);
+			ascended = result.Ascended;
+			return result.Level.Value;
+		}
 
-			if (text.Contains('/'))
+		private WeaponThresholdObservation ReadThresholdObservation(Bitmap name, Bitmap level) =>
+			new WeaponThresholdObservation(GetQuality(name), ReadLevel(level));
+
+		private WeaponLevelParseResult ReadLevel(Bitmap bitmap)
+		{
+			Bitmap processed = imagePreprocessor.ConvertToGrayscale(bitmap);
+			try
 			{
-				string[] temp = text.Split(new[] { '/' }, 2);
-
-				if (temp.Length == 2)
-				{
-					if (int.TryParse(temp[0], out int level) && int.TryParse(temp[1], out int maxLevel))
-					{
-						maxLevel = (int)Math.Round(maxLevel / 10.0, MidpointRounding.AwayFromZero) * 10;
-						ascended = 20 <= level && level < maxLevel;
-						return level;
-					}
-				}
+				imagePreprocessor.SetInvert(ref processed);
+				string rawText = ocrService.AnalyzeText(processed).Trim();
+				WeaponLevelParseResult result = WeaponLevelParser.Parse(rawText);
+				Logger.Debug(
+					"Weapon level OCR: raw=\"{0}\"; level={1}; maxLevel={2}; accepted={3}; reason={4}.",
+					rawText.Replace("\r", " ").Replace("\n", " "),
+					result.Level?.ToString() ?? "unresolved",
+					result.MaximumLevel?.ToString() ?? "unresolved",
+					result.Success,
+					result.ReasonCode);
+				return result;
 			}
-			return -1;
+			finally
+			{
+				processed?.Dispose();
+			}
+		}
+
+		private void SaveThresholdDiagnostics(
+			int id,
+			WeaponThresholdDecision decision,
+			Bitmap firstName,
+			Bitmap firstLevel,
+			Bitmap confirmationName,
+			Bitmap confirmationLevel)
+		{
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"weapon_threshold",
+					$"weapon_{id}_{decision.ReasonCode}");
+				failure.SaveBitmap("first_rarity.png", firstName);
+				failure.SaveBitmap("first_level.png", firstLevel);
+				if (confirmationName != null) failure.SaveBitmap("confirmation_rarity.png", confirmationName);
+				if (confirmationLevel != null) failure.SaveBitmap("confirmation_level.png", confirmationLevel);
+				failure.SaveText(
+					"decision.txt",
+					$"reason={decision.ReasonCode}\n" +
+					$"sort={(SortByLevel ? "Level" : "Quality")}\n" +
+					$"minimumRarity={scanSettings.MinimumWeaponRarity}\n" +
+					$"minimumLevel={scanSettings.MinimumWeaponLevel}\n" +
+					$"firstRarity={FormatRarity(decision.First)}\n" +
+					$"firstLevel={FormatLevel(decision.First)}\n" +
+					$"confirmationRarity={FormatRarity(decision.Confirmation)}\n" +
+					$"confirmationLevel={FormatLevel(decision.Confirmation)}\n");
+				Logger.Warn("Saved conflicting weapon-threshold evidence to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save weapon-threshold diagnostics for weapon #{0}.", id);
+			}
+		}
+
+		private static string FormatRarity(WeaponThresholdObservation observation) =>
+			observation?.Rarity?.ToString() ?? "unresolved";
+
+		private static string FormatLevel(WeaponThresholdObservation observation)
+		{
+			if (observation?.Level?.Success != true) return "unresolved";
+			return $"{observation.Level.Level}/{observation.Level.MaximumLevel}";
 		}
 
 		public int ScanRefinement(Bitmap image)
@@ -332,10 +519,10 @@ namespace InventoryKamera
 			{
 				using (Bitmap up = GenshinProcesor.ScaleImage(image, factor))
 				{
-					Bitmap n = GenshinProcesor.ConvertToGrayscale(up);
-					GenshinProcesor.SetInvert(ref n);
+					Bitmap n = imagePreprocessor.ConvertToGrayscale(up);
+					imagePreprocessor.SetInvert(ref n);
 
-					string text = GenshinProcesor.AnalyzeText(n).Trim();
+					string text = ocrService.AnalyzeText(n).Trim();
 					n.Dispose();
 					text = Regex.Replace(text, @"[^\d]", string.Empty);
 
@@ -351,10 +538,10 @@ namespace InventoryKamera
 
 		public string ScanEquippedCharacter(Bitmap bm)
 		{
-			Bitmap n = GenshinProcesor.ConvertToGrayscale(bm);
-			GenshinProcesor.SetContrast(60.0, ref n);
+			Bitmap n = imagePreprocessor.ConvertToGrayscale(bm);
+			imagePreprocessor.SetContrast(60.0, ref n);
 
-			string extractedString = GenshinProcesor.AnalyzeText(n);
+			string extractedString = ocrService.AnalyzeText(n);
 			n.Dispose();
 
 			if (extractedString != "")
@@ -365,7 +552,7 @@ namespace InventoryKamera
 					var name = extractedString.Split(':')[1];
 
 					name = Regex.Replace(name, @"[\W]", string.Empty).ToLower();
-					name = GenshinProcesor.FindClosestCharacterName(name);
+					name = TextNormalizer.FindClosestCharacterName(name, gameData);
 
 					return name;
 				}

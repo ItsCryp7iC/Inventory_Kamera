@@ -1,9 +1,9 @@
-﻿using Accord.Imaging;
-using Accord.Imaging.Filters;
+﻿using InventoryKamera.game;
 using NLog;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 
@@ -59,12 +59,61 @@ namespace InventoryKamera
 
         protected readonly List<InventoryPage> materialPages;
 
-        private List<Rectangle> prevRect;
-        private int prevColumn = 0;
-        private int prevRow = 0;
+        protected readonly IOcrService ocrService;
+        protected readonly IImagePreprocessor imagePreprocessor;
+        protected readonly IScanSettings scanSettings;
+        protected readonly IScanProgressReporter progressReporter;
+        protected readonly ScanSession scanSession;
+        protected readonly FailureDiagnosticStore diagnosticStore;
 
-        public InventoryScraper() 
+        /// <summary>
+        /// Shared with every subclass (previously duplicated as a private method on
+        /// <c>ArtifactScraper</c> only) so every controller-mode capture region can leave a visual
+        /// trail when <see cref="IScanSettings.LogScreenshots"/> is on, not just artifacts.
+        /// <paramref name="relativePath"/> may contain '/' to nest into subfolders (e.g.
+        /// <c>"weapons/weapon0/name/name"</c>), matching the per-item folder layout
+        /// <c>InventoryKamera.ProcessImageCollectionAsync</c> already uses for cataloguing failures --
+        /// so scan attempts saved from here land in the same kind of organized tree instead of a flat
+        /// dump of files directly under <c>./logging</c>.
+        /// </summary>
+        protected void SaveDebugScreenshot(Bitmap bitmap, string relativePath, bool force = false)
         {
+            if (!force && !scanSettings.LogScreenshots) return;
+
+            string fullPath = Path.Combine("./logging", relativePath + ".png");
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath));
+            bitmap.Save(fullPath);
+        }
+
+        protected void SaveFailureScreenshot(Bitmap bitmap, string category, string context, string fileName)
+        {
+            try
+            {
+                FailureDiagnosticScope failure = diagnosticStore.CreateFailure(category, context);
+                failure.SaveBitmap(fileName, bitmap);
+                Logger.Warn("Saved failure diagnostics to {0}.", failure.DirectoryPath);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn(ex, "Could not save {0} failure diagnostics.", category);
+            }
+        }
+
+        public InventoryScraper(
+            IOcrService ocrService,
+            IImagePreprocessor imagePreprocessor,
+            IScanSettings scanSettings,
+            IScanProgressReporter progressReporter,
+            ScanSession scanSession,
+            FailureDiagnosticStore diagnosticStore = null)
+        {
+            this.ocrService = ocrService;
+            this.imagePreprocessor = imagePreprocessor;
+            this.scanSettings = scanSettings;
+            this.progressReporter = progressReporter;
+            this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
+            this.diagnosticStore = diagnosticStore ?? FailureDiagnosticStore.CreateDefault();
+
             materialPages = new List<InventoryPage>();
 
             materialPages.AddRange(Enum.GetValues(typeof(InventoryPage)).Cast<InventoryPage>());
@@ -72,30 +121,11 @@ namespace InventoryKamera
             materialPages.Remove(InventoryPage.Artifacts);
         }
 
-        internal bool StopScanning { get; set; }
-
         /// <summary>
-        /// Gets the item card on the right side of the in-game screen
+        /// Stops only this scraper after a filter/end-of-list condition. It is deliberately separate
+        /// from <see cref="ScanSession"/> cancellation so later scan phases can still run.
         /// </summary>
-        /// <returns>An image of the in-game item card</returns>
-        internal Bitmap GetItemCard()
-        {
-            Rectangle cardRectangle = new Rectangle();
-
-            using (var window = Navigation.CaptureWindow())
-            {
-
-                cardRectangle.X = (int)(window.Width * 0.6807);
-                cardRectangle.Y = (int)(window.Height * (Navigation.IsNormal ? 0.1102 : 0.0989));
-
-                cardRectangle.Width = (int)(window.Width * 0.2573);
-                cardRectangle.Height = (int)(window.Height * (Navigation.IsNormal ? 0.7787 : 0.8022));
-
-
-                return GenshinProcesor.CopyBitmap(window, cardRectangle);
-            }
-
-        }
+        internal bool StopScanning { get; set; }
 
         /// <summary>
         /// Parses the item name from an item card's nameplate
@@ -104,383 +134,178 @@ namespace InventoryKamera
         /// <returns>String parsed from nameplate</returns>
         internal string ScanItemName(Bitmap nameplate)
         {
-            GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref nameplate);
-            Bitmap n = GenshinProcesor.ConvertToGrayscale(nameplate);
-            GenshinProcesor.SetInvert(ref n);
+            return ScanItemNameWithConfidence(nameplate).Text;
+        }
 
-            // Analyze
-            string text = Regex.Replace(GenshinProcesor.AnalyzeText(n, Tesseract.PageSegMode.SingleBlock).ToLower(), @"[\W]", string.Empty);
+        /// <summary>
+        /// Same recognition as <see cref="ScanItemName"/>, also returning Tesseract's confidence --
+        /// used by callers that gate low-confidence item names on inline correction (Phase 3 §3.3).
+        /// Not the default <see cref="ScanItemName"/> return shape because one caller
+        /// (<c>WeaponScraper.ScanEnchancementOreName</c>) runs on every weapon used as upgrade fodder,
+        /// often dozens per scan -- gating correction there would mean a popup for nearly every junk
+        /// item fed to a bulk enhancement, so only callers that specifically opt in (the weapon's own
+        /// headline name) should request the confidence and act on it.
+        /// </summary>
+        internal (string Text, float ConfidencePercent) ScanItemNameWithConfidence(Bitmap nameplate)
+        {
+            // The caller retains the source nameplate. SetGamma returns a separate image through
+            // the ref local, which is owned and released here.
+            Bitmap gamma = nameplate;
+            Bitmap n = null;
+            try
+            {
+                GenshinProcesor.SetGamma(0.2, 0.2, 0.2, ref gamma);
+                n = imagePreprocessor.ConvertToGrayscale(gamma);
+                imagePreprocessor.SetInvert(ref n);
 
-            n.Dispose();
-
-            return text;
+                // Analyze
+                var (rawText, confidence) = ocrService.AnalyzeTextWithConfidence(n, Tesseract.PageSegMode.SingleBlock);
+                string text = Regex.Replace(rawText.ToLower(), @"[\W]", string.Empty);
+                return (text, confidence * 100);
+            }
+            finally
+            {
+                n?.Dispose();
+                if (!ReferenceEquals(gamma, nameplate)) gamma?.Dispose();
+            }
         }
 
         /// <summary>
         /// Parses the number of items from for the current inventory page.
         /// </summary>
         /// <remarks>Note: This is primarily for the Weapons, Artifacts, and Furnishing inventories since they have
-        /// specific inventory item counts and capacities. 
-        /// All other inventory pages have a "shared" inventory item counts and capacities.</remarks>
+        /// specific inventory item counts and capacities.
+        /// All other inventory pages have a "shared" inventory item counts and capacities. The count
+        /// label's position is measured with the coordinate-picker tool (2026-07-03).</remarks>
         /// <param name="inventoryPage">The current inventory page</param>
         /// <returns>The number of unique items for the current inventory</returns>
         /// <exception cref="FormatException">The inventory item count could not be found where it is expected</exception>
         internal int ScanItemCount()
         {
-            //Find weapon count
             Rectangle region = new Rectangle(
-                x: (int)(1030 / 1280.0 * Navigation.GetWidth()),
-                y: (int)(20 / 720.0 * Navigation.GetHeight()),
-                width: (int)(175 / 1280.0 * Navigation.GetWidth()),
-                height: (int)(25 / 720.0 * Navigation.GetHeight()));
+                x: (int)(0.8865 * Navigation.GetWidth()),
+                y: (int)(0.0509 * Navigation.GetHeight()),
+                width: (int)(0.0641 * Navigation.GetWidth()),
+                height: (int)(0.0269 * Navigation.GetHeight()));
 
-            using (Bitmap countBitmap = Navigation.CaptureRegion(region))
+            return ScanItemCountFromRegion(region);
+        }
+
+        private int ScanItemCountFromRegion(Rectangle region)
+        {
+            Bitmap latestCountBitmap = null;
+            InventoryItemCountReadResult readResult = null;
+            try
             {
-                UserInterface.SetNavigation_Image(countBitmap);
+                readResult = InventoryItemCountReader.Read(
+                    scanSettings.OcrConfidenceThreshold,
+                    attempt =>
+                    {
+                        scanSession.CancellationToken.ThrowIfCancellationRequested();
+                        latestCountBitmap?.Dispose();
+                        latestCountBitmap = Navigation.CaptureRegion(region);
+                        progressReporter.SetNavigation_Image(latestCountBitmap);
 
-                Bitmap n = GenshinProcesor.ConvertToGrayscale(countBitmap);
-                GenshinProcesor.SetContrast(60.0, ref n);
-                GenshinProcesor.SetInvert(ref n);
+                        using Bitmap processed = imagePreprocessor.ConvertToGrayscale(latestCountBitmap);
+                        Bitmap ocrImage = processed;
+                        try
+                        {
+                            imagePreprocessor.SetContrast(60.0, ref ocrImage);
+                            imagePreprocessor.SetInvert(ref ocrImage);
+                            var (rawText, confidence) = ocrService.AnalyzeTextWithConfidence(ocrImage);
+                            float confidencePercent = confidence * 100;
+                            InventoryItemCountParseResult parsed =
+                                InventoryItemCountParser.Parse(rawText);
+                            Logger.Debug(
+                                "{0} item count OCR attempt {1}/{2}: raw=\"{3}\" confidence={4:0.0}% " +
+                                "parse={5} reason=\"{6}\".",
+                                inventoryPage,
+                                attempt,
+                                InventoryItemCountReader.DefaultAttempts,
+                                rawText?.Trim(),
+                                confidencePercent,
+                                parsed.Status,
+                                parsed.Reason ?? "accepted");
+                            return new InventoryItemCountObservation(rawText, confidencePercent);
+                        }
+                        finally
+                        {
+                            if (!ReferenceEquals(ocrImage, processed)) ocrImage?.Dispose();
+                        }
+                    },
+                    scanSession.CancellationToken,
+                    WaitForItemCountRetry,
+                    retryDelayMs: ScaledControllerDelay(300));
 
-                string text = GenshinProcesor.AnalyzeText(n).Trim();
-                n.Dispose();
-
-                // Remove any non-numeric and '/' characters
-                text = Regex.Replace(text, @"[^0-9/]", string.Empty);
-
-                if (string.IsNullOrWhiteSpace(text) || Properties.Settings.Default.LogScreenshots)
+                if (readResult.Success)
                 {
-                    SaveInventoryBitmap(countBitmap, "ItemCount.png");
-                    SaveInventoryBitmap(Navigation.CaptureWindow(), $"InventoryWindow_{Navigation.GetWidth()}x{Navigation.GetHeight()}.png");
-                    if (string.IsNullOrWhiteSpace(text)) throw new FormatException($"Unable to locate {inventoryPage} item count.");
+                    SaveSuccessfulItemCountDiagnostics(latestCountBitmap);
+                    return readResult.Count;
                 }
 
-                int count;
-                string pageCapacity;
-                switch (inventoryPage)
+                InventoryItemCountObservation lastObservation =
+                    readResult.Observations[readResult.Observations.Count - 1];
+                Logger.Warn(
+                    "{0} item count remained unresolved after {1} fresh captures; requesting inline correction.",
+                    inventoryPage,
+                    readResult.Observations.Count);
+                string corrected = progressReporter.RequestCorrection(
+                    latestCountBitmap,
+                    lastObservation.RawText,
+                    lastObservation.ConfidencePercent,
+                    $"{inventoryPage} item count",
+                    scanSession.CancellationToken);
+                scanSession.CancellationToken.ThrowIfCancellationRequested();
+
+                InventoryItemCountParseResult correction =
+                    InventoryItemCountParser.Parse(corrected);
+                if (correction.Success)
                 {
-                    case InventoryPage.Artifacts:
-                        pageCapacity = "1800";
-                        break;
-                    default:
-                        pageCapacity = "2000";
-                        break;
+                    Logger.Info(
+                        "Accepted corrected {0} item count {1}/{2}.",
+                        inventoryPage,
+                        correction.Count,
+                        correction.Capacity);
+                    SaveSuccessfulItemCountDiagnostics(latestCountBitmap);
+                    return correction.Count;
                 }
 
-                if (Regex.IsMatch(text, "/")) // Check for slash
-                {
-                    count = int.Parse(text.Split('/')[0]);
-                }
-                else if (Regex.Matches(text, pageCapacity).Count == 1) // Remove the inventory capacity from number
-                {
-                    text = text.Replace(pageCapacity, string.Empty);
-                    count = int.Parse(text);
-                }
-                else // Extreme worst case
-                {
-                    count = 2000;
-                    Logger.Debug("Defaulted to 2000 for inventory page capacity");
-                }
-
-                return count;
+                SaveItemCountFailure(latestCountBitmap, readResult, corrected, correction);
+                throw new FormatException(
+                    $"Unable to determine a structurally valid {inventoryPage} item count; " +
+                    $"last result was {correction.Status}: {correction.Reason}");
             }
+            finally
+            {
+                latestCountBitmap?.Dispose();
+            }
+        }
+
+        private void WaitForItemCountRetry(int milliseconds)
+        {
+            if (scanSession.CancellationToken.WaitHandle.WaitOne(milliseconds))
+                scanSession.CancellationToken.ThrowIfCancellationRequested();
+        }
+
+        private void SaveSuccessfulItemCountDiagnostics(Bitmap countBitmap)
+        {
+            if (!scanSettings.LogScreenshots || countBitmap == null) return;
+
+            SaveInventoryBitmap(countBitmap, "ItemCount.png");
+            using Bitmap full = Navigation.CaptureWindow();
+            SaveInventoryBitmap(full, $"InventoryWindow_{Navigation.GetWidth()}x{Navigation.GetHeight()}.png");
         }
 
         /// <summary>
-        /// Parses the sorting method for the current inventory
-        /// </summary>
-        /// <param name="inventoryPage">The current inventory page</param>
-        /// <returns>The inventory page's current sorting method</returns>
-        internal string CurrentSortingMethod()
-        {
-            Rectangle region;
-            switch (inventoryPage)
-            {
-                case InventoryPage.Weapons:
-                    region = new Rectangle(
-                        x: (int)(100.0 / 1280.0 * Navigation.GetWidth()),
-                        y: (int)(660.0 / 720.0 * Navigation.GetHeight()),
-                        width: (int)(175.0 / 1280.0 * Navigation.GetWidth()),
-                        height: (int)(40.0 / 720.0 * Navigation.GetHeight()));
-                    break;
-                case InventoryPage.Artifacts:
-                    // TODO: Update this
-                    region = new Rectangle(
-                        x: (int)(140.0 / 1280.0 * Navigation.GetWidth()),
-                        y: (int)(660.0 / 720.0 * Navigation.GetHeight()),
-                        width: (int)(175.0 / 1280.0 * Navigation.GetWidth()),
-                        height: (int)(40.0 / 720.0 * Navigation.GetHeight()));
-                    break;
-                default:
-                    throw new NotImplementedException($"{inventoryPage} cannot be sorted");
-            }
-
-            using (var bm = Navigation.CaptureRegion(region))
-            {
-                var g = GenshinProcesor.ConvertToGrayscale(bm);
-                var mode = GenshinProcesor.AnalyzeText(g).Trim().ToLower();
-                return mode.Contains("level") ? "level" : mode.Contains("quality") ? "quality" : null;
-            }
-        }
-
-        internal (List<Rectangle> rectangles, int cols, int rows) ProcessScreenshot(Bitmap screenshot, double weight = 0)
-        {
-            // Size of an item card is the same in 16:10 and 16:9. Also accounts for character icon and resolution size.
-            double base_aspect_width = 1280.0;
-            double base_aspect_height = 720.0;
-            var icon = new Rectangle(
-                x: 0,
-                y: 0,
-                width: (int)(screenshot.Width * 0.0651),
-                height: (int)(screenshot.Height * (Navigation.IsNormal ? 0.1417: 0.1289)));
-
-            if (Navigation.GetAspectRatio() == new Size(8, 5))
-            {
-                base_aspect_height = 800.0;
-            }
-
-            // Filter for relative size of items in inventory, give or take a few pixels
-            int iconMinHeight = icon.Height - ((int)(icon.Height * 0.15));
-            int iconMaxHeight = icon.Height + ((int)(icon.Height * 0.15));
-            int iconMinWidth = icon.Width - ((int)(icon.Width * 0.15));
-            int iconMaxWidth = icon.Width + ((int)(icon.Width * 0.15));
-            using (BlobCounter blobCounter = new BlobCounter
-            {
-                FilterBlobs = true,
-                MinHeight = (int)(iconMinHeight * (1 - weight)),
-                MaxHeight = (int)(iconMaxHeight * (1 + weight)),
-                MinWidth = (int)(iconMinWidth * (1 - weight)),
-                MaxWidth = (int)(iconMaxWidth * (1 + weight)),
-            })
-            {
-                // Image pre-processing
-                screenshot = new KirschEdgeDetector().Apply(screenshot); // Algorithm to find edges. Really good but can take ~1s
-                screenshot = new Grayscale(0.2125, 0.7154, 0.0721).Apply(screenshot);
-                screenshot = new Threshold(75).Apply(screenshot); // Convert to black and white only based on pixel intensity			
-
-                blobCounter.ProcessImage(screenshot);
-                // Note: Processing won't always detect all item rectangles on screen. Since the
-                // background isn't a solid color it's a bit trickier to filter out.
-
-                // Don't save overlapping blobs
-                List<Rectangle> rectangles = new List<Rectangle>();
-                List<Rectangle> blobRects = blobCounter.GetObjectsRectangles().ToList();
-
-                int minWidth = blobRects[0].Width;
-                int minHeight = blobRects[0].Height;
-                foreach (var rect in blobRects)
-                {
-                    bool add = true;
-                    foreach (var item in rectangles)
-                    {
-                        Rectangle r1 = rect;
-                        Rectangle r2 = item;
-                        Rectangle intersect = Rectangle.Intersect(r1, r2);
-                        if (intersect.Width > r1.Width * .1)
-                        {
-                            add = false;
-                            break;
-                        }
-                    }
-                    if (add)
-                    {
-                        minWidth = Math.Min(minWidth, rect.Width);
-                        minHeight = Math.Min(minHeight, rect.Height);
-                        rectangles.Add(rect);
-                    }
-                }
-
-                // Determine X and Y coordinates for columns and rows, respectively
-                var colCoords = new List<int>();
-                var rowCoords = new List<int>();
-
-                foreach (var item in rectangles)
-                {
-                    bool addX = true;
-                    bool addY = true;
-                    foreach (var x in colCoords)
-                    {
-                        var xC = item.Center().X;
-                        if (x - 75 / base_aspect_width * screenshot.Width <= xC && xC <= x + 75 / base_aspect_width * screenshot.Width)
-                        {
-                            addX = false;
-                            break;
-                        }
-                    }
-                    foreach (var y in rowCoords)
-                    {
-                        var yC = item.Center().Y;
-                        if (y - 100 / base_aspect_height * screenshot.Height <= yC && yC <= y + 100 / base_aspect_height * screenshot.Height)
-                        {
-                            addY = false;
-                            break;
-                        }
-                    }
-                    if (addX)
-                    {
-                        colCoords.Add(item.Center().X);
-                    }
-                    if (addY)
-                    {
-                        rowCoords.Add(item.Center().Y);
-                    }
-                }
-
-                // Going to use X,Y coordinate pairings to build rectangles around. Items that might have been missed
-                // This is quite accurate and algorithmically puts rectangles over all items on the screen that were missed.
-                // The center of each of these rectangles should be a good enough spot to click.
-                rectangles.Clear();
-                colCoords.Sort();
-                rowCoords.Sort();
-
-                colCoords.RemoveAll(col => col > screenshot.Width * 0.65);
-
-                foreach (var row in rowCoords)
-                {
-                    foreach (var col in colCoords)
-                    {
-                        int x = (int)(col - (minWidth * .5));
-                        int y = (int)(row - (minHeight * .5));
-
-                        rectangles.Add(new Rectangle(x, y, minWidth, minHeight));
-                    }
-                }
-
-                // Remove some rectangles that somehow overlap each other. Don't think this happens
-                // but it doesn't hurt to double check.
-                for (int i = 0; i < rectangles.Count - 1; i++)
-                {
-                    for (int j = i + 1; j < rectangles.Count; j++)
-                    {
-                        Rectangle r1 = rectangles[i];
-                        Rectangle r2 = rectangles[j];
-                        Rectangle intersect = Rectangle.Intersect(r1, r2);
-                        if (intersect.Width > r1.Width * .2)
-                        {
-                            rectangles.RemoveAt(j);
-                        }
-                    }
-                }
-
-                // Sort by row then by column within each row
-                rectangles = rectangles.OrderBy(r => r.Top).ThenBy(r => r.Left).ToList();
-
-                var avgWidth = rectangles.Average(r => r.Width);
-                var avgHeight = rectangles.Average (r => r.Height);
-
-                rectangles.ForEach(r =>
-                {
-                    r.Width = (int)avgWidth;
-                    r.Height = (int)avgHeight;
-                });
-
-                return (rectangles, colCoords.Count, rowCoords.Count);
-            }
-        }
-
-        internal (List<Rectangle> rectangles, int cols, int rows) GetPageOfItems(int pageNum, bool acceptLess = false)
-        {
-            // Screenshot of inventory
-            using (Bitmap screenshot = Navigation.CaptureWindow())
-            {
-                Bitmap processedScreenshot = new Bitmap(screenshot);
-                using (Graphics g = Graphics.FromImage(processedScreenshot))
-                using (var brush = new SolidBrush(Color.Black))
-                {
-                    // Fill Top region
-                    g.FillRectangle(brush, 0, 0, processedScreenshot.Width, (int)(processedScreenshot.Height * 0.09));
-
-                    // Fill Left region
-                    g.FillRectangle(brush, 0, 0, (int)(processedScreenshot.Width * 0.05), processedScreenshot.Height);
-
-                    // Fill Right region
-                    g.FillRectangle(brush, (int)(processedScreenshot.Width * 0.7), 0, processedScreenshot.Width, processedScreenshot.Height);
-
-                    // Fill Bottom Region
-                    g.FillRectangle(brush, 0, (int)(processedScreenshot.Height * 0.9), processedScreenshot.Width, processedScreenshot.Height);
-                }
-                try
-                {
-                    List<Rectangle> rectangles;
-                    int cols, rows, itemCount, counter = 0;
-                    double weight = 0;
-                    int itemPerPage = (inventoryPage != InventoryPage.Artifacts || !Navigation.IsNormal) ? 40 : 32;
-                    do
-                    {
-                        (rectangles, cols, rows) = ProcessScreenshot(processedScreenshot, weight);
-                        itemCount = rows * cols;
-                        if (itemCount != itemPerPage && !acceptLess)
-                        {
-                            Logger.Warn("Unable to locate full page of weapons with weight {0}", weight);
-                            Logger.Warn("Detected {0} rows and {1} columns of items", rows, cols);
-
-                            // Generate rectangles
-                            using (Bitmap copy = (Bitmap)screenshot.Clone())
-                            {
-                                SaveInventoryBitmap(copy, $"{inventoryPage}Inventory{pageNum}_{cols}x{rows}.png");
-                                using (Graphics g = Graphics.FromImage(copy))
-                                    rectangles.ForEach(r => g.DrawRectangle(new Pen(Color.Green, 2), r));
-                                SaveInventoryBitmap(copy, $"{inventoryPage}Inventory{pageNum}_{cols}x{rows} - weight {weight}.png");
-#if DEBUG
-                                //Navigation.DisplayBitmap(copy, $"weight = {weight}");
-#endif
-                            }
-                        }
-                        else break;
-
-                        if (itemCount <= 32)
-                            weight += 0.125;
-                        else
-                        { weight -= 0.095; ++counter; }
-                        weight = Math.Min(weight, 1);
-                        rectangles = null;
-                    }
-                    while (itemCount != itemPerPage && weight < 1 && counter < 25);
-
-                    if (Properties.Settings.Default.LogScreenshots)
-                    {
-                        SaveInventoryBitmap(screenshot, $"{inventoryPage}Inventory.png");
-                        using (Graphics g = Graphics.FromImage(screenshot))
-                            rectangles.ForEach(r => g.DrawRectangle(new Pen(Color.Green, 2), r));
-
-                        SaveInventoryBitmap(screenshot, $"{inventoryPage}Inventory{pageNum}_{cols}x{rows} - weight {weight}.png");
-                    }
-                    processedScreenshot.Dispose();
-
-                    if (rectangles == null)
-                    {
-                        Logger.Warn("Could not find {0} items in inventory. Re-using previous item page.", itemPerPage);
-
-                        return prevRect == null ?
-                            throw new ArgumentNullException("Could not find first page of items!") 
-                            :
-                            (prevRect, prevColumn, prevRow);
-                    }
-                    else
-                    {
-                        prevRect = rectangles; prevColumn = cols; prevRow = rows;
-                        return (rectangles, cols, rows);
-                    }
-
-                }
-                catch (Exception)
-                {
-                    processedScreenshot.Dispose();
-                    SaveInventoryBitmap(screenshot, $"{inventoryPage}Inventory.png");
-                    throw;
-                }
-            }
-
-        }
-
         /// <summary>
         /// Determines the quality of an item based on it's nameplate
         /// </summary>
         /// <param name="nameplate">The an item card's nameplate</param>
         /// <returns>An integer representing quality from 0 - 5 (invalid - 5 star)</returns>
-        internal static int GetQuality(Bitmap nameplate)
+        internal int GetQuality(Bitmap nameplate)
         {
-            var averageColor = new ImageStatistics(nameplate);
+            var avg = imagePreprocessor.AverageColor(nameplate);
+            var averageColor = Color.FromArgb((int)avg.R, (int)avg.G, (int)avg.B);
 
             Color fiveStar = Color.FromArgb(255, 188, 105, 50);
             Color fourStar = Color.FromArgb(255, 161, 86, 224);
@@ -496,10 +321,9 @@ namespace InventoryKamera
         }
 
         /// <summary>
-        /// Extracts a bitmap copy of an item card's nameplate
+        /// Extracts a bitmap copy of an item card's nameplate. Measured with the coordinate-picker
+        /// tool (2026-07-03).
         /// </summary>
-        /// <param name="card">Bitmap of the item card</param>
-        /// <returns>A bitmap copy of the item card's nameplate</returns>
         internal static Bitmap GetItemNameBitmap(Bitmap card)
         {
             return GenshinProcesor.CopyBitmap(card,
@@ -507,42 +331,154 @@ namespace InventoryKamera
                     x: 0,
                     y: 0,
                     width: card.Width,
-                    height: (int)(card.Height * (Navigation.IsNormal ? 0.07 : 0.06))));
+                    height: (int)(card.Height * 0.0574)));
         }
 
         /// <summary>
-        /// Extracts a bitmap copy of an item card's lock status icon
+        /// Extracts a bitmap copy of an item card's equipped character status. Measured with the
+        /// coordinate-picker tool (2026-07-03) -- the left edge matters here: an earlier guess that
+        /// started far enough left to include the character portrait icon made Tesseract hallucinate
+        /// stray characters even though the text itself was clean.
         /// </summary>
-        /// <param name="card">Bitmap of the item card</param>
-        /// <returns>A bitmap copy of the item card's lock status icon</returns>
-        internal static Bitmap GetLockedBitmap(Bitmap card, bool isSanctified = false)
-        {
-            double baseY = Navigation.IsNormal ? 0.353 : 0.309;
-            double sanctifiedShift = Navigation.IsNormal ? 0.0520 : 0.0471;
-            double yShift = isSanctified ? sanctifiedShift : 0.0;
-
-            return GenshinProcesor.CopyBitmap(card,
-                new Rectangle(
-                    x: (int)(card.Width * 0.75),
-                    y: (int)(card.Height * (baseY + yShift)),
-                    width: (int)(card.Width * 0.0955),
-                    height: (int)(card.Height * (Navigation.IsNormal ? 0.055 : 0.0495))));
-        }
-
-        /// <summary>
-        /// Extracts a bitmap copy of an item card's equipped character status
-        /// </summary>
-        /// <param name="card">Bitmap of the item card</param>
-        /// <remarks>Note: This method is only useful for equippable items (artifacts and weapons)</remarks>
-        /// <returns>A bitmap copy of the item card's equipped character status.</returns>
         internal static Bitmap GetEquippedBitmap(Bitmap card)
         {
             return GenshinProcesor.CopyBitmap(card,
                 new Rectangle(
-                    x: (int)(card.Width * 0.15),
-                    y: (int)(double)(card.Height * (double)(Navigation.IsNormal ? 0.938 : 0.943)),
-                    width: card.Width,
-                    height: card.Height));
+                    x: (int)(card.Width * 0.1527),
+                    y: (int)(card.Height * 0.9444),
+                    width: (int)(card.Width * 0.8309),
+                    height: (int)(card.Height * 0.0519)));
+        }
+
+        /// <summary>
+        /// Captures the selected item's always-visible detail card -- confirmed by the user to be the
+        /// same region for Weapons, Artifacts, and Character Development Items. Percentages measured
+        /// with the coordinate-picker tool from a full-window capture (2026-07-03, 1920x1080).
+        /// </summary>
+        internal Bitmap GetItemCard()
+        {
+            return Navigation.CaptureRegion(
+                x: (int)(0.7031 * Navigation.GetWidth()),
+                y: (int)((Navigation.IsNormal ? 0.1231 : 0.1120) * Navigation.GetHeight()),
+                width: (int)(0.2167 * Navigation.GetWidth()),
+                height: (int)((Navigation.IsNormal ? 0.7556 : 0.7800) * Navigation.GetHeight()));
+        }
+        /// <summary>
+        /// Opens the pause menu and enters Inventory through visually verified Paimon-menu
+        /// navigation. The navigator re-detects focus after every individual move and confirms only
+        /// while the Inventory label itself is selected.
+        /// </summary>
+        internal bool EnterInventory(
+            PaimonMenuNavigator menuNavigator,
+            InventoryTabNavigator tabNavigator)
+        {
+            if (tabNavigator == null) throw new ArgumentNullException(nameof(tabNavigator));
+            // The mouse-based scan's Navigation.InventoryScreen() started every phase with a real
+            // Escape press to guarantee a known baseline (unpaused, no menu open) before doing
+            // anything else -- controller-mode ad-hoc tests never needed this because the user
+            // manually alt-tabbed into that same baseline state before clicking a test. A real scan
+            // can't assume that: Genshin might already be sitting in a menu (paused, or left open by
+            // a previous phase) when this runs, and EnterControllerMode()'s stick-nudge+A sequence
+            // only reliably flips the input scheme from the free-roam state, not from inside a menu.
+            Navigation.sim.Keyboard.KeyPress(Navigation.escapeKey);
+            Navigation.SystemWait(Navigation.Speed.UI);
+
+            var timing = new PaimonMenuNavigationTiming(
+                controllerModeSettleMs: ScaledControllerDelay(2000),
+                menuOpenSettleMs: ScaledControllerDelay(2000),
+                moveHoldMs: ScaledControllerDelay(PaimonMenuNavigationTiming.SingleStepHoldMs),
+                moveSettleMs: ScaledControllerDelay(PaimonMenuNavigationTiming.SingleStepSettleMs),
+                preConfirmSettleMs: ScaledControllerDelay(600),
+                confirmHoldMs: ScaledControllerDelay(300),
+                destinationSettleMs: Math.Max(3000, ScaledControllerDelay(2000)),
+                detectionRetryMs: ScaledControllerDelay(300));
+
+            using (PaimonMenuNavigationResult result = menuNavigator.OpenInventory(timing))
+            {
+                if (result.Success)
+                {
+                    Logger.Info("State-aware Inventory entry succeeded. {0}", result.DetectionDetails);
+
+                    InventoryTabNavigationTiming tabTiming = CreateInventoryTabNavigationTiming();
+                    using (InventoryTabNavigationResult normalization =
+                        tabNavigator.NormalizeToWeapons(tabTiming))
+                    {
+                        if (normalization.Success)
+                        {
+                            Logger.Info("Inventory entry normalized to {0} (OCR: \"{1}\").",
+                                normalization.CurrentTab, normalization.RawText);
+                            return true;
+                        }
+
+                        string normalizationError = normalization.Message +
+                            " Inventory scan phases were skipped.";
+                        Logger.Error(normalizationError);
+                        progressReporter.AddError(normalizationError);
+                        if (normalization.DiagnosticScreenshot != null)
+                            SaveFailureScreenshot(
+                                normalization.DiagnosticScreenshot,
+                                "inventory_tab_normalization",
+                                "weapons",
+                                "failure_full.png");
+                        return false;
+                    }
+                }
+
+                string error = result.Message + " Inventory scan phases were skipped. " + result.DetectionDetails;
+                Logger.Error(error);
+                progressReporter.AddError(error);
+                DestinationVerificationDiagnostics.Save(
+                    diagnosticStore,
+                    result,
+                    "inventory",
+                    InventoryScreenDetector.CopyDetectionRegion);
+                return false;
+            }
+        }
+
+        internal static InventoryTabNavigationTiming CreateInventoryTabNavigationTiming() =>
+            new InventoryTabNavigationTiming(
+                initialSettleMs: ScaledControllerDelay(500),
+                buttonHoldMs: ScaledControllerDelay(200),
+                stepSettleMs: ScaledControllerDelay(800),
+                finalSettleMs: ScaledControllerDelay(1000),
+                detectionRetryMs: ScaledControllerDelay(300));
+
+        /// <summary>
+        /// Enforces the verified-tab precondition established by <see cref="InventoryTabNavigator"/>.
+        /// This method deliberately sends no input; all tab movement and visual verification belongs
+        /// to the shared navigator before a category scanner is invoked.
+        /// </summary>
+        internal string SwitchToTab(string targetTab, string verifiedCurrentTab)
+        {
+            if (string.Equals(targetTab, verifiedCurrentTab, StringComparison.Ordinal))
+                return targetTab;
+
+            string warning = $"The {targetTab} scan phase was not started because its Inventory tab " +
+                $"was not visually verified (verified tab: {verifiedCurrentTab ?? "(none)"}).";
+            Logger.Warn(warning);
+            progressReporter.AddError(warning);
+            StopScanning = true;
+            return verifiedCurrentTab;
+        }
+
+        /// <summary>
+        /// Scales a base controller-timing duration by the app's existing scan-speed setting
+        /// (<see cref="Navigation.GetDelay"/> -- the same 0.5x/Fast, 1x/Normal, 1.5x/Slow multiplier
+        /// already applied to every mouse-path scan timing via <see cref="Navigation.SystemWait(Speed)"/>),
+        /// so per-item controller-scan timing speeds up/slows down consistently with the rest of the
+        /// app instead of being hardcoded. Below 1x (Fast), the multiplier is squared rather than
+        /// applied once -- per direct user feedback (2026-07-04), a plain 0.5x scale of an
+        /// already-tuned-fast base wasn't fast enough. A 20ms floor guards against a degenerate
+        /// near-zero hold if the underlying setting is ever extended below 0.5x. UNVERIFIED how low
+        /// Fast's resulting values can go and still register reliably against the game -- this is new,
+        /// live-testing-only territory, not something a build/compile check can confirm.
+        /// </summary>
+        internal static int ScaledControllerDelay(int baseMs)
+        {
+            double delay = Navigation.GetDelay();
+            if (delay < 1) delay *= delay;
+            return Math.Max(20, (int)(baseMs * delay));
         }
 
         internal void SaveInventoryBitmap(Bitmap image, string filename)
@@ -553,8 +489,47 @@ namespace InventoryKamera
                 path += "Materials/";
             else path += inventoryPage.ToString() + "/";
 
+            // filename may itself contain '/' to nest into a subfolder (e.g. "quantity/Iron_Quantity.png")
+            // -- GatherData only creates the top-level per-page folder (./logging/materials/) up front,
+            // so any subfolder needs creating here rather than assuming it already exists.
+            Directory.CreateDirectory(Path.GetDirectoryName(path + filename));
             image.Save(path + filename);
         }
+
+		private void SaveItemCountFailure(
+			Bitmap countBitmap,
+			InventoryItemCountReadResult readResult,
+			string correctedText,
+			InventoryItemCountParseResult correction)
+		{
+			try
+			{
+				FailureDiagnosticScope failure = diagnosticStore.CreateFailure(
+					"inventory_item_count",
+					inventoryPage.ToString());
+				if (countBitmap != null) failure.SaveBitmap("count_crop.png", countBitmap);
+				var evidence = new System.Text.StringBuilder();
+				for (int i = 0; i < readResult.Observations.Count; i++)
+				{
+					InventoryItemCountObservation observation = readResult.Observations[i];
+					InventoryItemCountParseResult parsed =
+						InventoryItemCountParser.Parse(observation.RawText);
+					evidence.AppendLine(
+						$"attempt={i + 1}; raw=\"{observation.RawText}\"; " +
+						$"confidence={observation.ConfidencePercent:0.0}; status={parsed.Status}; reason={parsed.Reason}");
+				}
+				evidence.AppendLine(
+					$"correction=\"{correctedText}\"; status={correction.Status}; reason={correction.Reason}");
+				failure.SaveText("observations.txt", evidence.ToString());
+				using (Bitmap full = Navigation.CaptureWindow())
+					failure.SaveBitmap("failure_full.png", full);
+				Logger.Warn("Saved inventory item-count diagnostics to {0}.", failure.DirectoryPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warn(ex, "Could not save {0} item-count diagnostics.", inventoryPage);
+			}
+		}
 
     }
 }

@@ -22,7 +22,7 @@ namespace InventoryKamera.ui.main
         {
             InitializeComponent();
 
-            var version = Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
+            var version = AppInfo.Version;
 
             Logger.Info("Inventory Kamera Version {0}", version);
             versionLabel.Text = version;
@@ -55,18 +55,18 @@ namespace InventoryKamera.ui.main
 
         internal void Activate_Form()
         {
-            BeginInvoke((MethodInvoker)delegate { Activate(); });
+            BeginInvoke((System.Windows.Forms.MethodInvoker)delegate { Activate(); });
         }
 
         private void Log_Button_Click(object sender, EventArgs e)
         {
-            Process.Start($@"logging");
+            Process.Start(new ProcessStartInfo("logging") { UseShellExecute = true });
         }
 
         private void GithubLabelLink_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
             Logger.Info("Opening Github...");
-            Process.Start("https://github.com/Andrewthe13th/Inventory_Kamera/");
+            Process.Start(new ProcessStartInfo("https://github.com/taiwenlee/Inventory_Kamera/") { UseShellExecute = true });
         }
     }
 }

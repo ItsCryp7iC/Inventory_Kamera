@@ -6,6 +6,7 @@ namespace InventoryKamera
 {
 	public class Weapon
 	{
+		private GameDataSnapshot gameData;
 		[JsonProperty("key")]
 		public string Name { get; private set; }
 
@@ -37,6 +38,9 @@ namespace InventoryKamera
 		[JsonIgnore]
 		public WeaponType WeaponType { get; private set; }
 
+		[JsonIgnore]
+		public bool HasGameData => gameData != null;
+
 		public Weapon()
 		{
 			RefinementLevel = -1;
@@ -44,8 +48,9 @@ namespace InventoryKamera
 			Rarity = -1;
 		}
 
-		public Weapon(WeaponType _weaponType, string _equippedCharacter)
+		public Weapon(WeaponType _weaponType, string _equippedCharacter, GameDataSnapshot gameData = null)
 		{
+			if (gameData != null) AttachGameData(gameData);
 			WeaponType = _weaponType;
 			Level = 1;
 			Rarity = 1;
@@ -74,8 +79,9 @@ namespace InventoryKamera
 			}
 		}
 
-		public Weapon(string _name, int _level, bool _ascended, int _refinementLevel, bool locked = false, string _equippedCharacter = null, int _id = 0, int _rarity = -1)
+		public Weapon(string _name, int _level, bool _ascended, int _refinementLevel, bool locked = false, string _equippedCharacter = null, int _id = 0, int _rarity = -1, GameDataSnapshot gameData = null)
 		{
+			if (gameData != null) AttachGameData(gameData);
 			Name = string.IsNullOrWhiteSpace(_name) ? "" : _name;
 			Level = _level;
 			Ascended = _ascended;
@@ -84,6 +90,25 @@ namespace InventoryKamera
 			EquippedCharacter = string.IsNullOrWhiteSpace(_equippedCharacter) ? "" : _equippedCharacter;
 			Id = _id;
 			Rarity = _rarity;
+		}
+
+		/// <summary>
+		/// Overwrites the weapon name after construction. Used only by the deferred OCR-correction
+		/// flush (GameScanner) to apply a name the user corrected after the scan finished; mirrors the
+		/// constructor's blank-to-empty-string normalization so validity checks behave identically.
+		/// </summary>
+		internal void UpdateName(string name) => Name = string.IsNullOrWhiteSpace(name) ? "" : name;
+
+		/// <summary>
+		/// Explicitly binds lookup data after parameterless construction or deserialization.
+		/// A model cannot be rebound to a different snapshot after lookup data is attached.
+		/// </summary>
+		public void AttachGameData(GameDataSnapshot data)
+		{
+			if (data == null) throw new ArgumentNullException(nameof(data));
+			if (gameData != null && !ReferenceEquals(gameData, data))
+				throw new InvalidOperationException("Weapon game data is already attached.");
+			gameData = data;
 		}
 
 		public bool IsValid()
@@ -108,13 +133,18 @@ namespace InventoryKamera
 
 		public bool HasValidWeaponName()
 		{
-			return GenshinProcesor.IsValidWeapon(Name);
+			return LookupService.IsValidWeapon(Name, RequireGameData());
 		}
 
 		public bool HasValidEquippedCharacter()
 		{
-			return string.IsNullOrWhiteSpace(EquippedCharacter) || GenshinProcesor.IsValidCharacter(EquippedCharacter) ;
+			return string.IsNullOrWhiteSpace(EquippedCharacter) ||
+				LookupService.IsValidCharacter(EquippedCharacter, RequireGameData());
 		}
+
+		private GameDataSnapshot RequireGameData() => gameData ??
+			throw new InvalidOperationException(
+				"Weapon lookup data is not attached. Call AttachGameData before using lookup-dependent validation.");
 
 		public int AscensionCount()
 		{
