@@ -19,5 +19,13 @@ namespace InventoryKamera.Properties
             get => (bool)this[nameof(UseDefaultControllerConfirmLayout)];
             set => this[nameof(UseDefaultControllerConfirmLayout)] = value;
         }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("0")]
+        public int DeclaredOriginalInputMode
+        {
+            get => (int)this[nameof(DeclaredOriginalInputMode)];
+            set => this[nameof(DeclaredOriginalInputMode)] = value;
+        }
     }
 }

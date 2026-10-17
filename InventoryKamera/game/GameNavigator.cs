@@ -129,10 +129,25 @@ namespace InventoryKamera.game
 
         public void Dispose()
         {
+            Dispose(exitControllerMode: true);
+        }
+
+        /// <summary>
+        /// Releases the owned input backend without sending the legacy controller-mode exit
+        /// sequence. Used only after Genshin has positively switched back to Keyboard/Mouse mode;
+        /// disconnecting the virtual controller before that verification can leave the game unusable.
+        /// </summary>
+        internal void DisposeInputOnly()
+        {
+            Dispose(exitControllerMode: false);
+        }
+
+        private void Dispose(bool exitControllerMode)
+        {
             Exception operationFailure = null;
             try
             {
-                if (IsAvailable)
+                if (exitControllerMode && IsAvailable)
                 {
                     ExitControllerMode();
                     wait(100);

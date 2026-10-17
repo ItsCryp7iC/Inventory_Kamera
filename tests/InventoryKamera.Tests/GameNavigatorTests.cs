@@ -66,6 +66,17 @@ namespace InventoryKamera.Tests
             Assert.Equal(expected, calls);
         }
 
+        [Fact]
+        public void DisposeInputOnly_DisconnectsWithoutSendingExitInputs()
+        {
+            var calls = new List<string>();
+            var navigator = CreateNavigator(calls);
+
+            navigator.DisposeInputOnly();
+
+            Assert.Equal(new[] { "Dispose" }, calls);
+        }
+
         private static GameNavigator CreateNavigator(List<string> calls)
         {
             var input = new FakeGameInput(calls);

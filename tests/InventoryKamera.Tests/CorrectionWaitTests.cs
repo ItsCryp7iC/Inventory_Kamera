@@ -242,6 +242,49 @@ namespace InventoryKamera.Tests
             Assert.Equal("UnknownWeapon", weapon.Name);
         }
 
+        [Fact]
+        public void InlineCorrection_PreservesAnswerAndCompletesHandoffBeforeReturning()
+        {
+            var events = new List<string>();
+            var viewModel = new ScanViewModel();
+            using var image = new Bitmap(2, 2);
+            viewModel.CorrectionRequested += args =>
+            {
+                events.Add("Dialog");
+                args.ResolvedText = "chosen";
+            };
+            viewModel.CorrectionInteractionCompleted += () => events.Add("Handoff");
+
+            string result = viewModel.RequestCorrection(image, "original", 10, "item count");
+
+            Assert.Equal("chosen", result);
+            Assert.Equal(new[] { "Dialog", "Handoff" }, events);
+        }
+
+        [Fact]
+        public void DeferredCorrection_UsesSameHandoffBeforeApplyingAnswer()
+        {
+            var events = new List<string>();
+            var viewModel = new ScanViewModel();
+            using var image = new Bitmap(2, 2);
+            viewModel.CorrectionRequested += args =>
+            {
+                events.Add("Dialog");
+                args.ResolvedText = "chosen";
+            };
+            viewModel.CorrectionInteractionCompleted += () => events.Add("Handoff");
+            viewModel.EnqueueCorrection(
+                image,
+                "original",
+                10,
+                "weapon name",
+                corrected => events.Add("Apply:" + corrected));
+
+            viewModel.FlushDeferredCorrections(CancellationToken.None);
+
+            Assert.Equal(new[] { "Dialog", "Handoff", "Apply:chosen" }, events);
+        }
+
         private sealed class PendingCorrection : IDisposable
         {
             private readonly ManualResetEventSlim handlerEntered = new ManualResetEventSlim(false);

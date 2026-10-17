@@ -1,4 +1,5 @@
 ﻿using InventoryKamera.game;
+using InventoryKamera.ui;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
@@ -36,7 +37,10 @@ namespace InventoryKamera
 		private readonly ScanSession scanSession;
 		private readonly FailureDiagnosticStore diagnosticStore;
 		private readonly InventoryResultPublisher resultPublisher;
+		private readonly DeclaredInputMode declaredOriginalInputMode;
+		private readonly IScanCompanionOverlay scanOverlay;
 		private GameDataSnapshot gameData;
+		private GameInputSession gameInputSession;
 
 		private WeaponScraper weaponScraper;
 		private ArtifactScraper artifactScraper;
@@ -60,7 +64,9 @@ namespace InventoryKamera
 			IScanProgressReporter progressReporter,
 			ScanSession scanSession,
 			GameDataSnapshot gameData,
-			FailureDiagnosticStore diagnosticStore = null)
+			FailureDiagnosticStore diagnosticStore = null,
+			DeclaredInputMode declaredOriginalInputMode = DeclaredInputMode.Controller,
+			IScanCompanionOverlay scanOverlay = null)
 		{
 			Characters = new List<Character>();
 			Inventory = new Inventory();
@@ -69,6 +75,8 @@ namespace InventoryKamera
 			this.scanSession = scanSession ?? throw new ArgumentNullException(nameof(scanSession));
 			this.gameData = gameData ?? throw new ArgumentNullException(nameof(gameData));
 			this.diagnosticStore = diagnosticStore ?? FailureDiagnosticStore.CreateDefault();
+			this.declaredOriginalInputMode = declaredOriginalInputMode;
+			this.scanOverlay = scanOverlay ?? NullScanCompanionOverlay.Instance;
 			resultPublisher = new InventoryResultPublisher();
 
 			var tesseractOcr = new OcrService();
@@ -89,6 +97,49 @@ namespace InventoryKamera
 		}
 
 		internal GameDataSnapshot GameData => gameData;
+		internal bool HasPendingInputModeRecovery => gameInputSession?.HasPendingRecovery == true;
+
+		internal bool TryResumeAfterInteractiveDialog(out string failureReason)
+		{
+			if (gameInputSession == null)
+			{
+				failureReason = null;
+				return true;
+			}
+
+			if (gameInputSession.TryResumeAfterInteractiveDialog(out failureReason)) return true;
+
+			Logger.Error("Controller scan cannot resume after interactive dialog: {0}", failureReason);
+			scanSession.RequestCancellation();
+			return false;
+		}
+
+		private GameInputSession CreateGameInputSession(
+			GameNavigator navigator,
+			IGenshinInputModeDetector modeDetector,
+			IPaimonMenuDetector paimonDetector,
+			IGameScreenCapture screenCapture)
+		{
+			var restorationDiagnostics = new GameInputRestorationDiagnostics(
+				diagnosticStore,
+				new WindowsGameForegroundProbe());
+			var transition = new GameInputModeNavigator(
+				modeDetector,
+				paimonDetector,
+				screenCapture,
+				new NavigationGameSettingsInput(),
+				GameInputModeTransitionTiming.CreateScaled(),
+				diagnostics: restorationDiagnostics);
+			return new GameInputSession(
+				navigator,
+				declaredOriginalInputMode,
+				modeDetector,
+				transition,
+				progressReporter,
+				scanOverlay,
+				diagnosticStore,
+				new NavigationGameForegroundActivator());
+		}
 
 		private void ConfigurePerScanCharacterNames()
 		{
@@ -198,6 +249,7 @@ namespace InventoryKamera
 			}
 
 			Logger.Info("Scanning {0}...", displayName);
+			progressReporter.SetProgramStatus("Scanning " + displayName);
 			try
 			{
 				switch (phase.Phase)
@@ -309,19 +361,25 @@ namespace InventoryKamera
 				// flaky (per user, 2026-07-07). Now there is one connect for the whole scan: between the
 				// two phase groups we just back out to the unpaused free-roam state (MashBack) and let
 				// the next phase re-open the pause menu, never disconnecting until the scan is fully done.
-				// Only when this `using` block ends does GameNavigator.Dispose() back out of every menu
-				// and switch Genshin back to keyboard/mouse.
-				using (var navigator = GameInputFactory.CreateNavigator())
+				// The per-run input session owns the user's immutable mode declaration, preparation,
+				// restoration responsibility, and the point at which it is safe to disconnect the
+				// virtual controller. Visual observations never replace the declaration.
+				var navigator = GameInputFactory.CreateNavigator();
+				var screenCapture = new NavigationGameScreenCapture();
+				var paimonDetector = new PaimonMenuDetector(positionalOcrService, imagePreprocessor);
+				var modeDetector = new GenshinInputModeDetector(
+					screenCapture, ocrService, imagePreprocessor, paimonDetector);
+				gameInputSession = CreateGameInputSession(
+					navigator, modeDetector, paimonDetector, screenCapture);
+				try
 				{
-					if (!navigator.IsAvailable)
+					if (!gameInputSession.Prepare(scanSession.CancellationToken, out string preparationFailure))
 					{
-						progressReporter.AddError(
-							"ViGEmBus appears to be installed, but Inventory Kamera could not create " +
-							$"the virtual controller: {navigator.FailureReason}");
+						if (scanSession.IsCancellationRequested) return;
+						throw new InvalidOperationException(preparationFailure);
 					}
-					else
+
 					{
-						var paimonDetector = new PaimonMenuDetector(positionalOcrService, imagePreprocessor);
 						var inventoryScreenDetector = new InventoryScreenDetector(ocrService, imagePreprocessor);
 						var characterScreenDetector = new CharacterScreenDetector(ocrService, imagePreprocessor);
 						var paimonNavigator = new PaimonMenuNavigator(
@@ -397,6 +455,7 @@ namespace InventoryKamera
 							}
 
 							Logger.Info("Scanning characters...");
+							progressReporter.SetProgramStatus("Scanning Characters");
 							bool characterEntrySucceeded = false;
 							try
 							{
@@ -421,20 +480,14 @@ namespace InventoryKamera
 						}
 					}
 				}
-			}
-
-			if (scanSettings.ScanWeapons || scanSettings.ScanArtifacts || scanSettings.ScanCharDevItems ||
-				scanSettings.ScanMaterials || scanSettings.ScanCharacters)
-			{
-				// Final safety net: guarantee the game is back in the free-roam/main-menu state once
-				// every controller-driven scan phase above is done, regardless of whatever
-				// GameNavigator.Dispose()'s MashBack (A-press) safety net left behind -- mirrors the
-				// old mouse-mode MainMenuScreen()'s double-Escape finisher that every scan used to end
-				// with before the controller migration (Phase 3 §6c) dropped it.
-				Navigation.sim.Keyboard.KeyPress(Navigation.escapeKey);
-				Navigation.SystemWait(Navigation.Speed.UI);
-				Navigation.sim.Keyboard.KeyPress(Navigation.escapeKey);
-				Navigation.SystemWait(Navigation.Speed.UI);
+				finally
+				{
+					if (!gameInputSession.RestoreAndRelease(out string restorationFailure))
+					{
+						Logger.Error("Virtual controller retained for manual input-mode recovery: {0}", restorationFailure);
+						progressReporter.SetProgramStatus("Keyboard/Mouse restoration required", ok: false);
+					}
+				}
 			}
 			}
 			finally

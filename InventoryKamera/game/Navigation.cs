@@ -1,4 +1,5 @@
 ﻿using System;
+using InventoryKamera.game;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -19,6 +20,7 @@ namespace InventoryKamera
 		private static RECT WindowSize;
 		private static RECT WindowPosition;
 		private static Size AspectRatio;
+		internal static ICaptureOverlayGuard CaptureOverlayGuard { get; set; }
 		public static bool IsNormal { get; private set; }
 
         private static double delay = 1;
@@ -157,31 +159,50 @@ namespace InventoryKamera
 
 		public static Bitmap CaptureWindow(PixelFormat format = PixelFormat.Format24bppRgb)
 		{
-			Bitmap bmp = new Bitmap(GetWidth(), GetHeight(), format);
-			using (Graphics gfxBmp = Graphics.FromImage(bmp))
+			return CaptureWithoutOverlay(() =>
 			{
-				Logger.Debug("CaptureWindow: capturing {0}x{1} from screen position ({2},{3})",
-					bmp.Width, bmp.Height, GetPosition().Left, GetPosition().Top);
-				gfxBmp.CopyFromScreen(GetPosition().Left, GetPosition().Top, 0, 0, bmp.Size);
+				Bitmap bmp = new Bitmap(GetWidth(), GetHeight(), format);
+				using (Graphics gfxBmp = Graphics.FromImage(bmp))
+				{
+					Logger.Debug("CaptureWindow: capturing {0}x{1} from screen position ({2},{3})",
+						bmp.Width, bmp.Height, GetPosition().Left, GetPosition().Top);
+					gfxBmp.CopyFromScreen(GetPosition().Left, GetPosition().Top, 0, 0, bmp.Size);
 
-				var uidRegion = new RECT(
-					Left: (int)( 1070 / 1280.0 * bmp.Width ),
-					Top: (int)( 695 / 720.0 * bmp.Height ),
-					Right: bmp.Width,
-					Bottom: bmp.Height);
-				gfxBmp.FillRectangle(new SolidBrush(Color.Black), uidRegion);
-			}
-			return DownscaleCapture(bmp);
+					var uidRegion = new RECT(
+						Left: (int)(1070 / 1280.0 * bmp.Width),
+						Top: (int)(695 / 720.0 * bmp.Height),
+						Right: bmp.Width,
+						Bottom: bmp.Height);
+					using var brush = new SolidBrush(Color.Black);
+					gfxBmp.FillRectangle(brush, uidRegion);
+				}
+				return DownscaleCapture(bmp);
+			});
 		}
 
 		public static Bitmap CaptureRegion(RECT region, PixelFormat format = PixelFormat.Format24bppRgb)
 		{
-			Bitmap bmp = new Bitmap(region.Width, region.Height, format);
-			using (Graphics gfxBmp = Graphics.FromImage(bmp))
+			return CaptureWithoutOverlay(() =>
 			{
-				gfxBmp.CopyFromScreen(GetPosition().Left + region.Left, GetPosition().Top + region.Top, 0, 0, bmp.Size);
-			}
-			return DownscaleCapture(bmp);
+				Bitmap bmp = new Bitmap(region.Width, region.Height, format);
+				using (Graphics gfxBmp = Graphics.FromImage(bmp))
+				{
+					gfxBmp.CopyFromScreen(GetPosition().Left + region.Left, GetPosition().Top + region.Top, 0, 0, bmp.Size);
+				}
+				return DownscaleCapture(bmp);
+			});
+		}
+
+		internal static T CaptureWithoutOverlay<T>(Func<T> capture)
+		{
+			return CaptureWithoutOverlay(capture, CaptureOverlayGuard);
+		}
+
+		internal static T CaptureWithoutOverlay<T>(Func<T> capture, ICaptureOverlayGuard guard)
+		{
+			if (capture == null) throw new ArgumentNullException(nameof(capture));
+			using IDisposable suspension = guard?.SuspendForCapture();
+			return capture();
 		}
 
 		public static Bitmap CaptureRegion(int x, int y, int width, int height, PixelFormat format = PixelFormat.Format24bppRgb)

@@ -1,5 +1,7 @@
 using System;
 using System.Threading;
+using InventoryKamera.game;
+using InventoryKamera.ui;
 
 namespace InventoryKamera
 {
@@ -11,6 +13,8 @@ namespace InventoryKamera
     internal sealed class ScanRun : IDisposable
     {
         private readonly IScanProgressReporter progressReporter;
+        private readonly DeclaredInputMode declaredOriginalInputMode;
+        private readonly IScanCompanionOverlay scanOverlay;
         private readonly object scannerGate = new object();
         private int started;
         private int disposed;
@@ -20,9 +24,14 @@ namespace InventoryKamera
         internal Thread WorkerThread { get; private set; }
         internal bool IsDisposed => Volatile.Read(ref disposed) != 0;
 
-        internal ScanRun(IScanProgressReporter progressReporter)
+        internal ScanRun(
+            IScanProgressReporter progressReporter,
+            DeclaredInputMode declaredOriginalInputMode = DeclaredInputMode.Controller,
+            IScanCompanionOverlay scanOverlay = null)
         {
             this.progressReporter = progressReporter ?? throw new ArgumentNullException(nameof(progressReporter));
+            this.declaredOriginalInputMode = declaredOriginalInputMode;
+            this.scanOverlay = scanOverlay ?? NullScanCompanionOverlay.Instance;
             Session = new ScanSession();
         }
 
@@ -34,7 +43,12 @@ namespace InventoryKamera
             {
                 if (Scanner == null)
                 {
-                    Scanner = new GameScanner(progressReporter, Session, gameData);
+                    Scanner = new GameScanner(
+                        progressReporter,
+                        Session,
+                        gameData,
+                        declaredOriginalInputMode: declaredOriginalInputMode,
+                        scanOverlay: scanOverlay);
                 }
                 return Scanner;
             }
@@ -80,7 +94,11 @@ namespace InventoryKamera
             }
         }
 
-        internal bool TryCreate(IScanProgressReporter progressReporter, out ScanRun run)
+        internal bool TryCreate(
+            IScanProgressReporter progressReporter,
+            out ScanRun run,
+            DeclaredInputMode declaredOriginalInputMode = DeclaredInputMode.Controller,
+            IScanCompanionOverlay scanOverlay = null)
         {
             lock (gate)
             {
@@ -90,7 +108,7 @@ namespace InventoryKamera
                     return false;
                 }
 
-                run = new ScanRun(progressReporter);
+                run = new ScanRun(progressReporter, declaredOriginalInputMode, scanOverlay);
                 activeRun = run;
                 return true;
             }
@@ -104,6 +122,19 @@ namespace InventoryKamera
 
             run.RequestCancellation();
             return true;
+        }
+
+        internal bool TryResumeAfterInteractiveDialog(out string failureReason)
+        {
+            ScanRun run;
+            lock (gate) run = activeRun;
+            if (run?.Scanner == null)
+            {
+                failureReason = null;
+                return true;
+            }
+
+            return run.Scanner.TryResumeAfterInteractiveDialog(out failureReason);
         }
 
         internal bool Complete(ScanRun run)

@@ -25,6 +25,7 @@ namespace InventoryKamera
         internal string Manequin2Name { get; set; }
         internal bool UseDefaultControllerLayout { get; set; }
         internal ControllerConfirmLayout CustomControllerLayout { get; set; }
+        internal DeclaredInputMode DeclaredOriginalInputMode { get; set; }
 
         internal ControllerConfirmLayout EffectiveControllerLayout =>
             UseDefaultControllerLayout
@@ -43,7 +44,9 @@ namespace InventoryKamera
                 Manequin2Name = settings.Manequin2Name,
                 UseDefaultControllerLayout = settings.UseDefaultControllerConfirmLayout,
                 CustomControllerLayout = ControllerConfirmLayoutOptions.FromPersistedValue(
-                    settings.ControllerConfirmLayout)
+                    settings.ControllerConfirmLayout),
+                DeclaredOriginalInputMode = DeclaredInputModeOptions.FromPersistedValue(
+                    settings.DeclaredOriginalInputMode)
             };
         }
 
@@ -57,6 +60,7 @@ namespace InventoryKamera
             settings.Manequin2Name = Manequin2Name ?? string.Empty;
             settings.UseDefaultControllerConfirmLayout = UseDefaultControllerLayout;
             settings.ControllerConfirmLayout = (int)EffectiveControllerLayout;
+            settings.DeclaredOriginalInputMode = (int)DeclaredOriginalInputMode;
             settings.Save();
         }
     }

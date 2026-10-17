@@ -31,6 +31,7 @@ namespace InventoryKamera
         private int characterCount;
         private int? characterMax;
         private int materialCount;
+        private int errorCount;
         private readonly Stopwatch scanStopwatch = new Stopwatch();
 
         private string programStatus = "";
@@ -77,6 +78,7 @@ namespace InventoryKamera
         /// scrolls until it sees a repeat, so the total isn't known in advance.
         /// </summary>
         public int MaterialCount => materialCount;
+        public int ErrorCount => Volatile.Read(ref errorCount);
 
         /// <summary>
         /// Rough estimate of remaining scan time, based on progress so far across whichever
@@ -294,11 +296,13 @@ namespace InventoryKamera
         public void AddError(string error)
         {
             Logger.Error(error);
+            Interlocked.Increment(ref errorCount);
             ErrorAdded?.Invoke(error);
         }
 
         public void ResetErrors()
         {
+            Volatile.Write(ref errorCount, 0);
             ErrorsReset?.Invoke();
         }
 
@@ -405,6 +409,14 @@ namespace InventoryKamera
         /// </summary>
         public event Action<OcrCorrectionEventArgs> CorrectionRequested;
 
+        /// <summary>
+        /// Raised after an interactive correction handler returns and its owned modal has closed,
+        /// but before the blocked correction task completes. MainForm uses this shared boundary to
+        /// restore Genshin focus before scanner navigation can resume. Input-mode detection is not
+        /// a mandatory post-dialog gate.
+        /// </summary>
+        public event Action CorrectionInteractionCompleted;
+
         // RequestCorrection runs each modal interaction on its own correction task. The gate lets scan
         // loops wait for outstanding correction work while their session token provides an independent
         // cancellation exit. correctionsPending is a count, not a flag, so the gate remains closed
@@ -460,8 +472,15 @@ namespace InventoryKamera
                 try
                 {
                     var args = new OcrCorrectionEventArgs(clone, recognizedText, confidencePercent, fieldLabel);
-                    correctionRequested.Invoke(args);
-                    return args.ResolvedText ?? recognizedText;
+                    try
+                    {
+                        correctionRequested.Invoke(args);
+                        return args.ResolvedText ?? recognizedText;
+                    }
+                    finally
+                    {
+                        CorrectionInteractionCompleted?.Invoke();
+                    }
                 }
                 finally
                 {

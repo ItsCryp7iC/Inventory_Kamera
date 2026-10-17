@@ -13,6 +13,18 @@ namespace InventoryKamera.Tests
     public class ScanViewModelTests
     {
         [Fact]
+        public void ErrorCount_TracksRealErrorsAndResetForOverlay()
+        {
+            var viewModel = new ScanViewModel();
+
+            viewModel.AddError("first");
+            viewModel.AddError("second");
+            Assert.Equal(2, viewModel.ErrorCount);
+
+            viewModel.ResetErrors();
+            Assert.Equal(0, viewModel.ErrorCount);
+        }
+        [Fact]
         public void IncrementWeaponCount_IncrementsAndRaisesCountersChanged()
         {
             var viewModel = new ScanViewModel();

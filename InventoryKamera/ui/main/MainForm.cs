@@ -38,10 +38,18 @@ namespace InventoryKamera
         private DatabaseManager databaseManager;
         private GameDataSnapshotProvider gameDataProvider;
         private readonly ScanRunOwner scanRunOwner = new ScanRunOwner();
+        private readonly IGenshinWindowController genshinWindowController =
+            new WindowsGenshinWindowController();
+        private readonly CorrectionDialogPositioner correctionDialogPositioner;
+        private readonly CorrectionDialogForegroundService correctionDialogForeground;
+        private ScanCompanionOverlay scanOverlay;
 
         public MainForm()
         {
             InitializeComponent();
+
+            correctionDialogPositioner = new CorrectionDialogPositioner(genshinWindowController);
+            correctionDialogForeground = new CorrectionDialogForegroundService();
 
             // The WinForms designer instantiates this form in its designer process to render it. Bail
             // out before any runtime-only wiring -- above all the scanViewModel/data/databaseManager
@@ -83,6 +91,7 @@ namespace InventoryKamera
             scanViewModel.MoraChanged += OnMoraChanged;
             scanViewModel.NavigationImageChanged += OnNavigationImageChanged;
             scanViewModel.CorrectionRequested += OnCorrectionRequested;
+            scanViewModel.CorrectionInteractionCompleted += OnCorrectionInteractionCompleted;
 
             UiTheme.RoundCorners(StartScan_Button, 8);
             UiTheme.RoundCorners(ManualExportButton, 6);
@@ -186,19 +195,59 @@ namespace InventoryKamera
         {
             try
             {
-                Invoke((System.Windows.Forms.MethodInvoker)delegate
+                CorrectionDialogLifecycle.Run(scanOverlay, () =>
                 {
-                    using (var dialog = new ui.OcrCorrectionForm(args.Image, args.RecognizedText, args.ConfidencePercent, args.FieldLabel))
+                    Invoke((System.Windows.Forms.MethodInvoker)delegate
                     {
-                        if (dialog.ShowDialog(this) == DialogResult.OK)
+                        using (var dialog = new ui.OcrCorrectionForm(
+                            args.Image,
+                            args.RecognizedText,
+                            args.ConfidencePercent,
+                            args.FieldLabel))
                         {
-                            args.ResolvedText = dialog.CorrectedText;
+                            void PositionDialog()
+                            {
+                                if (!correctionDialogPositioner.TryPosition(dialog))
+                                    dialog.StartPosition = FormStartPosition.CenterParent;
+                            }
+
+                            EventHandler shown = (_, _) =>
+                            {
+                                PositionDialog();
+                                if (!correctionDialogForeground.RequestForeground(dialog))
+                                    Logger.Warn("Windows did not confirm the OCR correction foreground request.");
+                                dialog.FocusCorrectionInput();
+                            };
+                            DpiChangedEventHandler dpiChanged = (_, _) => PositionDialog();
+                            dialog.Shown += shown;
+                            dialog.DpiChanged += dpiChanged;
+                            try
+                            {
+                                PositionDialog();
+                                correctionDialogForeground.PrepareForShow(dialog);
+                                if (dialog.ShowDialog(this) == DialogResult.OK)
+                                    args.ResolvedText = dialog.CorrectedText;
+                            }
+                            finally
+                            {
+                                correctionDialogForeground.Release(dialog);
+                                dialog.Shown -= shown;
+                                dialog.DpiChanged -= dpiChanged;
+                            }
                         }
-                    }
+                    });
                 });
             }
             catch (ObjectDisposedException) { }
             catch (InvalidOperationException) { }
+        }
+
+        private void OnCorrectionInteractionCompleted()
+        {
+            // This callback runs before the correction task releases the scanner loop. Deferred
+            // post-scan corrections safely no-op after the controller backend has been released.
+            if (!scanRunOwner.TryResumeAfterInteractiveDialog(out string handoffFailure))
+                Logger.Warn("Post-correction controller handoff failed: {0}", handoffFailure);
         }
 
         private void OnErrorsReset()
@@ -304,6 +353,7 @@ namespace InventoryKamera
                 // the owner of the currently active run.
 
                 scanViewModel.SetProgramStatus("Stopping scan...");
+                scanOverlay?.ShowCancelling();
             }
         }
 
@@ -319,6 +369,12 @@ namespace InventoryKamera
         private void RemoveHotkey()
         {
             HotkeyManager.Current.Remove("Stop");
+        }
+
+        private void RegisterScanCancellationHotkey()
+        {
+            HotkeyManager.Current.AddOrReplace("Stop", Keys.Enter, Hotkey_Pressed);
+            Logger.Info("Scan cancellation hotkey registered");
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -472,6 +528,12 @@ namespace InventoryKamera
                 return;
             }
 
+            if (lastScanData?.HasPendingInputModeRecovery == true)
+            {
+                Logger.Info("Scan start ignored while the Recovery overlay owns the temporary controller.");
+                return;
+            }
+
             var startSettings = Properties.Settings.Default;
             bool controllerScanSelected = startSettings.ScanWeapons || startSettings.ScanArtifacts ||
                 startSettings.ScanCharacters || startSettings.ScanCharDevItems || startSettings.ScanMaterials;
@@ -485,12 +547,33 @@ namespace InventoryKamera
 
             scanViewModel.ResetAll();
 
+            if (scanOverlay != null)
+            {
+                if (ReferenceEquals(Navigation.CaptureOverlayGuard, scanOverlay))
+                    Navigation.CaptureOverlayGuard = null;
+                scanOverlay.Dispose();
+            }
+            scanOverlay = new ScanCompanionOverlay(
+                scanViewModel,
+                gameWindow: genshinWindowController,
+                beforeRecoveryHotkeys: RemoveHotkey,
+                onScanning: RegisterScanCancellationHotkey);
+            scanOverlay.ShowAttachedToGame();
+            Navigation.CaptureOverlayGuard = scanOverlay;
+            DeclaredInputMode declaredInputMode = DeclaredInputModeOptions.FromPersistedValue(
+                Properties.Settings.Default.DeclaredOriginalInputMode);
+            scanOverlay.ShowPreparing(declaredInputMode);
+
             scanViewModel.SetProgramStatus("Scanning");
             Logger.Info("Starting scan");
 
             if (Directory.Exists(Properties.Settings.Default.OutputPath) || Directory.CreateDirectory(Properties.Settings.Default.OutputPath).Exists)
             {
-                if (!scanRunOwner.TryCreate(scanViewModel, out ScanRun scanRun))
+                if (!scanRunOwner.TryCreate(
+                    scanViewModel,
+                    out ScanRun scanRun,
+                    declaredInputMode,
+                    scanOverlay))
                 {
                     Logger.Debug("Already running");
                     return;
@@ -499,8 +582,6 @@ namespace InventoryKamera
                 // can atomically replace the provider later without changing this scan's lookup data.
                 GameDataSnapshot scanGameData = gameDataProvider.Current;
 
-                HotkeyManager.Current.AddOrReplace("Stop", Keys.Enter, Hotkey_Pressed);
-                Logger.Info("Hotkey registered");
                 var settings = Properties.Settings.Default;
                 var gameVersion = databaseManager.LocalVersion.ToString(2);
                 var options =
@@ -563,6 +644,17 @@ namespace InventoryKamera
                         // The Data object of json object
                         currentScanner.GatherData();
 
+                        if (currentScanner.HasPendingInputModeRecovery)
+                        {
+                            // The virtual controller is deliberately still alive. Do not overwrite
+                            // the recovery status with Finished or open export/optimizer UI that
+                            // obscures the required manual Control Type recovery.
+                            currentScanner.StopImageProcessorWorkers();
+                            scanViewModel.SetProgramStatus(
+                                "Keyboard/Mouse restoration required", ok: false);
+                            return;
+                        }
+
                         // Tear down the global "Stop" hotkey as soon as the scan itself is done, not
                         // in the `finally` block below -- that only runs once OpenOptimizerDialog
                         // returns, which (since it now blocks on Invoke+MessageBox.Show) doesn't
@@ -580,6 +672,7 @@ namespace InventoryKamera
                             // The user can still use "Export Scanned Data" to export what was collected.
                             currentScanner?.StopImageProcessorWorkers();
                             scanViewModel.SetProgramStatus("Scan stopped");
+                            scanOverlay.ShowCompleted("Scan cancelled. Input cleanup is complete.");
                         }
                         else
                         {
@@ -592,6 +685,7 @@ namespace InventoryKamera
                             Logger.Info("Exported data");
 
                             scanViewModel.SetProgramStatus("Finished");
+                            scanOverlay.ShowCompleted("Scan finished. Input cleanup is complete.");
                             OpenOptimizerDialog(good);
                         }
                     }
@@ -599,6 +693,10 @@ namespace InventoryKamera
                     {
                         currentScanner?.StopImageProcessorWorkers();
                         scanViewModel.AddError(ex.ToString());
+                        if (currentScanner?.HasPendingInputModeRecovery == true)
+                            scanViewModel.SetProgramStatus("Keyboard/Mouse restoration required", ok: false);
+                        else
+                            scanOverlay.ShowError(ex.Message);
                     }
                     catch (Exception ex)
                     {
@@ -606,7 +704,13 @@ namespace InventoryKamera
                         currentScanner?.StopImageProcessorWorkers();
                         while (ex.InnerException != null) ex = ex.InnerException;
                         scanViewModel.AddError(ex.ToString());
-                        scanViewModel.SetProgramStatus("Scan aborted", ok: false);
+                        if (currentScanner?.HasPendingInputModeRecovery == true)
+                            scanViewModel.SetProgramStatus("Keyboard/Mouse restoration required", ok: false);
+                        else
+                        {
+                            scanViewModel.SetProgramStatus("Scan aborted", ok: false);
+                            scanOverlay.ShowError(ex.Message);
+                        }
                     }
                     finally
                     {
@@ -616,7 +720,8 @@ namespace InventoryKamera
                         {
                             ManualExportButton.Enabled = lastScanData?.HasData == true;
                         });
-                        MainForm_Activate();
+                        if (lastScanData?.HasPendingInputModeRecovery != true)
+                            MainForm_Activate();
                     }
                 });
             }
@@ -677,6 +782,9 @@ namespace InventoryKamera
         {
             SaveSettings();
             RemoveHotkey();
+            if (ReferenceEquals(Navigation.CaptureOverlayGuard, scanOverlay))
+                Navigation.CaptureOverlayGuard = null;
+            scanOverlay?.Dispose();
             NLog.LogManager.Shutdown();
         }
 

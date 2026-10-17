@@ -20,6 +20,7 @@ namespace InventoryKamera.Tests
                 settings.Manequin2Name = "Manequin M";
                 settings.UseDefaultControllerConfirmLayout = false;
                 settings.ControllerConfirmLayout = (int)ControllerConfirmLayout.AConfirm_BCancel;
+                settings.DeclaredOriginalInputMode = (int)DeclaredInputMode.Controller;
 
                 ScanSetupDraft draft = ScanSetupDraft.Load(settings);
 
@@ -29,6 +30,7 @@ namespace InventoryKamera.Tests
                 Assert.Equal("Manequin M", draft.Manequin2Name);
                 Assert.False(draft.UseDefaultControllerLayout);
                 Assert.Equal(ControllerConfirmLayout.AConfirm_BCancel, draft.CustomControllerLayout);
+                Assert.Equal(DeclaredInputMode.Controller, draft.DeclaredOriginalInputMode);
             }
             finally
             {
@@ -49,6 +51,17 @@ namespace InventoryKamera.Tests
             Assert.False(controller.IsLayoutSelectorEnabled);
             Assert.Equal(ControllerConfirmLayout.BConfirm_ACancel,
                 controller.Draft.EffectiveControllerLayout);
+        }
+
+        [Theory]
+        [InlineData(0, (int)DeclaredInputMode.KeyboardMouse)]
+        [InlineData(1, (int)DeclaredInputMode.Controller)]
+        [InlineData(999, (int)DeclaredInputMode.KeyboardMouse)]
+        public void DeclaredInputModePersistence_AllowsOnlyUserFacingModes(int persisted, int expected)
+        {
+            Assert.Equal(
+                (DeclaredInputMode)expected,
+                DeclaredInputModeOptions.FromPersistedValue(persisted));
         }
 
         [Fact]
@@ -81,7 +94,8 @@ namespace InventoryKamera.Tests
                     Manequin1Name = "Saved F",
                     Manequin2Name = "Saved M",
                     UseDefaultControllerLayout = false,
-                    CustomControllerLayout = ControllerConfirmLayout.AConfirm_BCancel
+                    CustomControllerLayout = ControllerConfirmLayout.AConfirm_BCancel,
+                    DeclaredOriginalInputMode = DeclaredInputMode.Controller
                 };
 
                 draft.Save(settings);
@@ -93,6 +107,7 @@ namespace InventoryKamera.Tests
                 Assert.False(settings.UseDefaultControllerConfirmLayout);
                 Assert.Equal((int)ControllerConfirmLayout.AConfirm_BCancel,
                     settings.ControllerConfirmLayout);
+                Assert.Equal((int)DeclaredInputMode.Controller, settings.DeclaredOriginalInputMode);
             }
             finally
             {
@@ -111,6 +126,7 @@ namespace InventoryKamera.Tests
             draft.WandererName = "Unsaved Wanderer";
             draft.UseDefaultControllerLayout = !draft.UseDefaultControllerLayout;
             draft.CustomControllerLayout = ControllerConfirmLayout.AConfirm_BCancel;
+            draft.DeclaredOriginalInputMode = DeclaredInputMode.Controller;
 
             AssertSettingsEqual(original, settings);
         }
@@ -226,7 +242,8 @@ namespace InventoryKamera.Tests
                 Manequin1Name = "Manequin1",
                 Manequin2Name = "Manequin2",
                 UseDefaultControllerLayout = useDefault,
-                CustomControllerLayout = layout
+                CustomControllerLayout = layout,
+                DeclaredOriginalInputMode = DeclaredInputMode.KeyboardMouse
             };
 
         private static SettingsValues CaptureSettings(Properties.Settings settings) => new SettingsValues
@@ -236,7 +253,8 @@ namespace InventoryKamera.Tests
             Manequin1Name = settings.Manequin1Name,
             Manequin2Name = settings.Manequin2Name,
             UseDefaultControllerLayout = settings.UseDefaultControllerConfirmLayout,
-            ControllerLayout = settings.ControllerConfirmLayout
+            ControllerLayout = settings.ControllerConfirmLayout,
+            DeclaredInputMode = settings.DeclaredOriginalInputMode
         };
 
         private static void RestoreSettings(Properties.Settings settings, SettingsValues values)
@@ -247,6 +265,7 @@ namespace InventoryKamera.Tests
             settings.Manequin2Name = values.Manequin2Name;
             settings.UseDefaultControllerConfirmLayout = values.UseDefaultControllerLayout;
             settings.ControllerConfirmLayout = values.ControllerLayout;
+            settings.DeclaredOriginalInputMode = values.DeclaredInputMode;
             settings.Save();
         }
 
@@ -258,6 +277,7 @@ namespace InventoryKamera.Tests
             Assert.Equal(expected.Manequin2Name, actual.Manequin2Name);
             Assert.Equal(expected.UseDefaultControllerLayout, actual.UseDefaultControllerConfirmLayout);
             Assert.Equal(expected.ControllerLayout, actual.ControllerConfirmLayout);
+            Assert.Equal(expected.DeclaredInputMode, actual.DeclaredOriginalInputMode);
         }
 
         private sealed class SettingsValues
@@ -268,6 +288,7 @@ namespace InventoryKamera.Tests
             internal string Manequin2Name { get; init; }
             internal bool UseDefaultControllerLayout { get; init; }
             internal int ControllerLayout { get; init; }
+            internal int DeclaredInputMode { get; init; }
         }
 
         private sealed class SequenceDetector : IViGEmBusDetector

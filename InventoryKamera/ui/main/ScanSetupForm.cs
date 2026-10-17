@@ -21,6 +21,8 @@ namespace InventoryKamera
         private readonly RadioButton defaultLayoutRadio;
         private readonly RadioButton customLayoutRadio;
         private readonly ComboBox layoutComboBox;
+        private readonly RadioButton keyboardMouseModeRadio;
+        private readonly RadioButton controllerModeRadio;
         private readonly TextBox travelerTextBox;
         private readonly TextBox wandererTextBox;
         private readonly TextBox manequin1TextBox;
@@ -40,7 +42,7 @@ namespace InventoryKamera
 
             AutoScaleDimensions = new SizeF(96F, 96F);
             AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(600, 612);
+            ClientSize = new Size(600, 692);
             Font = new Font("Segoe UI", 9F);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -88,9 +90,32 @@ namespace InventoryKamera
             virtualControllerGroup.Controls.Add(downloadButton);
             virtualControllerGroup.Controls.Add(checkAgainButton);
 
-            var controllerSettingsGroup = new GroupBox
+            var inputModeGroup = new GroupBox
             {
                 Location = new Point(12, 154),
+                Size = new Size(576, 74),
+                Text = "Current Genshin Input Mode"
+            };
+            keyboardMouseModeRadio = new RadioButton
+            {
+                AutoSize = true,
+                Location = new Point(19, 31),
+                TabIndex = 2,
+                Text = "Keyboard / Mouse"
+            };
+            controllerModeRadio = new RadioButton
+            {
+                AutoSize = true,
+                Location = new Point(190, 31),
+                TabIndex = 3,
+                Text = "Controller"
+            };
+            inputModeGroup.Controls.Add(keyboardMouseModeRadio);
+            inputModeGroup.Controls.Add(controllerModeRadio);
+
+            var controllerSettingsGroup = new GroupBox
+            {
+                Location = new Point(12, 236),
                 Size = new Size(576, 177),
                 Text = "Controller Settings"
             };
@@ -104,14 +129,14 @@ namespace InventoryKamera
             {
                 AutoSize = true,
                 Location = new Point(19, 54),
-                TabIndex = 2,
+                TabIndex = 4,
                 Text = "No / I don't know — use Genshin's default layout"
             };
             customLayoutRadio = new RadioButton
             {
                 AutoSize = true,
                 Location = new Point(19, 80),
-                TabIndex = 3,
+                TabIndex = 5,
                 Text = "Yes, I changed it"
             };
             var layoutLabel = new Label
@@ -125,7 +150,7 @@ namespace InventoryKamera
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Location = new Point(247, 107),
                 Size = new Size(285, 23),
-                TabIndex = 4
+                TabIndex = 6
             };
             layoutComboBox.Items.Add(ControllerConfirmLayoutOptions.DisplayText(
                 ControllerConfirmLayout.BConfirm_ACancel));
@@ -142,12 +167,12 @@ namespace InventoryKamera
                 Location = new Point(19, 140),
                 Size = new Size(535, 30),
                 Text = "Inventory Kamera uses a temporary virtual Xbox controller. " +
-                       "Genshin must currently be set to Controller input mode."
+                       "Keyboard/Mouse mode is restored after the scan when it was active before starting."
             });
 
             var characterNamesGroup = new GroupBox
             {
-                Location = new Point(12, 339),
+                Location = new Point(12, 421),
                 Size = new Size(576, 214),
                 Text = "Character Names"
             };
@@ -160,10 +185,10 @@ namespace InventoryKamera
                        "from their canonical name. Blank values remain allowed."
             });
 
-            travelerTextBox = AddNameField(characterNamesGroup, "Traveler's Name:", 62, 5);
-            wandererTextBox = AddNameField(characterNamesGroup, "Wanderer's Name:", 94, 6);
-            manequin1TextBox = AddNameField(characterNamesGroup, "Manequin's (f) Name:", 126, 7);
-            manequin2TextBox = AddNameField(characterNamesGroup, "Manequin's (m) Name:", 158, 8);
+            travelerTextBox = AddNameField(characterNamesGroup, "Traveler's Name:", 62, 7);
+            wandererTextBox = AddNameField(characterNamesGroup, "Wanderer's Name:", 94, 8);
+            manequin1TextBox = AddNameField(characterNamesGroup, "Manequin's (f) Name:", 126, 9);
+            manequin2TextBox = AddNameField(characterNamesGroup, "Manequin's (m) Name:", 158, 10);
             characterNamesGroup.Controls.Add(new Label
             {
                 AutoSize = true,
@@ -175,21 +200,22 @@ namespace InventoryKamera
             var cancelButton = new Button
             {
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(421, 571),
+                Location = new Point(421, 653),
                 Size = new Size(80, 29),
-                TabIndex = 10,
+                TabIndex = 12,
                 Text = "Cancel"
             };
             startButton = new Button
             {
-                Location = new Point(507, 571),
+                Location = new Point(507, 653),
                 Size = new Size(81, 29),
-                TabIndex = 9,
+                TabIndex = 11,
                 Text = "Start Scan"
             };
             startButton.Click += StartButton_Click;
 
             Controls.Add(virtualControllerGroup);
+            Controls.Add(inputModeGroup);
             Controls.Add(controllerSettingsGroup);
             Controls.Add(characterNamesGroup);
             Controls.Add(cancelButton);
@@ -201,6 +227,8 @@ namespace InventoryKamera
             defaultLayoutRadio.CheckedChanged += LayoutModeChanged;
             customLayoutRadio.CheckedChanged += LayoutModeChanged;
             layoutComboBox.SelectedIndexChanged += LayoutSelectionChanged;
+            keyboardMouseModeRadio.CheckedChanged += InputModeChanged;
+            controllerModeRadio.CheckedChanged += InputModeChanged;
 
             UiTheme.ApplyTheme(this);
             RefreshNameValidation();
@@ -236,7 +264,19 @@ namespace InventoryKamera
             layoutComboBox.SelectedIndex = (int)draft.CustomControllerLayout;
             defaultLayoutRadio.Checked = draft.UseDefaultControllerLayout;
             customLayoutRadio.Checked = !draft.UseDefaultControllerLayout;
+            keyboardMouseModeRadio.Checked =
+                draft.DeclaredOriginalInputMode == DeclaredInputMode.KeyboardMouse;
+            controllerModeRadio.Checked =
+                draft.DeclaredOriginalInputMode == DeclaredInputMode.Controller;
             RefreshLayoutControls();
+        }
+
+        private void InputModeChanged(object sender, EventArgs e)
+        {
+            if (!keyboardMouseModeRadio.Checked && !controllerModeRadio.Checked) return;
+            controller.Draft.DeclaredOriginalInputMode = controllerModeRadio.Checked
+                ? DeclaredInputMode.Controller
+                : DeclaredInputMode.KeyboardMouse;
         }
 
         private void LayoutModeChanged(object sender, EventArgs e)

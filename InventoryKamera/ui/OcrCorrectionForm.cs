@@ -19,13 +19,20 @@ namespace InventoryKamera.ui
         /// <summary>Null if the user cancelled/skipped; otherwise the (possibly unchanged) corrected text.</summary>
         public string CorrectedText { get; private set; }
 
+        internal void FocusCorrectionInput()
+        {
+            correctedTextBox.Select();
+            correctedTextBox.Focus();
+        }
+
         public OcrCorrectionForm(Bitmap image, string recognizedText, float confidencePercent, string fieldLabel)
         {
             Text = fieldLabel?.EndsWith(" item count", StringComparison.OrdinalIgnoreCase) == true
                 ? "Item count needs confirmation"
                 : "Low-confidence OCR result";
+            AutoScaleMode = AutoScaleMode.Dpi;
             FormBorderStyle = FormBorderStyle.FixedDialog;
-            StartPosition = FormStartPosition.CenterParent;
+            StartPosition = FormStartPosition.Manual;
             MaximizeBox = false;
             MinimizeBox = false;
             ShowIcon = false;

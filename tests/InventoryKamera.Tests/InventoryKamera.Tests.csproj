@@ -23,6 +23,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="xunit.runner.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <!-- OcrServiceTests exercises real Tesseract recognition, so it needs the trained data files
          next to the test binaries too, same as the app itself. -->
     <None Include="..\..\InventoryKamera\tessdata\genshin_best_eng.traineddata" Link="tessdata\genshin_best_eng.traineddata">
@@ -32,6 +35,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="Fixtures\PaimonMenu\*.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="Fixtures\InputMode\*.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
