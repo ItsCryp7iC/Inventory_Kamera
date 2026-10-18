@@ -33,6 +33,8 @@ namespace InventoryKamera.game
                     return layout == ControllerConfirmLayout.AConfirm_BCancel
                         ? Xbox360Button.A
                         : Xbox360Button.B;
+                case GameInputButton.Search:
+                    return Xbox360Button.X;
                 case GameInputButton.Menu:
                     return Xbox360Button.Start;
                 case GameInputButton.DPadDown:

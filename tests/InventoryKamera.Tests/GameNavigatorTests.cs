@@ -43,6 +43,22 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void TapSearch_UsesSemanticPressWaitReleaseSequence()
+        {
+            var calls = new List<string>();
+            var navigator = CreateNavigator(calls);
+
+            navigator.TapSearch(90);
+
+            Assert.Equal(new[]
+            {
+                "Button:Search:True",
+                "Wait:90",
+                "Button:Search:False"
+            }, calls);
+        }
+
+        [Fact]
         public void Dispose_ExitsControllerModeBeforeDisconnectingInput()
         {
             var calls = new List<string>();

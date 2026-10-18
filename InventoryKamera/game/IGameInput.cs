@@ -6,6 +6,7 @@ namespace InventoryKamera.game
     {
         Back,
         Confirm,
+        Search,
         Menu,
         DPadDown,
         DPadLeft,

@@ -98,6 +98,8 @@ namespace InventoryKamera.game
 
         public void TapConfirm(int holdMs = 150) => TapButton(GameInputButton.Confirm, holdMs);
 
+        public void TapSearch(int holdMs = 150) => TapButton(GameInputButton.Search, holdMs);
+
         public void TapDPadDown(int holdMs = 150) => TapButton(GameInputButton.DPadDown, holdMs);
 
         public void TapDPadLeft(int holdMs = 150) => TapButton(GameInputButton.DPadLeft, holdMs);

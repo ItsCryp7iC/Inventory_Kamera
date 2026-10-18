@@ -139,6 +139,10 @@ namespace InventoryKamera.Tests
                 ControllerConfirmLayout.AConfirm_BCancel, GameInputButton.Confirm, Xbox360Button.A);
             AssertViGEmButton(
                 ControllerConfirmLayout.AConfirm_BCancel, GameInputButton.Back, Xbox360Button.B);
+            AssertViGEmButton(
+                ControllerConfirmLayout.BConfirm_ACancel, GameInputButton.Search, Xbox360Button.X);
+            AssertViGEmButton(
+                ControllerConfirmLayout.AConfirm_BCancel, GameInputButton.Search, Xbox360Button.X);
         }
 
         private static void AssertViGEmButton(
@@ -177,6 +181,19 @@ namespace InventoryKamera.Tests
 
             Assert.Equal("wait failed", error.Message);
             Assert.Equal(new[] { "Button:Confirm:True", "Button:Confirm:False" }, input.Calls);
+        }
+
+        [Fact]
+        public void TapSearch_WhenWaitThrows_ReleasesSearchAndPreservesOriginalFailure()
+        {
+            var input = new RecordingGameInput { ThrowOnButtonRelease = true };
+            var navigator = new GameNavigator(input, _ => throw new InvalidOperationException("wait failed"));
+
+            InvalidOperationException error = Assert.Throws<InvalidOperationException>(() =>
+                navigator.TapSearch(90));
+
+            Assert.Equal("wait failed", error.Message);
+            Assert.Equal(new[] { "Button:Search:True", "Button:Search:False" }, input.Calls);
         }
 
         [Fact]
