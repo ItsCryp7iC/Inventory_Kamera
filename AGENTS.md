@@ -1,5 +1,16 @@
 # Inventory Kamera Development Instructions
 
+> **Achievement Scanner directive**
+>
+> Any task touching the Phase 6 Achievement Scanner must read and follow
+> `ACHIEVEMENT_SCANNER_PLAN.md` before making changes.
+>
+> That plan is authoritative for feature scope, phase boundaries, safety rules,
+> detector semantics, testing, diagnostics, and commit discipline.
+>
+> Do not skip ahead to later Achievement Scanner phases, redesign the scan
+> algorithm, or broaden scope unless the user explicitly changes the plan.
+
 ## Project Goal
 
 This repository is a maintained and modernized fork of Inventory Kamera.
