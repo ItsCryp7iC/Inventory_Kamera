@@ -6,8 +6,8 @@ namespace InventoryKamera
 {
     /// <summary>
     /// Resolution-relative Achievement-screen regions for the current desktop layout.
-    /// The title and completion-state rectangles are geometry outputs only in Phase 6A; their
-    /// contents are not used for achievement identity or completion classification yet.
+    /// Phase 6D consumes the title rectangle for identity verification. The completion-state
+    /// rectangle remains geometry-only until Phase 6E.
     /// </summary>
     internal sealed class AchievementScreenRegions
     {
