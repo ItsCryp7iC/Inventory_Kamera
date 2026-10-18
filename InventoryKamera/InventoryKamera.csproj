@@ -57,6 +57,9 @@
     <EmbeddedResource Include="assets\constellation_status_locked_template.png">
       <LogicalName>InventoryKamera.assets.constellation_status_locked_template.png</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Resources\Data\achievements-scanner.json">
+      <LogicalName>InventoryKamera.Resources.Data.achievements-scanner.json</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>

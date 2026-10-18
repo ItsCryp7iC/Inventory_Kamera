@@ -3,6 +3,9 @@
 ###############################################################################
 * text=auto
 
+# The generated achievement catalog has a deterministic LF-only byte contract.
+InventoryKamera/Resources/Data/achievements-scanner.json text eol=lf
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #

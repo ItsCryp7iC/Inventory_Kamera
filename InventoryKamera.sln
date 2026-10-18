@@ -9,6 +9,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{E585815B
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InventoryKamera.Tests", "tests\InventoryKamera.Tests\InventoryKamera.Tests.csproj", "{0D0489BA-614E-46EE-8599-EB944AA879E3}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InventoryKamera.AchievementCatalogGenerator", "tools\InventoryKamera.AchievementCatalogGenerator\InventoryKamera.AchievementCatalogGenerator.csproj", "{B405B04D-92F6-46B7-AC31-3E08EE2CD246}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -61,6 +63,18 @@ Global
 		{0D0489BA-614E-46EE-8599-EB944AA879E3}.Release|x64.Build.0 = Release|Any CPU
 		{0D0489BA-614E-46EE-8599-EB944AA879E3}.Release|x86.ActiveCfg = Release|Any CPU
 		{0D0489BA-614E-46EE-8599-EB944AA879E3}.Release|x86.Build.0 = Release|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Debug|x64.Build.0 = Debug|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Debug|x86.Build.0 = Debug|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Release|x64.ActiveCfg = Release|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Release|x64.Build.0 = Release|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Release|x86.ActiveCfg = Release|Any CPU
+		{B405B04D-92F6-46B7-AC31-3E08EE2CD246}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
