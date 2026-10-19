@@ -119,35 +119,46 @@ namespace InventoryKamera
 
         internal AchievementCatalogScanResult Scan(
             CancellationToken cancellationToken,
+            IAchievementCatalogScanProgressReporter progress = null) =>
+            ScanTargets(Targets, cancellationToken, progress);
+
+        internal AchievementCatalogScanResult ScanTargets(
+            IReadOnlyList<AchievementScanTarget> targets,
+            CancellationToken cancellationToken,
             IAchievementCatalogScanProgressReporter progress = null)
         {
-            var results = new List<AchievementSingleScanResult>(Targets.Count);
+            if (targets == null) throw new ArgumentNullException(nameof(targets));
+
+            var results = new List<AchievementSingleScanResult>(targets.Count);
             var counts = new ScanCounts();
 
             if (cancellationToken.IsCancellationRequested)
                 return Finish(
                     AchievementCatalogScanState.Cancelled,
+                    targets.Count,
                     results,
                     counts,
                     "Full achievement scanning was cancelled before the first target.");
 
             if (!TryReport(
                 progress,
-                new AchievementCatalogScanProgress(0, Targets.Count, string.Empty, null, counts),
+                new AchievementCatalogScanProgress(0, targets.Count, string.Empty, null, counts),
                 out string progressFailure))
             {
                 return Finish(
                     AchievementCatalogScanState.Failed,
+                    targets.Count,
                     results,
                     counts,
                     progressFailure);
             }
 
-            foreach (AchievementScanTarget target in Targets)
+            foreach (AchievementScanTarget target in targets)
             {
                 if (cancellationToken.IsCancellationRequested)
                     return Finish(
                         AchievementCatalogScanState.Cancelled,
+                        targets.Count,
                         results,
                         counts,
                         "Full achievement scanning was cancelled before the next target.");
@@ -161,6 +172,7 @@ namespace InventoryKamera
                 {
                     return Finish(
                         AchievementCatalogScanState.Cancelled,
+                        targets.Count,
                         results,
                         counts,
                         "Full achievement scanning was cancelled during the delegated single scan.");
@@ -169,6 +181,7 @@ namespace InventoryKamera
                 {
                     return Finish(
                         AchievementCatalogScanState.Failed,
+                        targets.Count,
                         results,
                         counts,
                         $"The delegated single scanner threw {ex.GetType().Name}: {ex.Message}");
@@ -177,6 +190,7 @@ namespace InventoryKamera
                 if (result == null)
                     return Finish(
                         AchievementCatalogScanState.Failed,
+                        targets.Count,
                         results,
                         counts,
                         "The delegated single scanner returned no structured result.");
@@ -188,7 +202,7 @@ namespace InventoryKamera
                     progress,
                     new AchievementCatalogScanProgress(
                         results.Count,
-                        Targets.Count,
+                        targets.Count,
                         target.CanonicalTitle,
                         target.RequestedCanonicalId,
                         counts),
@@ -201,6 +215,7 @@ namespace InventoryKamera
                 {
                     return Finish(
                         AchievementCatalogScanState.Cancelled,
+                        targets.Count,
                         results,
                         counts,
                         result.Reason.Length > 0
@@ -211,6 +226,7 @@ namespace InventoryKamera
                 if (!result.ReadyForNextAchievement)
                     return Finish(
                         AchievementCatalogScanState.StoppedUnsafe,
+                        targets.Count,
                         results,
                         counts,
                         $"Target '{target.CanonicalTitle}' did not positively return to Idle. {result.Reason}");
@@ -218,6 +234,7 @@ namespace InventoryKamera
                 if (result.State == AchievementSingleScanState.Failed)
                     return Finish(
                         AchievementCatalogScanState.Failed,
+                        targets.Count,
                         results,
                         counts,
                         $"Target '{target.CanonicalTitle}' reported an operational failure. {result.Reason}");
@@ -225,6 +242,7 @@ namespace InventoryKamera
                 if (!progressReported)
                     return Finish(
                         AchievementCatalogScanState.Failed,
+                        targets.Count,
                         results,
                         counts,
                         progressFailure);
@@ -232,6 +250,7 @@ namespace InventoryKamera
 
             return Finish(
                 AchievementCatalogScanState.Completed,
+                targets.Count,
                 results,
                 counts,
                 "All achievement scan targets were processed.");
@@ -239,15 +258,16 @@ namespace InventoryKamera
 
         private AchievementCatalogScanResult Finish(
             AchievementCatalogScanState state,
+            int totalTargets,
             IReadOnlyList<AchievementSingleScanResult> results,
             ScanCounts counts,
             string stopReason)
         {
             string boundedReason = Bound(stopReason, 240);
-            bool stoppedEarly = results.Count < Targets.Count;
+            bool stoppedEarly = results.Count < totalTargets;
             string diagnostics = BuildDiagnostics(
                 state,
-                Targets.Count,
+                totalTargets,
                 results.Count,
                 counts,
                 stoppedEarly,
@@ -258,7 +278,7 @@ namespace InventoryKamera
                 Logger.Warn(diagnostics);
             return new AchievementCatalogScanResult(
                 state,
-                Targets.Count,
+                totalTargets,
                 results,
                 counts,
                 boundedReason,

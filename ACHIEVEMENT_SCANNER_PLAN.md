@@ -783,12 +783,23 @@ Use previous trusted achievement result to skip already-completed achievements.
 
 Requirements:
 
-- validate input format;
+- validate an in-memory trusted completed-ID seed;
 - canonicalize IDs;
 - do not trust unknown IDs;
 - preserve completed entries;
 - scan only remaining candidates;
 - provide clear counts for skipped/scanned/unresolved.
+
+Phase 6I accepts only an in-memory collection of trusted completed canonical IDs; external JSON or
+Traveler's Toolkit file parsing is deferred. Unknown, nonpositive, or otherwise noncanonical IDs
+fail validation before scanning, while duplicate valid IDs canonicalize deterministically. Target
+skipping operates on the Phase 6H title groups: a target is skipped only when every candidate ID is
+already trusted, so partially trusted staged families and collisions are still scanned once.
+Exposed trusted-ID collections use ascending canonical numeric order.
+Previous trusted IDs are always preserved. A scan may add only a positively verified `Completed`
+result for a unique-title target; staged-family, collision, ambiguous, unresolved, and pending-Claim
+results add no IDs. Phase 6I adds no outer retries and retains all Phase 6H ordering, cancellation,
+failure, progress-callback, and `ReadyForNextAchievement` safety behavior.
 
 ### Phase 6J — Traveler's Toolkit export integration
 
