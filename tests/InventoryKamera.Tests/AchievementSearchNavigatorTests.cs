@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using Xunit;
 
@@ -26,6 +27,8 @@ namespace InventoryKamera.Tests
             Assert.Equal(AchievementSearchEditorState.Focused, result.AfterOpenFocusDetection.State);
             Assert.Equal(AchievementScreenState.SearchActive, result.AfterDetection.ScreenState);
             Assert.Equal(1, result.AfterDetection.MatchCountValue);
+            Assert.Contains("postTextFocusAttemptCount=1", result.Diagnostics);
+            Assert.Equal(1, CountOccurrences(result.Diagnostics, "transition=typed;"));
             AssertOrdered(
                 harness.Events,
                 "Button:Search:True",
@@ -33,6 +36,129 @@ namespace InventoryKamera.Tests
                 "Text:You There! Fly!",
                 "Button:Search:True",
                 "Screen:SearchActive");
+        }
+
+        [Fact]
+        public void PostTextUnknownThenFocused_RetriesAndSubmitsOnce()
+        {
+            var harness = Harness.ForPostTextFocus(
+                UnknownFocus(),
+                Focused());
+
+            AchievementSearchNavigationResult result = harness.Navigator.Search(
+                "Megastar in Mondstadt",
+                CancellationToken.None);
+
+            Assert.True(result.Succeeded, result.Diagnostics);
+            Assert.Equal(2, Count(harness.Events, "Button:Search:True"));
+            Assert.Equal(2, CountOccurrences(result.Diagnostics, "transition=typed;"));
+            Assert.Contains("postTextFocusAttemptCount=2", result.Diagnostics);
+            Assert.Contains("transition=typed; attempt=1;", result.Diagnostics);
+            Assert.Contains("state=Unknown; brightestBorderRowRatio=0.250", result.Diagnostics);
+            Assert.Contains("transition=typed; attempt=2;", result.Diagnostics);
+            Assert.Contains("state=Focused; brightestBorderRowRatio=0.950", result.Diagnostics);
+        }
+
+        [Fact]
+        public void PostTextNotFocusedThenUnknownThenFocused_RetriesAndSubmitsOnce()
+        {
+            var harness = Harness.ForPostTextFocus(
+                NotFocused(),
+                UnknownFocus(),
+                Focused());
+
+            AchievementSearchNavigationResult result = harness.Navigator.Search(
+                "Megastar in Mondstadt",
+                CancellationToken.None);
+
+            Assert.True(result.Succeeded, result.Diagnostics);
+            Assert.Equal(2, Count(harness.Events, "Button:Search:True"));
+            Assert.Equal(3, CountOccurrences(result.Diagnostics, "transition=typed;"));
+            Assert.Contains("postTextFocusAttemptCount=3", result.Diagnostics);
+            Assert.Contains("state=NotFocused; brightestBorderRowRatio=0.050", result.Diagnostics);
+        }
+
+        [Fact]
+        public void AllPostTextChecksUnknown_FailsClosedWithoutSubmission()
+        {
+            var harness = Harness.ForPostTextFocus(
+                UnknownFocus(),
+                UnknownFocus(),
+                UnknownFocus());
+
+            AchievementSearchNavigationResult result = harness.Navigator.Search(
+                "Megastar in Mondstadt",
+                CancellationToken.None);
+
+            Assert.False(result.Succeeded);
+            Assert.False(result.Cancelled);
+            Assert.Equal(1, Count(harness.Events, "Button:Search:True"));
+            Assert.Equal(3, CountOccurrences(result.Diagnostics, "transition=typed;"));
+            Assert.Contains("across 3 bounded capture attempts", result.FailureReason);
+            Assert.Contains("postTextFocusAttemptCount=3", result.Diagnostics);
+        }
+
+        [Fact]
+        public void AllPostTextChecksNotFocused_FailsClosedWithoutSubmission()
+        {
+            var harness = Harness.ForPostTextFocus(
+                NotFocused(),
+                NotFocused(),
+                NotFocused());
+
+            AchievementSearchNavigationResult result = harness.Navigator.Search(
+                "Megastar in Mondstadt",
+                CancellationToken.None);
+
+            Assert.False(result.Succeeded);
+            Assert.False(result.Cancelled);
+            Assert.Equal(1, Count(harness.Events, "Button:Search:True"));
+            Assert.Equal(3, CountOccurrences(result.Diagnostics, "transition=typed;"));
+            Assert.Contains("state=NotFocused; brightestBorderRowRatio=0.050", result.Diagnostics);
+        }
+
+        [Fact]
+        public void CancellationDuringPostTextRetryWait_DoesNotSubmit()
+        {
+            using var cancellation = new CancellationTokenSource();
+            var harness = Harness.ForPostTextFocus(
+                new[] { UnknownFocus(), Focused() },
+                retrySettleMs: 7,
+                navigationWait: (milliseconds, token) =>
+                {
+                    if (milliseconds == 7) cancellation.Cancel();
+                    token.ThrowIfCancellationRequested();
+                });
+
+            AchievementSearchNavigationResult result = harness.Navigator.Search(
+                "Megastar in Mondstadt",
+                cancellation.Token);
+
+            Assert.True(result.Cancelled);
+            Assert.Equal(1, Count(harness.Events, "Button:Search:True"));
+            Assert.Equal(2, harness.FocusDetector.DetectCount);
+            Assert.Contains("postTextFocusAttemptCount=1", result.Diagnostics);
+        }
+
+        [Fact]
+        public void CancellationImmediatelyAfterRecoveredFocus_DoesNotSubmit()
+        {
+            using var cancellation = new CancellationTokenSource();
+            var harness = Harness.ForPostTextFocus(
+                UnknownFocus(),
+                Focused());
+            harness.FocusDetector.AfterDetect = count =>
+            {
+                if (count == 3) cancellation.Cancel();
+            };
+
+            AchievementSearchNavigationResult result = harness.Navigator.Search(
+                "Megastar in Mondstadt",
+                cancellation.Token);
+
+            Assert.True(result.Cancelled);
+            Assert.Equal(1, Count(harness.Events, "Button:Search:True"));
+            Assert.Contains("postTextFocusAttemptCount=2", result.Diagnostics);
         }
 
         [Theory]
@@ -426,6 +552,38 @@ namespace InventoryKamera.Tests
                 new[] { Focused(), Focused() },
                 timing: Timing(resultAttempts: resultAttempts));
 
+            internal static Harness ForPostTextFocus(
+                params AchievementSearchEditorDetection[] postTextDetections) =>
+                ForPostTextFocus(postTextDetections, retrySettleMs: 0, navigationWait: null);
+
+            internal static Harness ForPostTextFocus(
+                AchievementSearchEditorDetection[] postTextDetections,
+                int retrySettleMs,
+                Action<int, CancellationToken> navigationWait)
+            {
+                var screens = new List<AchievementScreenDetection>
+                {
+                    Idle(),
+                    Unknown(),
+                };
+                for (int i = 0; i < postTextDetections.Length; i++) screens.Add(Unknown());
+                if (postTextDetections.Any(detection =>
+                    detection.State == AchievementSearchEditorState.Focused))
+                {
+                    screens.Add(Active(1));
+                }
+
+                var focus = new List<AchievementSearchEditorDetection> { Focused() };
+                focus.AddRange(postTextDetections);
+                return Create(
+                    screens,
+                    focus,
+                    timing: Timing(
+                        postTextFocusAttempts: postTextDetections.Length,
+                        retrySettleMs: retrySettleMs),
+                    navigationWait: navigationWait);
+            }
+
             internal static Harness ForExit(params AchievementScreenDetection[] after)
             {
                 var detections = new List<AchievementScreenDetection> { Active(1) };
@@ -474,6 +632,7 @@ namespace InventoryKamera.Tests
 
             private static AchievementSearchNavigationTiming Timing(
                 int focusAttempts = 1,
+                int postTextFocusAttempts = 1,
                 int resultAttempts = 1,
                 int exitAttempts = 1,
                 int openSettleMs = 0,
@@ -488,6 +647,7 @@ namespace InventoryKamera.Tests
                     exitSettleMs: 0,
                     retrySettleMs: retrySettleMs,
                     focusAttempts: focusAttempts,
+                    postTextFocusAttempts: postTextFocusAttempts,
                     resultAttempts: resultAttempts,
                     exitAttempts: exitAttempts);
 
@@ -527,6 +687,11 @@ namespace InventoryKamera.Tests
             AchievementSearchEditorState.Unknown,
             0.25,
             "test inconclusive border");
+
+        private static AchievementSearchEditorDetection NotFocused() => new(
+            AchievementSearchEditorState.NotFocused,
+            0.05,
+            "test unfocused border");
 
         private sealed class RecordingGameInput : IGameInput
         {

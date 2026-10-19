@@ -25,6 +25,7 @@ namespace InventoryKamera.game
             exitSettleMs: 500,
             retrySettleMs: 250,
             focusAttempts: 3,
+            postTextFocusAttempts: 3,
             resultAttempts: 3,
             exitAttempts: 3);
 
@@ -38,6 +39,7 @@ namespace InventoryKamera.game
             int exitSettleMs,
             int retrySettleMs,
             int focusAttempts,
+            int postTextFocusAttempts,
             int resultAttempts,
             int exitAttempts)
         {
@@ -50,6 +52,7 @@ namespace InventoryKamera.game
             ExitSettleMs = NonNegative(exitSettleMs, nameof(exitSettleMs));
             RetrySettleMs = NonNegative(retrySettleMs, nameof(retrySettleMs));
             FocusAttempts = Positive(focusAttempts, nameof(focusAttempts));
+            PostTextFocusAttempts = Positive(postTextFocusAttempts, nameof(postTextFocusAttempts));
             ResultAttempts = Positive(resultAttempts, nameof(resultAttempts));
             ExitAttempts = Positive(exitAttempts, nameof(exitAttempts));
         }
@@ -63,6 +66,7 @@ namespace InventoryKamera.game
         internal int ExitSettleMs { get; }
         internal int RetrySettleMs { get; }
         internal int FocusAttempts { get; }
+        internal int PostTextFocusAttempts { get; }
         internal int ResultAttempts { get; }
         internal int ExitAttempts { get; }
 
@@ -169,6 +173,7 @@ namespace InventoryKamera.game
             AchievementSearchEditorDetection afterTypingFocus = null;
             AchievementScreenDetection after = null;
             int attempts = 0;
+            int postTextFocusAttempts = 0;
 
             try
             {
@@ -232,29 +237,44 @@ namespace InventoryKamera.game
                 textInput.ReplaceAll(query, cancellationToken);
                 Wait(timing.AfterTypingSettleMs, cancellationToken);
 
-                if (!TryEnsureForeground(cancellationToken, out foregroundFailure))
-                {
-                    return Finish(
-                        operation, query.Length, false, false, foregroundFailure,
-                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
-                }
-
-                attempts++;
-                using (Bitmap screenshot = screenCapture.CaptureWindow())
+                for (int attempt = 1; attempt <= timing.PostTextFocusAttempts; attempt++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    AchievementScreenDetection typedScreen = screenDetector.Detect(screenshot);
-                    afterTypingFocus = editorDetector.Detect(screenshot, typedScreen);
-                    trace.Add(DescribeAttempt("typed", 1, typedScreen, afterTypingFocus));
-                    afterOpenScreen = typedScreen;
+                    if (!TryEnsureForeground(cancellationToken, out foregroundFailure))
+                    {
+                        return Finish(
+                            operation, query.Length, false, false, foregroundFailure,
+                            before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
+                            attempts, postTextFocusAttempts, trace);
+                    }
+
+                    cancellationToken.ThrowIfCancellationRequested();
+                    attempts++;
+                    postTextFocusAttempts++;
+                    using (Bitmap screenshot = screenCapture.CaptureWindow())
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        AchievementScreenDetection typedScreen = screenDetector.Detect(screenshot);
+                        afterTypingFocus = editorDetector.Detect(screenshot, typedScreen);
+                        trace.Add(DescribeAttempt("typed", attempt, typedScreen, afterTypingFocus));
+                        afterOpenScreen = typedScreen;
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+
+                    if (afterTypingFocus.State == AchievementSearchEditorState.Focused) break;
+                    if (attempt < timing.PostTextFocusAttempts)
+                        Wait(timing.RetrySettleMs, cancellationToken);
                 }
 
                 if (afterTypingFocus.State != AchievementSearchEditorState.Focused)
                 {
                     return Finish(
                         operation, query.Length, false, false,
-                        "The editor was no longer positively focused after text entry; search was not submitted.",
-                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
+                        $"The editor was not positively focused after text entry across " +
+                        $"{postTextFocusAttempts.ToString(CultureInfo.InvariantCulture)} bounded capture attempts; " +
+                        "search was not submitted.",
+                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
+                        attempts, postTextFocusAttempts, trace);
                 }
 
                 if (!foregroundActivator.IsForeground)
@@ -262,7 +282,8 @@ namespace InventoryKamera.game
                     return Finish(
                         operation, query.Length, false, false,
                         "Genshin lost foreground after typed-editor verification; search was not submitted.",
-                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
+                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
+                        attempts, postTextFocusAttempts, trace);
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
@@ -279,7 +300,8 @@ namespace InventoryKamera.game
                     {
                         return Finish(
                             operation, query.Length, true, false, null,
-                            before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
+                            before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
+                            attempts, postTextFocusAttempts, trace);
                     }
                     if (attempt < timing.ResultAttempts) Wait(timing.RetrySettleMs, cancellationToken);
                 }
@@ -289,20 +311,23 @@ namespace InventoryKamera.game
                     $"Submitted Achievement results could not be positively verified after " +
                     $"{timing.ResultAttempts.ToString(CultureInfo.InvariantCulture)} bounded capture attempts; " +
                     $"observed {after?.ScreenState.ToString() ?? "no state"}.",
-                    before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
+                    before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
+                    attempts, postTextFocusAttempts, trace);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return Finish(
                     operation, query.Length, false, true, "Achievement search navigation was cancelled.",
-                    before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
+                    before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
+                    attempts, postTextFocusAttempts, trace);
             }
             catch (Exception ex)
             {
                 return Finish(
                     operation, query.Length, false, false,
                     $"Achievement search navigation failed: {ex.GetType().Name}: {ex.Message}",
-                    before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
+                    before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
+                    attempts, postTextFocusAttempts, trace);
             }
         }
 
@@ -442,12 +467,41 @@ namespace InventoryKamera.game
             AchievementSearchEditorDetection afterTypingFocus,
             AchievementScreenDetection after,
             int attempts,
+            IReadOnlyList<string> trace) => Finish(
+                operation,
+                queryLength,
+                succeeded,
+                cancelled,
+                failureReason,
+                before,
+                afterOpenScreen,
+                afterOpenFocus,
+                afterTypingFocus,
+                after,
+                attempts,
+                0,
+                trace);
+
+        private AchievementSearchNavigationResult Finish(
+            string operation,
+            int queryLength,
+            bool succeeded,
+            bool cancelled,
+            string failureReason,
+            AchievementScreenDetection before,
+            AchievementScreenDetection afterOpenScreen,
+            AchievementSearchEditorDetection afterOpenFocus,
+            AchievementSearchEditorDetection afterTypingFocus,
+            AchievementScreenDetection after,
+            int attempts,
+            int postTextFocusAttempts,
             IReadOnlyList<string> trace)
         {
             string diagnostics = BuildDiagnostics(
                 operation,
                 queryLength,
                 attempts,
+                postTextFocusAttempts,
                 before,
                 after,
                 afterTypingFocus ?? afterOpenFocus,
@@ -473,6 +527,7 @@ namespace InventoryKamera.game
             string operation,
             int queryLength,
             int attempts,
+            int postTextFocusAttempts,
             AchievementScreenDetection before,
             AchievementScreenDetection after,
             AchievementSearchEditorDetection focus,
@@ -484,6 +539,7 @@ namespace InventoryKamera.game
             builder.AppendLine($"operation={operation}");
             builder.AppendLine($"queryLength={queryLength.ToString(CultureInfo.InvariantCulture)}");
             builder.AppendLine($"attempt={attempts.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"postTextFocusAttemptCount={postTextFocusAttempts.ToString(CultureInfo.InvariantCulture)}");
             builder.AppendLine($"beforeState={FormatState(before)}");
             builder.AppendLine($"afterState={FormatState(after)}");
             builder.AppendLine($"matchCount={FormatNumber(after?.MatchCountValue)}");
