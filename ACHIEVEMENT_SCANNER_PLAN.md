@@ -740,6 +740,13 @@ Rules:
 - user override only through explicit confirmation;
 - ambiguous automated result remains unresolved.
 
+The v1 policy uses the full canonical title as the only search query. Duplicate titles belonging to
+one validated stage group remain valid staged families; unrelated exact-title collisions remain
+explicitly unresolved. Any positively observed `Match(es) > 1` result also remains unresolved. The
+scanner does not select the first row or use catalog order as a tie-break, and it does not use
+description or category OCR for collision resolution. Full-scan/reporting phases will surface these
+structured unresolved collision and multi-match results later.
+
 ### Phase 6H — Full catalog scan
 
 Goal:

@@ -13,6 +13,8 @@ namespace InventoryKamera.Tests
     {
         private const int UniqueId = 81665;
         private const int StageGroupId = 80127;
+        private const int CollisionIdA = 80032;
+        private const int CollisionIdB = 84004;
 
         [Theory]
         [InlineData((int)AchievementCompletionState.CompletedClaimed, (int)AchievementSingleScanState.Completed)]
@@ -102,6 +104,82 @@ namespace InventoryKamera.Tests
             Assert.Equal(1, harness.Navigator.ExitCount);
             Assert.True(result.ExitSucceeded);
             Assert.True(result.ReadyForNextAchievement);
+        }
+
+        [Theory]
+        [InlineData(CollisionIdA)]
+        [InlineData(CollisionIdB)]
+        public void UnrelatedCollision_NeverUsesRequestedIdAsIdentityProof(int requestedId)
+        {
+            Harness harness = Harness.Create();
+
+            AchievementSingleScanResult result = harness.Scan(requestedId);
+
+            Assert.Equal(AchievementSingleScanState.AmbiguousCollision, result.State);
+            Assert.Equal(AchievementTitleGroupKind.UnrelatedCollision, result.TitleGroupKind);
+            Assert.Equal(new[] { CollisionIdA, CollisionIdB }, result.CandidateIds);
+            Assert.Equal(1, result.MatchCount);
+            Assert.Equal(0, harness.Classifier.CallCount);
+            Assert.Equal(1, harness.IdentityVerifier.CallCount);
+            Assert.Equal(1, harness.Navigator.ExitCount);
+            Assert.True(result.ReadyForNextAchievement);
+            Assert.Contains("individual ID", result.Reason);
+        }
+
+        [Theory]
+        [InlineData(2)]
+        [InlineData(5)]
+        public void MultiMatch_NeverInfersFirstResultIdentityOrCompletion(int matchCount)
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NavigationResult(
+                "search",
+                succeeded: true,
+                cancelled: false,
+                AchievementScreenState.Idle,
+                AchievementScreenState.SearchActive,
+                null,
+                afterMatchCount: matchCount);
+
+            AchievementSingleScanResult result = harness.Scan(UniqueId);
+
+            Assert.Equal(AchievementSingleScanState.AmbiguousMultiMatch, result.State);
+            Assert.Equal(AchievementTitleGroupKind.Unique, result.TitleGroupKind);
+            Assert.Equal(matchCount, result.MatchCount);
+            Assert.Equal(0, harness.Classifier.CallCount);
+            Assert.Equal(1, harness.IdentityVerifier.CallCount);
+            Assert.Equal(1, harness.Navigator.ExitCount);
+            Assert.True(result.ReadyForNextAchievement);
+        }
+
+        [Fact]
+        public void ExitFailureAfterMultiMatch_ReportsNotReadyWithoutCompletionInference()
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NavigationResult(
+                "search",
+                succeeded: true,
+                cancelled: false,
+                AchievementScreenState.Idle,
+                AchievementScreenState.SearchActive,
+                null,
+                afterMatchCount: 5);
+            harness.Navigator.ExitResult = NavigationResult(
+                "exit",
+                succeeded: false,
+                cancelled: false,
+                AchievementScreenState.SearchActive,
+                AchievementScreenState.Unknown,
+                "idle was not verified");
+
+            AchievementSingleScanResult result = harness.Scan(UniqueId);
+
+            Assert.Equal(AchievementSingleScanState.Failed, result.State);
+            Assert.Equal(0, harness.Classifier.CallCount);
+            Assert.True(result.ExitAttempted);
+            Assert.False(result.ExitSucceeded);
+            Assert.False(result.ReadyForNextAchievement);
+            Assert.Contains("multiple matches", result.Reason, StringComparison.OrdinalIgnoreCase);
         }
 
         [Theory]
@@ -398,10 +476,17 @@ namespace InventoryKamera.Tests
             Assert.Contains("operation=single-achievement-scan", result.Diagnostics);
             Assert.Contains("requestedId=81665", result.Diagnostics);
             Assert.Contains("titleLength=15", result.Diagnostics);
+            Assert.Contains("titleGroupKind=Unique", result.Diagnostics);
+            Assert.Contains("candidateCount=1", result.Diagnostics);
+            Assert.Contains("candidateIds=81665", result.Diagnostics);
+            Assert.Contains("matchCount=1", result.Diagnostics);
+            Assert.Contains("collision=False", result.Diagnostics);
+            Assert.Contains("multiMatch=False", result.Diagnostics);
             Assert.Contains("startState=Idle", result.Diagnostics);
             Assert.Contains("searchSucceeded=True", result.Diagnostics);
             Assert.Contains("identityState=Identified", result.Diagnostics);
             Assert.Contains("completionState=CompletedClaimed", result.Diagnostics);
+            Assert.Contains("completionInvoked=True", result.Diagnostics);
             Assert.Contains("pendingClaim=False", result.Diagnostics);
             Assert.Contains("exitSucceeded=True", result.Diagnostics);
             Assert.Contains("finalState=Idle", result.Diagnostics);
@@ -422,7 +507,8 @@ namespace InventoryKamera.Tests
             AchievementScreenState before,
             AchievementScreenState after,
             string failureReason,
-            string diagnostics = "navigation diagnostics") =>
+            string diagnostics = "navigation diagnostics",
+            int afterMatchCount = 1) =>
             new(
                 operation,
                 succeeded,
@@ -432,7 +518,7 @@ namespace InventoryKamera.Tests
                 null,
                 null,
                 null,
-                Detection(after, after == AchievementScreenState.SearchActive ? 1 : 0),
+                Detection(after, after == AchievementScreenState.SearchActive ? afterMatchCount : 0),
                 1,
                 diagnostics);
 
@@ -545,6 +631,12 @@ namespace InventoryKamera.Tests
             new AchievementCatalogEntry(
                 80129, "Zoo Tycoon", "stage 3", 1, false, "1.0", 4,
                 80127, 3, 3),
+            new AchievementCatalogEntry(
+                CollisionIdB, "Let the Wind Lead", "collision B", 1, false, "1.0", 5,
+                null, null, null),
+            new AchievementCatalogEntry(
+                CollisionIdA, "Let the Wind Lead", "collision A", 1, false, "1.0", 6,
+                null, null, null),
         });
 
         private sealed class TestCatalogProvider : IAchievementCatalogProvider

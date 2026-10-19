@@ -143,7 +143,6 @@ namespace InventoryKamera.Tests
     {
         private const int YouThereId = 81665;
         private const int ZooTycoonId = 80127;
-        private const int LetTheWindLeadId = 84004;
 
         [Fact]
         public void ExactUniqueVisibleTitle_IsIdentifiedFromPackagedCatalog()
@@ -211,10 +210,12 @@ namespace InventoryKamera.Tests
             Assert.Null(result.IdentifiedId);
         }
 
-        [Fact]
-        public void MultipleMatches_AreAmbiguousWithoutReadingFirstTitle()
+        [Theory]
+        [InlineData(2)]
+        [InlineData(5)]
+        public void MultipleMatches_AreAmbiguousWithoutReadingFirstTitle(int matchCount)
         {
-            Harness harness = Harness.Create(Active(5), "The Purest Heat", 0.95f);
+            Harness harness = Harness.Create(Active(matchCount), "The Purest Heat", 0.95f);
 
             AchievementIdentityResult result = harness.Verify(YouThereId);
 
@@ -327,17 +328,22 @@ namespace InventoryKamera.Tests
             Assert.Null(result.IdentifiedId);
         }
 
-        [Fact]
-        public void LetTheWindLead_RemainsAmbiguousWithoutCatalogOrderTieBreak()
+        [Theory]
+        [InlineData(84004)]
+        [InlineData(80032)]
+        public void LetTheWindLead_RemainsAmbiguousWithoutRequestedIdOrCatalogOrderTieBreak(
+            int requestedId)
         {
             Harness harness = Harness.Create(Active(1), "Let the Wind Lead", 0.95f);
 
-            AchievementIdentityResult result = harness.Verify(LetTheWindLeadId);
+            AchievementIdentityResult result = harness.Verify(requestedId);
 
             Assert.Equal(AchievementIdentityState.Ambiguous, result.State);
             Assert.Null(result.IdentifiedId);
             Assert.Null(result.StageGroupId);
             Assert.Equal(new[] { 80032, 84004 }, result.CandidateIds);
+            Assert.Equal(100, result.Score);
+            Assert.Equal(1, result.ScreenDetection.MatchCountValue);
         }
 
         [Fact]
@@ -387,7 +393,11 @@ namespace InventoryKamera.Tests
             Assert.Contains("score=", result.Diagnostics);
             Assert.Contains("runnerUpScore=", result.Diagnostics);
             Assert.Contains("margin=", result.Diagnostics);
+            Assert.Contains("titleGroupKind=Unique", result.Diagnostics);
             Assert.Contains("candidateCount=1", result.Diagnostics);
+            Assert.Contains("candidateIds=81665", result.Diagnostics);
+            Assert.Contains("collision=False", result.Diagnostics);
+            Assert.Contains("multiMatch=False", result.Diagnostics);
             Assert.Contains("state=", result.Diagnostics);
             Assert.Contains("reason=", result.Diagnostics);
             Assert.DoesNotContain(new string('X', 200), result.Diagnostics);

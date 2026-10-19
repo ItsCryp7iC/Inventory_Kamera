@@ -14,6 +14,8 @@ namespace InventoryKamera
         private readonly IReadOnlyDictionary<int, AchievementCatalogEntry> byId;
         private readonly IReadOnlyDictionary<string, IReadOnlyList<AchievementCatalogEntry>> byExactName;
         private readonly IReadOnlyDictionary<int, IReadOnlyList<AchievementCatalogEntry>> stageGroups;
+        private readonly IReadOnlyDictionary<string, AchievementTitleGroup> titleGroupsByName;
+        private readonly IReadOnlyDictionary<int, AchievementTitleGroup> titleGroupsById;
 
         internal AchievementCatalog(IEnumerable<AchievementCatalogEntry> entries)
         {
@@ -32,6 +34,17 @@ namespace InventoryKamera
                         group => group.Key,
                         group => (IReadOnlyList<AchievementCatalogEntry>)Array.AsReadOnly(group.ToArray()),
                         StringComparer.Ordinal));
+            AchievementTitleGroup[] titleGroups = ordered
+                .GroupBy(entry => entry.Name, StringComparer.Ordinal)
+                .Select(group => new AchievementTitleGroup(group.Key, group))
+                .ToArray();
+            TitleGroups = Array.AsReadOnly(titleGroups);
+            titleGroupsByName = new ReadOnlyDictionary<string, AchievementTitleGroup>(
+                titleGroups.ToDictionary(group => group.CanonicalTitle, StringComparer.Ordinal));
+            titleGroupsById = new ReadOnlyDictionary<int, AchievementTitleGroup>(
+                titleGroups
+                    .SelectMany(group => group.Entries.Select(entry => (entry.Id, Group: group)))
+                    .ToDictionary(item => item.Id, item => item.Group));
             stageGroups = new ReadOnlyDictionary<int, IReadOnlyList<AchievementCatalogEntry>>(
                 ordered
                     .Where(entry => entry.StageGroupId.HasValue)
@@ -43,6 +56,7 @@ namespace InventoryKamera
         }
 
         public IReadOnlyList<AchievementCatalogEntry> All { get; }
+        public IReadOnlyList<AchievementTitleGroup> TitleGroups { get; }
 
         public AchievementCatalogEntry GetById(int id) =>
             byId.TryGetValue(id, out AchievementCatalogEntry entry) ? entry : null;
@@ -59,6 +73,17 @@ namespace InventoryKamera
             stageGroups.TryGetValue(stageGroupId, out IReadOnlyList<AchievementCatalogEntry> entries)
                 ? entries
                 : Array.Empty<AchievementCatalogEntry>();
+
+        public AchievementTitleGroup GetTitleGroup(string canonicalTitle)
+        {
+            if (canonicalTitle == null) return null;
+            return titleGroupsByName.TryGetValue(canonicalTitle, out AchievementTitleGroup group)
+                ? group
+                : null;
+        }
+
+        public AchievementTitleGroup GetTitleGroupForId(int id) =>
+            titleGroupsById.TryGetValue(id, out AchievementTitleGroup group) ? group : null;
 
         private static void Validate(IReadOnlyList<AchievementCatalogEntry> entries)
         {

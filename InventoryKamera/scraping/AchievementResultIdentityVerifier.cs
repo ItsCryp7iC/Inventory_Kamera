@@ -227,8 +227,8 @@ namespace InventoryKamera
                     null,
                     "The expected canonical achievement ID was not found.");
 
-            IReadOnlyList<AchievementCatalogEntry> sameTitle = catalog.FindByExactName(expected.Name);
-            int[] candidateIds = OrderCandidateIds(sameTitle);
+            AchievementTitleGroup titleGroup = catalog.GetTitleGroupForId(expected.Id);
+            int[] candidateIds = titleGroup?.CandidateIds.ToArray() ?? Array.Empty<int>();
             if (searchResult == null || !searchResult.Succeeded ||
                 searchResult.AfterDetection?.ScreenState != AchievementScreenState.SearchActive)
             {
@@ -442,29 +442,22 @@ namespace InventoryKamera
                     "The title winner did not exceed the runner-up by the required margin.",
                     selected);
 
-            bool oneStageGroup = sameTitle.Count > 1 &&
-                sameTitle.All(entry => entry.StageGroupId.HasValue) &&
-                sameTitle.Select(entry => entry.StageGroupId.Value).Distinct().Count() == 1;
-            if (oneStageGroup)
+            if (titleGroup?.Kind == AchievementTitleGroupKind.StageFamily)
             {
-                int stageGroupId = sameTitle[0].StageGroupId.Value;
-                int[] stageCandidates = catalog.GetStageGroup(stageGroupId)
-                    .Select(entry => entry.Id)
-                    .ToArray();
                 return Finish(
                     AchievementIdentityState.StageGroupIdentified,
                     expectedId,
                     expected,
                     null,
-                    stageGroupId,
-                    stageCandidates,
+                    titleGroup.StageGroupId,
+                    titleGroup.CandidateIds,
                     screen,
                     attempts,
                     "Visible title identifies the canonical staged title-family, not an individual stage.",
                     selected);
             }
 
-            if (sameTitle.Count > 1)
+            if (titleGroup?.Kind == AchievementTitleGroupKind.UnrelatedCollision)
                 return Finish(
                     AchievementIdentityState.Ambiguous,
                     expectedId,
@@ -542,13 +535,6 @@ namespace InventoryKamera
                 .ToArray();
         }
 
-        private static int[] OrderCandidateIds(IEnumerable<AchievementCatalogEntry> entries) =>
-            (entries ?? Array.Empty<AchievementCatalogEntry>())
-                .OrderBy(entry => entry.StageIndex ?? int.MaxValue)
-                .ThenBy(entry => entry.Id)
-                .Select(entry => entry.Id)
-                .ToArray();
-
         private AchievementIdentityResult Finish(
             AchievementIdentityState state,
             int expectedId,
@@ -564,13 +550,17 @@ namespace InventoryKamera
             AchievementIdentityOcrAttempt[] attemptArray =
                 (attempts ?? Array.Empty<AchievementIdentityOcrAttempt>()).ToArray();
             int[] candidateArray = (candidateIds ?? Array.Empty<int>()).ToArray();
+            AchievementTitleGroup titleGroup = expected == null
+                ? null
+                : catalog.GetTitleGroupForId(expected.Id);
             string diagnostics = BuildDiagnostics(
                 state,
                 expectedId,
                 expected?.Name,
+                titleGroup,
                 screen,
                 selected,
-                candidateArray.Length,
+                candidateArray,
                 reason,
                 attemptArray);
             if (state == AchievementIdentityState.Identified ||
@@ -602,9 +592,10 @@ namespace InventoryKamera
             AchievementIdentityState state,
             int expectedId,
             string expectedTitle,
+            AchievementTitleGroup titleGroup,
             AchievementScreenDetection screen,
             AchievementIdentityOcrAttempt selected,
-            int candidateCount,
+            IReadOnlyList<int> candidateIds,
             string reason,
             IReadOnlyList<AchievementIdentityOcrAttempt> attempts)
         {
@@ -621,7 +612,11 @@ namespace InventoryKamera
             builder.AppendLine($"score={Format(selected?.Score)}");
             builder.AppendLine($"runnerUpScore={Format(selected?.RunnerUpScore)}");
             builder.AppendLine($"margin={Format(selected?.Margin)}");
-            builder.AppendLine($"candidateCount={candidateCount.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"titleGroupKind={titleGroup?.Kind.ToString() ?? "(none)"}");
+            builder.AppendLine($"candidateCount={candidateIds.Count.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"candidateIds={string.Join(",", candidateIds)}");
+            builder.AppendLine($"collision={titleGroup?.IsUnrelatedCollision == true}");
+            builder.AppendLine($"multiMatch={screen?.MatchCountValue > 1}");
             builder.AppendLine($"state={state}");
             builder.AppendLine($"reason={Bound(reason)}");
             for (int i = 0; i < attempts.Count; i++)

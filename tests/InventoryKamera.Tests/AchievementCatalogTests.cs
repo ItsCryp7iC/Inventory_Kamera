@@ -58,12 +58,19 @@ namespace InventoryKamera.Tests
         {
             AchievementCatalog catalog = LoadPackaged();
             var all = Assert.IsAssignableFrom<IList<AchievementCatalogEntry>>(catalog.All);
+            var titleGroups = Assert.IsAssignableFrom<IList<AchievementTitleGroup>>(catalog.TitleGroups);
+            AchievementTitleGroup zoo = catalog.GetTitleGroup("Zoo Tycoon");
+            var titleEntries = Assert.IsAssignableFrom<IList<AchievementCatalogEntry>>(zoo.Entries);
+            var candidateIds = Assert.IsAssignableFrom<IList<int>>(zoo.CandidateIds);
             var exactName = Assert.IsAssignableFrom<IList<AchievementCatalogEntry>>(
                 catalog.FindByExactName("Zoo Tycoon"));
             var stageGroup = Assert.IsAssignableFrom<IList<AchievementCatalogEntry>>(
                 catalog.GetStageGroup(80127));
 
             Assert.Throws<NotSupportedException>(() => all.RemoveAt(0));
+            Assert.Throws<NotSupportedException>(() => titleGroups.RemoveAt(0));
+            Assert.Throws<NotSupportedException>(() => titleEntries.RemoveAt(0));
+            Assert.Throws<NotSupportedException>(() => candidateIds.RemoveAt(0));
             Assert.Throws<NotSupportedException>(() => exactName.RemoveAt(0));
             Assert.Throws<NotSupportedException>(() => stageGroup.RemoveAt(0));
         }
@@ -110,6 +117,77 @@ namespace InventoryKamera.Tests
 
             Assert.Equal(new[] { 84004, 80032 }, entries.Select(entry => entry.Id));
             Assert.All(entries, entry => Assert.False(entry.IsStaged));
+        }
+
+        [Fact]
+        public void TitleGroupsClassifyUniqueStageFamiliesAndUnrelatedCollision()
+        {
+            AchievementCatalog catalog = LoadPackaged();
+
+            AchievementTitleGroup unique = catalog.GetTitleGroupForId(81665);
+            Assert.Equal(AchievementTitleGroupKind.Unique, unique.Kind);
+            Assert.True(unique.IsUnique);
+            Assert.Equal(new[] { 81665 }, unique.CandidateIds);
+
+            AchievementTitleGroup zoo = catalog.GetTitleGroup("Zoo Tycoon");
+            Assert.Equal(AchievementTitleGroupKind.StageFamily, zoo.Kind);
+            Assert.True(zoo.IsStageFamily);
+            Assert.Equal(80127, zoo.StageGroupId);
+            Assert.Equal(new[] { 80127, 80128, 80129 }, zoo.CandidateIds);
+
+            AchievementTitleGroup moonmist = catalog.GetTitleGroup("Moonmist Treasure Hunter");
+            Assert.Equal(AchievementTitleGroupKind.StageFamily, moonmist.Kind);
+            Assert.Equal(80490, moonmist.StageGroupId);
+            Assert.Equal(new[] { 80490, 80491, 80492 }, moonmist.CandidateIds);
+
+            AchievementTitleGroup collision = catalog.GetTitleGroup("Let the Wind Lead");
+            Assert.Equal(AchievementTitleGroupKind.UnrelatedCollision, collision.Kind);
+            Assert.True(collision.IsUnrelatedCollision);
+            Assert.Null(collision.StageGroupId);
+            Assert.Equal(new[] { 80032, 84004 }, collision.CandidateIds);
+            Assert.Same(collision, catalog.GetTitleGroupForId(80032));
+            Assert.Same(collision, catalog.GetTitleGroupForId(84004));
+        }
+
+        [Fact]
+        public void TitleGroupCandidateOrderDoesNotChooseCatalogOrderWinner()
+        {
+            AchievementCatalog catalog = LoadJson(Snapshot(
+                Entry(20, "Collision"),
+                Entry(10, "Collision")));
+
+            AchievementTitleGroup group = catalog.GetTitleGroup("Collision");
+
+            Assert.Equal(AchievementTitleGroupKind.UnrelatedCollision, group.Kind);
+            Assert.Equal(new[] { 10, 20 }, group.CandidateIds);
+            Assert.False(group.IsUnique);
+        }
+
+        [Fact]
+        public void MixedStageMetadataForOneTitleFailsClosedAsUnrelatedCollision()
+        {
+            AchievementCatalog catalog = LoadJson(Snapshot(
+                Entry(1, "Mixed", stageGroupId: 1, stageIndex: 1, stageCount: 2),
+                Entry(2, "Mixed", stageGroupId: 1, stageIndex: 2, stageCount: 2),
+                Entry(3, "Mixed")));
+
+            AchievementTitleGroup group = catalog.GetTitleGroup("Mixed");
+
+            Assert.Equal(AchievementTitleGroupKind.UnrelatedCollision, group.Kind);
+            Assert.Null(group.StageGroupId);
+            Assert.Equal(new[] { 1, 2, 3 }, group.CandidateIds);
+        }
+
+        [Fact]
+        public void CurrentSnapshotHasExpectedTitleGroupBreakdown()
+        {
+            AchievementCatalog catalog = LoadPackaged();
+
+            Assert.Equal(148, catalog.TitleGroups.Count(group => !group.IsUnique));
+            Assert.Equal(147, catalog.TitleGroups.Count(group => group.IsStageFamily));
+            AchievementTitleGroup collision = Assert.Single(
+                catalog.TitleGroups.Where(group => group.IsUnrelatedCollision));
+            Assert.Equal("Let the Wind Lead", collision.CanonicalTitle);
         }
 
         [Fact]

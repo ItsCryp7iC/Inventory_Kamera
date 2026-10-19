@@ -1,8 +1,11 @@
 using InventoryKamera.game;
 using NLog;
 using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Drawing;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -18,6 +21,8 @@ namespace InventoryKamera
         Completed,
         Incomplete,
         Unresolved,
+        AmbiguousCollision,
+        AmbiguousMultiMatch,
         PendingClaimRequiresUserAction,
         Failed,
         Cancelled,
@@ -29,6 +34,7 @@ namespace InventoryKamera
             AchievementSingleScanState state,
             int requestedId,
             string canonicalTitle,
+            AchievementTitleGroup titleGroup,
             AchievementScreenDetection startDetection,
             AchievementSearchNavigationResult searchResult,
             AchievementIdentityResult identityResult,
@@ -44,6 +50,9 @@ namespace InventoryKamera
             State = state;
             RequestedId = requestedId;
             CanonicalTitle = canonicalTitle ?? string.Empty;
+            TitleGroup = titleGroup;
+            CandidateIds = new ReadOnlyCollection<int>(
+                (titleGroup?.CandidateIds ?? Array.Empty<int>()).ToArray());
             StartDetection = startDetection;
             SearchResult = searchResult;
             IdentityResult = identityResult;
@@ -60,6 +69,20 @@ namespace InventoryKamera
         internal AchievementSingleScanState State { get; }
         internal int RequestedId { get; }
         internal string CanonicalTitle { get; }
+        internal AchievementTitleGroup TitleGroup { get; }
+        internal AchievementTitleGroupKind? TitleGroupKind => TitleGroup?.Kind;
+        internal IReadOnlyList<int> CandidateIds { get; }
+        internal int? MatchCount
+        {
+            get
+            {
+                int? identityCount = IdentityResult?.ScreenDetection?.MatchCountValue;
+                int? searchCount = SearchResult?.AfterDetection?.MatchCountValue;
+                if (identityCount.HasValue && searchCount.HasValue)
+                    return Math.Max(identityCount.Value, searchCount.Value);
+                return identityCount ?? searchCount;
+            }
+        }
         internal AchievementScreenDetection StartDetection { get; }
         internal AchievementSearchNavigationResult SearchResult { get; }
         internal AchievementIdentityResult IdentityResult { get; }
@@ -115,7 +138,10 @@ namespace InventoryKamera
             CancellationToken cancellationToken)
         {
             AchievementCatalogEntry target = catalog.GetById(canonicalAchievementId);
-            var context = new ScanContext(canonicalAchievementId, target?.Name);
+            var context = new ScanContext(
+                canonicalAchievementId,
+                target?.Name,
+                catalog.GetTitleGroupForId(canonicalAchievementId));
 
             if (target == null)
                 return Finish(
@@ -272,6 +298,26 @@ namespace InventoryKamera
                         AchievementSingleScanState.Cancelled,
                         "Single-achievement scanning was cancelled after identity and before completion classification.");
 
+                bool multiMatch = CurrentMatchCount(context) > 1;
+                if (context.TitleGroup?.Kind == AchievementTitleGroupKind.UnrelatedCollision)
+                {
+                    string collisionReason = multiMatch
+                        ? "The canonical title is an unrelated collision and the search also returned multiple matches; no individual ID can be selected."
+                        : "The canonical title maps to unrelated achievements; visible title evidence cannot select an individual ID.";
+                    return FinishWithExit(
+                        context,
+                        AchievementSingleScanState.AmbiguousCollision,
+                        collisionReason,
+                        cancellationToken);
+                }
+
+                if (multiMatch)
+                    return FinishWithExit(
+                        context,
+                        AchievementSingleScanState.AmbiguousMultiMatch,
+                        "The search returned multiple matches; first-result identity and completion were not inferred.",
+                        cancellationToken);
+
                 if (context.IdentityResult == null ||
                     (context.IdentityResult.State != AchievementIdentityState.Identified &&
                      context.IdentityResult.State != AchievementIdentityState.StageGroupIdentified))
@@ -285,6 +331,7 @@ namespace InventoryKamera
 
                 try
                 {
+                    context.CompletionInvoked = true;
                     context.CompletionResult = completionClassifier.Classify(
                         context.IdentityResult,
                         resultScreenshot);
@@ -429,6 +476,7 @@ namespace InventoryKamera
                 state,
                 context.RequestedId,
                 context.CanonicalTitle,
+                context.TitleGroup,
                 context.StartDetection,
                 context.SearchResult,
                 context.IdentityResult,
@@ -451,10 +499,17 @@ namespace InventoryKamera
             builder.AppendLine("operation=single-achievement-scan");
             builder.AppendLine($"requestedId={context.RequestedId.ToString(CultureInfo.InvariantCulture)}");
             builder.AppendLine($"titleLength={context.CanonicalTitle.Length.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"titleGroupKind={Format(context.TitleGroup?.Kind)}");
+            builder.AppendLine($"candidateCount={(context.TitleGroup?.CandidateIds.Count ?? 0).ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"candidateIds={string.Join(",", context.TitleGroup?.CandidateIds ?? Array.Empty<int>())}");
+            builder.AppendLine($"matchCount={Format(CurrentMatchCount(context))}");
+            builder.AppendLine($"collision={context.TitleGroup?.IsUnrelatedCollision == true}");
+            builder.AppendLine($"multiMatch={CurrentMatchCount(context) > 1}");
             builder.AppendLine($"startState={Format(context.StartDetection?.ScreenState)}");
             builder.AppendLine($"searchSucceeded={context.SearchResult?.Succeeded == true}");
             builder.AppendLine($"identityState={Format(context.IdentityResult?.State)}");
             builder.AppendLine($"completionState={Format(context.CompletionResult?.State)}");
+            builder.AppendLine($"completionInvoked={context.CompletionInvoked}");
             builder.AppendLine($"pendingClaim={context.PendingClaim}");
             builder.AppendLine($"exitAttempted={context.ExitAttempted}");
             builder.AppendLine($"exitSucceeded={context.ExitSucceeded}");
@@ -486,16 +541,30 @@ namespace InventoryKamera
         private static string Format<T>(T? value) where T : struct =>
             value?.ToString() ?? "(none)";
 
+        private static int? CurrentMatchCount(ScanContext context)
+        {
+            int? identityCount = context.IdentityResult?.ScreenDetection?.MatchCountValue;
+            int? searchCount = context.SearchResult?.AfterDetection?.MatchCountValue;
+            if (identityCount.HasValue && searchCount.HasValue)
+                return Math.Max(identityCount.Value, searchCount.Value);
+            return identityCount ?? searchCount;
+        }
+
         private sealed class ScanContext
         {
-            internal ScanContext(int requestedId, string canonicalTitle)
+            internal ScanContext(
+                int requestedId,
+                string canonicalTitle,
+                AchievementTitleGroup titleGroup)
             {
                 RequestedId = requestedId;
                 CanonicalTitle = canonicalTitle ?? string.Empty;
+                TitleGroup = titleGroup;
             }
 
             internal int RequestedId { get; }
             internal string CanonicalTitle { get; }
+            internal AchievementTitleGroup TitleGroup { get; }
             internal AchievementScreenDetection StartDetection { get; set; }
             internal AchievementSearchNavigationResult SearchResult { get; set; }
             internal AchievementIdentityResult IdentityResult { get; set; }
@@ -504,6 +573,7 @@ namespace InventoryKamera
             internal bool ExitAttempted { get; set; }
             internal bool ExitSucceeded { get; set; }
             internal bool PendingClaim { get; set; }
+            internal bool CompletionInvoked { get; set; }
             internal AchievementScreenState? FinalScreenState { get; set; }
         }
     }
