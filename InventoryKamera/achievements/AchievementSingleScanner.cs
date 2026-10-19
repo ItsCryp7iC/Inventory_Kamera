@@ -12,6 +12,13 @@ using System.Threading;
 
 namespace InventoryKamera
 {
+    internal interface IAchievementSingleScanner
+    {
+        AchievementSingleScanResult Scan(
+            int canonicalAchievementId,
+            CancellationToken cancellationToken);
+    }
+
     /// <summary>
     /// Completed and Incomplete describe the verified visible row. Stage-family identity remains
     /// explicit in the nested identity result and never implies an individual canonical stage ID.
@@ -104,7 +111,7 @@ namespace InventoryKamera
     /// components. Input, OCR, identity, completion semantics, and global input-session ownership
     /// remain with those components; this type only sequences them and preserves their evidence.
     /// </summary>
-    internal sealed class AchievementSingleScanner
+    internal sealed class AchievementSingleScanner : IAchievementSingleScanner
     {
         private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
 
@@ -133,7 +140,7 @@ namespace InventoryKamera
             this.screenCapture = screenCapture ?? throw new ArgumentNullException(nameof(screenCapture));
         }
 
-        internal AchievementSingleScanResult Scan(
+        public AchievementSingleScanResult Scan(
             int canonicalAchievementId,
             CancellationToken cancellationToken)
         {

@@ -760,10 +760,20 @@ Requirements:
 - bounded retry policy;
 - cancellation;
 - per-entry diagnostics;
-- no duplicate export IDs;
+- no duplicate title-group scans;
 - no unbounded runtime behavior.
 
 Performance optimization comes only after correctness.
+
+Phase 6H scans one deterministic target per exact-title group in first catalog appearance order,
+not one target per canonical ID. A staged family uses its first-stage/root ID as the representative;
+an unrelated collision uses its first source-order ID only to drive the Phase 6F scanner, while all
+Phase 6G ambiguity protections remain authoritative. Orchestration is serial and adds no outer
+single-scan retry beyond the bounded component retries already implemented. Pending-Claim,
+unresolved, and ambiguous results continue only after a positively verified safe reset; Failed
+results stop, and `ReadyForNextAchievement=false` always stops. Progress is exposed through a
+non-UI abstraction. Phase 6H does not produce canonical completion IDs or export data; export-side
+deduplication remains Phase 6J, and resume/update filtering remains Phase 6I.
 
 ### Phase 6I — Resume/update scan
 
