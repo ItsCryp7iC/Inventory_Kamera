@@ -6,8 +6,8 @@ namespace InventoryKamera
 {
     /// <summary>
     /// Resolution-relative Achievement-screen regions for the current desktop layout.
-    /// Phase 6D consumes the title rectangle for identity verification. The completion-state
-    /// rectangle remains geometry-only until Phase 6E.
+    /// Phase 6D consumes the title rectangle for identity verification, and Phase 6E consumes the
+    /// completion-state rectangle for positive row-state evidence.
     /// </summary>
     internal sealed class AchievementScreenRegions
     {
@@ -28,6 +28,11 @@ namespace InventoryKamera
             new NormalizedRectangle(840.0 / 1919.0, 245.0 / 1079.0, 590.0 / 1919.0, 70.0 / 1079.0);
         private static readonly NormalizedRectangle FirstResultCompletionStateDefinition =
             new NormalizedRectangle(1545.0 / 1919.0, 235.0 / 1079.0, 290.0 / 1919.0, 120.0 / 1079.0);
+        // Measured inside both sanitized completion fixtures after the full crop proved too broad
+        // for reliable Claim OCR. This remains wholly inside FirstResultCompletionState and never
+        // approaches the UID area.
+        private static readonly NormalizedRectangle FirstResultCompletionLabelDefinition =
+            new NormalizedRectangle(1670.0 / 1919.0, 280.0 / 1079.0, 150.0 / 1919.0, 50.0 / 1079.0);
 
         private AchievementScreenRegions(
             Rectangle heading,
@@ -36,7 +41,8 @@ namespace InventoryKamera
             Rectangle matchCount,
             Rectangle pageCounter,
             Rectangle firstResultTitle,
-            Rectangle firstResultCompletionState)
+            Rectangle firstResultCompletionState,
+            Rectangle firstResultCompletionLabel)
         {
             Heading = heading;
             SearchField = searchField;
@@ -45,6 +51,7 @@ namespace InventoryKamera
             PageCounter = pageCounter;
             FirstResultTitle = firstResultTitle;
             FirstResultCompletionState = firstResultCompletionState;
+            FirstResultCompletionLabel = firstResultCompletionLabel;
         }
 
         internal Rectangle Heading { get; }
@@ -54,6 +61,7 @@ namespace InventoryKamera
         internal Rectangle PageCounter { get; }
         internal Rectangle FirstResultTitle { get; }
         internal Rectangle FirstResultCompletionState { get; }
+        internal Rectangle FirstResultCompletionLabel { get; }
 
         internal static AchievementScreenRegions For(Size captureSize)
         {
@@ -67,7 +75,8 @@ namespace InventoryKamera
                 MatchCountDefinition.ToRectangle(captureSize),
                 PageCounterDefinition.ToRectangle(captureSize),
                 FirstResultTitleDefinition.ToRectangle(captureSize),
-                FirstResultCompletionStateDefinition.ToRectangle(captureSize));
+                FirstResultCompletionStateDefinition.ToRectangle(captureSize),
+                FirstResultCompletionLabelDefinition.ToRectangle(captureSize));
         }
     }
 }

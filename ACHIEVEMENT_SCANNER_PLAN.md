@@ -414,6 +414,24 @@ Until then:
 - staged families may remain unsupported/unresolved rather than guessed;
 - no stage completion should be inferred solely from historical behavior.
 
+### Staged achievement / unclaimed reward policy
+
+Historical star counting must never be used to infer achievement stages. Before a scan begins, the
+scanner should advise the user to claim all pending achievement rewards for best accuracy, while
+still allowing the user to continue without doing so.
+
+If a later full-scan flow encounters `Claim`, it must pause that achievement and explain that an
+unclaimed reward prevents safe staged-progress resolution. The user may then Resume or Skip
+Achievement. The scanner must never click `Claim` automatically. Resume re-checks the same
+achievement and pauses again while `Claim` remains visible, including when multiple already-earned
+staged rewards are waiting to be claimed. Skip Achievement performs no completion or stage
+inference for that achievement, records the skip, and continues with the next achievement.
+
+At the end of the scan, the scanner should report each skipped achievement's name, canonical ID or
+stage group when known, and reason for the skip. If stage context remains ambiguous after pending
+rewards are cleared, the scanner must fail closed rather than guess. This is a future orchestration
+and full-scan rule; Phase 6E documents it but does not implement its UI or workflow.
+
 ---
 
 ## 13. Resume / update scan
