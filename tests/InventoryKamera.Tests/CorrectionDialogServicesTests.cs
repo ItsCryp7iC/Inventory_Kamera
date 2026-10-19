@@ -265,6 +265,8 @@ namespace InventoryKamera.Tests
             public void ShowPreparing(DeclaredInputMode declaredMode) => State = ScanCompanionState.Preparing;
             public bool WaitForControllerReady(CancellationToken cancellationToken) => true;
             public void ShowScanning() => State = ScanCompanionState.Scanning;
+            public void ShowAchievementProgress(string progress, string details) =>
+                State = ScanCompanionState.Scanning;
             public void ShowCancelling() => State = ScanCompanionState.Cancelling;
             public void ShowRestoringKeyboard() => State = ScanCompanionState.RestoringKeyboard;
             public void ShowInputRequired() => events.Add("InputRequired");

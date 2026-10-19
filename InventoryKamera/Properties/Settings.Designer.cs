@@ -130,6 +130,18 @@ namespace InventoryKamera.Properties {
                 this["ScanMaterials"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool ScanAchievements {
+            get {
+                return ((bool)(this["ScanAchievements"]));
+            }
+            set {
+                this["ScanAchievements"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]

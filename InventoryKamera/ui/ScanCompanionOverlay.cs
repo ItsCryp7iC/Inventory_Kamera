@@ -41,6 +41,7 @@ namespace InventoryKamera.ui
         void ShowPreparing(DeclaredInputMode declaredMode);
         bool WaitForControllerReady(CancellationToken cancellationToken);
         void ShowScanning();
+        void ShowAchievementProgress(string progress, string details);
         void ShowCancelling();
         void ShowRestoringKeyboard();
         void ShowInputRequired();
@@ -58,6 +59,7 @@ namespace InventoryKamera.ui
         public void ShowPreparing(DeclaredInputMode declaredMode) => State = ScanCompanionState.Preparing;
         public bool WaitForControllerReady(CancellationToken cancellationToken) => !cancellationToken.IsCancellationRequested;
         public void ShowScanning() => State = ScanCompanionState.Scanning;
+        public void ShowAchievementProgress(string progress, string details) => State = ScanCompanionState.Scanning;
         public void ShowCancelling() => State = ScanCompanionState.Cancelling;
         public void ShowRestoringKeyboard() => State = ScanCompanionState.RestoringKeyboard;
         public void ShowInputRequired() { }
@@ -136,6 +138,9 @@ namespace InventoryKamera.ui
         private bool desiredVisible;
         private int suspendCount;
         private bool restoreAfterSuspension;
+        private bool achievementProgressActive;
+        private string achievementProgress = string.Empty;
+        private string achievementProgressDetails = string.Empty;
         private int readyCommandExecuting;
 
         internal ScanCompanionOverlay(
@@ -391,8 +396,31 @@ namespace InventoryKamera.ui
 
         public void ShowScanning() => Ui(() =>
         {
+            achievementProgressActive = false;
             SetState(ScanCompanionState.Scanning, "Scanning", "Press Enter to cancel");
             onScanning?.Invoke();
+        });
+
+        public void ShowAchievementProgress(string progress, string details) => Ui(() =>
+        {
+            achievementProgressActive = true;
+            achievementProgress = progress ?? string.Empty;
+            achievementProgressDetails = details ?? string.Empty;
+            State = ScanCompanionState.Scanning;
+            stateLabel.Text = "Scanning";
+            messageLabel.Text = achievementProgressDetails;
+            messageLabel.Height = ScaleLogical(42);
+            phaseLabel.Visible = true;
+            phaseLabel.Text = "Current phase: Achievements";
+            phaseLabel.Top = ScaleLogical(119);
+            progressLabel.Visible = true;
+            progressLabel.Text = achievementProgress;
+            progressLabel.Top = ScaleLogical(143);
+            progressLabel.Width = ScaleLogical(250);
+            errorsLabel.Visible = true;
+            errorsLabel.Top = ScaleLogical(144);
+            errorsLabel.Text = $"Errors: {viewModel.ErrorCount}";
+            SetCardHeight(176);
         });
 
         public void ShowCancelling() => Ui(() => SetState(
@@ -738,6 +766,7 @@ namespace InventoryKamera.ui
             if (state != ScanCompanionState.WaitingForController) waitingHotkeys.ExitWaiting();
             if (state != ScanCompanionState.Recovery) recoveryHotkeys.ExitRecovery();
             State = state;
+            if (state != ScanCompanionState.Scanning) achievementProgressActive = false;
             stateLabel.Text = heading;
             messageLabel.Text = message;
             bool waiting = state == ScanCompanionState.WaitingForController;
@@ -999,6 +1028,14 @@ namespace InventoryKamera.ui
             Ui(() =>
             {
                 if (State != ScanCompanionState.Scanning) return;
+                if (achievementProgressActive)
+                {
+                    phaseLabel.Text = "Current phase: Achievements";
+                    progressLabel.Text = achievementProgress;
+                    messageLabel.Text = achievementProgressDetails;
+                    errorsLabel.Text = $"Errors: {viewModel.ErrorCount}";
+                    return;
+                }
                 string status = viewModel.ProgramStatus ?? string.Empty;
                 if (status.IndexOf("Weapon", StringComparison.OrdinalIgnoreCase) >= 0)
                 {

@@ -18,6 +18,7 @@ namespace InventoryKamera
         public bool ScanCharacters => Properties.Settings.Default.ScanCharacters;
         public bool ScanCharDevItems => Properties.Settings.Default.ScanCharDevItems;
         public bool ScanMaterials => Properties.Settings.Default.ScanMaterials;
+        public bool ScanAchievements => Properties.Settings.Default.ScanAchievements;
         public int ScannerDelay => Properties.Settings.Default.ScannerDelay;
         public decimal MinimumWeaponRarity => Properties.Settings.Default.MinimumWeaponRarity;
         public decimal MinimumArtifactRarity => Properties.Settings.Default.MinimumArtifactRarity;

@@ -71,6 +71,9 @@ namespace InventoryKamera
             menuStrip1 = new System.Windows.Forms.MenuStrip();
             fileToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             Quit_MenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            ImportAchievementProgressMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            ClearAchievementProgressMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            ExportAchievementProgressMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             keysToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             DatabaseUpdateMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             toolStripMenuItem1 = new System.Windows.Forms.ToolStripMenuItem();
@@ -104,6 +107,10 @@ namespace InventoryKamera
             Characters_CheckBox = new System.Windows.Forms.CheckBox();
             Artifacts_Checkbox = new System.Windows.Forms.CheckBox();
             Weapons_CheckBox = new System.Windows.Forms.CheckBox();
+            Achievements_CheckBox = new System.Windows.Forms.CheckBox();
+            ImportAchievementProgress_Button = new System.Windows.Forms.Button();
+            ClearAchievementProgress_Button = new System.Windows.Forms.Button();
+            AchievementResumeStatus_Label = new System.Windows.Forms.Label();
             ZeroMeansAllTooltips = new System.Windows.Forms.ToolTip(components);
             ScanAllArtifactPages_CheckBox = new System.Windows.Forms.CheckBox();
             ScanAllCharacters_CheckBox = new System.Windows.Forms.CheckBox();
@@ -529,7 +536,7 @@ namespace InventoryKamera
             ScannerOutput_Panel.Controls.Add(WeaponArtifactOutput_TextBox_Label);
             ScannerOutput_Panel.Controls.Add(ErrorLog_Label);
             ScannerOutput_Panel.Controls.Add(ErrorLog_TextBox);
-            ScannerOutput_Panel.Location = new System.Drawing.Point(27, 378);
+            ScannerOutput_Panel.Location = new System.Drawing.Point(27, 415);
             ScannerOutput_Panel.Margin = new System.Windows.Forms.Padding(0);
             ScannerOutput_Panel.Name = "ScannerOutput_Panel";
             ScannerOutput_Panel.Size = new System.Drawing.Size(1162, 625);
@@ -581,7 +588,7 @@ namespace InventoryKamera
             // 
             // fileToolStripMenuItem
             // 
-            fileToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { toolStripMenuItem1, Quit_MenuItem });
+            fileToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { toolStripMenuItem1, ImportAchievementProgressMenuItem, ClearAchievementProgressMenuItem, ExportAchievementProgressMenuItem, Quit_MenuItem });
             fileToolStripMenuItem.Name = "fileToolStripMenuItem";
             fileToolStripMenuItem.Size = new System.Drawing.Size(54, 29);
             fileToolStripMenuItem.Text = "File";
@@ -592,6 +599,29 @@ namespace InventoryKamera
             Quit_MenuItem.Size = new System.Drawing.Size(148, 34);
             Quit_MenuItem.Text = "Quit";
             Quit_MenuItem.Click += Exit_MenuItem_Click;
+            //
+            // ImportAchievementProgressMenuItem
+            //
+            ImportAchievementProgressMenuItem.Name = "ImportAchievementProgressMenuItem";
+            ImportAchievementProgressMenuItem.Size = new System.Drawing.Size(290, 34);
+            ImportAchievementProgressMenuItem.Text = "Import Achievement Progress...";
+            ImportAchievementProgressMenuItem.Click += ImportAchievementProgress_Click;
+            //
+            // ClearAchievementProgressMenuItem
+            //
+            ClearAchievementProgressMenuItem.Enabled = false;
+            ClearAchievementProgressMenuItem.Name = "ClearAchievementProgressMenuItem";
+            ClearAchievementProgressMenuItem.Size = new System.Drawing.Size(290, 34);
+            ClearAchievementProgressMenuItem.Text = "Clear Achievement Progress";
+            ClearAchievementProgressMenuItem.Click += ClearAchievementProgress_Click;
+            //
+            // ExportAchievementProgressMenuItem
+            //
+            ExportAchievementProgressMenuItem.Enabled = false;
+            ExportAchievementProgressMenuItem.Name = "ExportAchievementProgressMenuItem";
+            ExportAchievementProgressMenuItem.Size = new System.Drawing.Size(290, 34);
+            ExportAchievementProgressMenuItem.Text = "Export Achievement Progress...";
+            ExportAchievementProgressMenuItem.Click += ExportAchievementProgress_Click;
             // 
             // keysToolStripMenuItem
             // 
@@ -921,6 +951,53 @@ namespace InventoryKamera
             Weapons_CheckBox.TabIndex = 70;
             Weapons_CheckBox.Text = "Weapons";
             Weapons_CheckBox.UseVisualStyleBackColor = true;
+            //
+            // Achievements_CheckBox
+            //
+            Achievements_CheckBox.AutoSize = true;
+            Achievements_CheckBox.Font = new System.Drawing.Font("Segoe UI", 8F);
+            Achievements_CheckBox.Location = new System.Drawing.Point(18, 291);
+            Achievements_CheckBox.Margin = new System.Windows.Forms.Padding(4);
+            Achievements_CheckBox.Name = "Achievements_CheckBox";
+            Achievements_CheckBox.Size = new System.Drawing.Size(120, 25);
+            Achievements_CheckBox.TabIndex = 117;
+            Achievements_CheckBox.Text = "Achievements";
+            Achievements_CheckBox.UseVisualStyleBackColor = true;
+            //
+            // ImportAchievementProgress_Button
+            //
+            ImportAchievementProgress_Button.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            ImportAchievementProgress_Button.Font = new System.Drawing.Font("Segoe UI", 7F);
+            ImportAchievementProgress_Button.Location = new System.Drawing.Point(134, 225);
+            ImportAchievementProgress_Button.Name = "ImportAchievementProgress_Button";
+            ImportAchievementProgress_Button.Size = new System.Drawing.Size(105, 29);
+            ImportAchievementProgress_Button.TabIndex = 118;
+            ImportAchievementProgress_Button.Text = "Import Progress...";
+            ImportAchievementProgress_Button.UseVisualStyleBackColor = true;
+            ImportAchievementProgress_Button.Click += ImportAchievementProgress_Click;
+            //
+            // ClearAchievementProgress_Button
+            //
+            ClearAchievementProgress_Button.Enabled = false;
+            ClearAchievementProgress_Button.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            ClearAchievementProgress_Button.Font = new System.Drawing.Font("Segoe UI", 7F);
+            ClearAchievementProgress_Button.Location = new System.Drawing.Point(244, 225);
+            ClearAchievementProgress_Button.Name = "ClearAchievementProgress_Button";
+            ClearAchievementProgress_Button.Size = new System.Drawing.Size(57, 29);
+            ClearAchievementProgress_Button.TabIndex = 119;
+            ClearAchievementProgress_Button.Text = "Clear";
+            ClearAchievementProgress_Button.UseVisualStyleBackColor = true;
+            ClearAchievementProgress_Button.Click += ClearAchievementProgress_Click;
+            //
+            // AchievementResumeStatus_Label
+            //
+            AchievementResumeStatus_Label.AutoEllipsis = true;
+            AchievementResumeStatus_Label.Font = new System.Drawing.Font("Segoe UI", 7F);
+            AchievementResumeStatus_Label.Location = new System.Drawing.Point(134, 260);
+            AchievementResumeStatus_Label.Name = "AchievementResumeStatus_Label";
+            AchievementResumeStatus_Label.Size = new System.Drawing.Size(167, 56);
+            AchievementResumeStatus_Label.TabIndex = 120;
+            AchievementResumeStatus_Label.Text = "No achievement resume data loaded";
             // 
             // ScanAllArtifactPages_CheckBox
             // 
@@ -960,6 +1037,10 @@ namespace InventoryKamera
             WhatToScanGroupBox.Controls.Add(Characters_CheckBox);
             WhatToScanGroupBox.Controls.Add(CharDevItems_CheckBox);
             WhatToScanGroupBox.Controls.Add(Materials_CheckBox);
+            WhatToScanGroupBox.Controls.Add(Achievements_CheckBox);
+            WhatToScanGroupBox.Controls.Add(ImportAchievementProgress_Button);
+            WhatToScanGroupBox.Controls.Add(ClearAchievementProgress_Button);
+            WhatToScanGroupBox.Controls.Add(AchievementResumeStatus_Label);
             WhatToScanGroupBox.Controls.Add(SortByObtained);
             WhatToScanGroupBox.Controls.Add(SortByObtainedControl);
             WhatToScanGroupBox.Controls.Add(ScanAllArtifactPages_CheckBox);
@@ -970,7 +1051,7 @@ namespace InventoryKamera
             WhatToScanGroupBox.Margin = new System.Windows.Forms.Padding(6);
             WhatToScanGroupBox.Name = "WhatToScanGroupBox";
             WhatToScanGroupBox.Padding = new System.Windows.Forms.Padding(6);
-            WhatToScanGroupBox.Size = new System.Drawing.Size(320, 296);
+            WhatToScanGroupBox.Size = new System.Drawing.Size(320, 333);
             WhatToScanGroupBox.TabIndex = 200;
             WhatToScanGroupBox.TabStop = false;
             WhatToScanGroupBox.Text = "What to Scan";
@@ -991,7 +1072,7 @@ namespace InventoryKamera
             FiltersGroupBox.Margin = new System.Windows.Forms.Padding(6);
             FiltersGroupBox.Name = "FiltersGroupBox";
             FiltersGroupBox.Padding = new System.Windows.Forms.Padding(6);
-            FiltersGroupBox.Size = new System.Drawing.Size(402, 296);
+            FiltersGroupBox.Size = new System.Drawing.Size(402, 333);
             FiltersGroupBox.TabIndex = 201;
             FiltersGroupBox.TabStop = false;
             FiltersGroupBox.Text = "Output";
@@ -1001,7 +1082,7 @@ namespace InventoryKamera
             AutoScaleDimensions = new System.Drawing.SizeF(144F, 144F);
             AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
             BackColor = System.Drawing.Color.FromArgb(245, 244, 237);
-            ClientSize = new System.Drawing.Size(1215, 1028);
+            ClientSize = new System.Drawing.Size(1215, 1065);
             Controls.Add(WhatToScanGroupBox);
             Controls.Add(FiltersGroupBox);
             Controls.Add(ManualExportButton);
@@ -1109,8 +1190,15 @@ namespace InventoryKamera
 		private System.Windows.Forms.ToolStripMenuItem fileToolStripMenuItem;
 		private System.Windows.Forms.ToolStripMenuItem keysToolStripMenuItem;
 		private System.Windows.Forms.ToolStripMenuItem Quit_MenuItem;
+		private System.Windows.Forms.ToolStripMenuItem ImportAchievementProgressMenuItem;
+		private System.Windows.Forms.ToolStripMenuItem ClearAchievementProgressMenuItem;
+		private System.Windows.Forms.ToolStripMenuItem ExportAchievementProgressMenuItem;
 		private System.Windows.Forms.PictureBox GearPictureBox;
 		private System.Windows.Forms.CheckBox Materials_CheckBox;
+		private System.Windows.Forms.CheckBox Achievements_CheckBox;
+		private System.Windows.Forms.Button ImportAchievementProgress_Button;
+		private System.Windows.Forms.Button ClearAchievementProgress_Button;
+		private System.Windows.Forms.Label AchievementResumeStatus_Label;
 		private System.Windows.Forms.ToolStripMenuItem DatabaseUpdateMenuItem;
 		private System.Windows.Forms.NumericUpDown WeaponRarityControl;
 		private System.Windows.Forms.Label label2;

@@ -33,6 +33,29 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void ScanAchievements_DefaultsFalseAndReflectsLiveChanges()
+        {
+            bool original = Properties.Settings.Default.ScanAchievements;
+            try
+            {
+                IScanSettings settings = new ScanSettings();
+
+                Assert.Equal(
+                    bool.FalseString,
+                    Properties.Settings.Default.Properties[
+                        nameof(Properties.Settings.ScanAchievements)].DefaultValue.ToString());
+                Properties.Settings.Default.ScanAchievements = true;
+                Assert.True(settings.ScanAchievements);
+                Properties.Settings.Default.ScanAchievements = false;
+                Assert.False(settings.ScanAchievements);
+            }
+            finally
+            {
+                Properties.Settings.Default.ScanAchievements = original;
+            }
+        }
+
+        [Fact]
         public void MinimumWeaponLevel_ReflectsLiveChangesToApplicationSettings()
         {
             decimal original = Properties.Settings.Default.MinimumWeaponLevel;

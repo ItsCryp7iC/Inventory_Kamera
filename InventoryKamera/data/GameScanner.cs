@@ -118,7 +118,8 @@ namespace InventoryKamera
 			GameNavigator navigator,
 			IGenshinInputModeDetector modeDetector,
 			IPaimonMenuDetector paimonDetector,
-			IGameScreenCapture screenCapture)
+			IGameScreenCapture screenCapture,
+			IGameForegroundActivator foregroundActivator)
 		{
 			var restorationDiagnostics = new GameInputRestorationDiagnostics(
 				diagnosticStore,
@@ -138,7 +139,7 @@ namespace InventoryKamera
 				progressReporter,
 				scanOverlay,
 				diagnosticStore,
-				new NavigationGameForegroundActivator());
+				foregroundActivator);
 		}
 
 		private void ConfigurePerScanCharacterNames()
@@ -332,25 +333,37 @@ namespace InventoryKamera
 			}
 		}
 
-		public void GatherData()
+		public void GatherData() => GatherData(achievementStage: null);
+
+		internal void GatherData(Action<AchievementScanRuntimeContext> achievementStage)
 		{
 			ResetLogging();
 
-			// Initialize Image Processors
-			scanSession.StartWorkers(NumWorkers, ImageProcessorWorkerAsync);
-			Logger.Debug("Added {0} workers", NumWorkers);
+			bool legacyScanSelected = scanSettings.ScanWeapons || scanSettings.ScanArtifacts ||
+				scanSettings.ScanCharacters || scanSettings.ScanCharDevItems || scanSettings.ScanMaterials;
+			if (legacyScanSelected)
+			{
+				// Achievement OCR is synchronous. The existing worker pool remains dedicated to
+				// inventory cards and is not started for an achievement-only scan.
+				scanSession.StartWorkers(NumWorkers, ImageProcessorWorkerAsync);
+				Logger.Debug("Added {0} workers", NumWorkers);
+			}
 
 			try
 			{
 			ocrService.Restart();
 
 
-			ConfigurePerScanCharacterNames();
-			InitializeScrapers();
+			if (legacyScanSelected)
+			{
+				ConfigurePerScanCharacterNames();
+				InitializeScrapers();
+			}
 
 			bool scanInventory = scanSettings.ScanWeapons || scanSettings.ScanArtifacts
 				|| scanSettings.ScanCharDevItems || scanSettings.ScanMaterials;
-			if ((scanInventory || scanSettings.ScanCharacters) && !scanSession.IsCancellationRequested)
+			if ((scanInventory || scanSettings.ScanCharacters || achievementStage != null) &&
+				!scanSession.IsCancellationRequested)
 			{
 				// Phase 3 §6c: a SINGLE controller connection spans every controller-driven scan phase
 				// -- the inventory group (Weapons/Artifacts/Character Development Items/Materials) AND
@@ -366,11 +379,12 @@ namespace InventoryKamera
 				// virtual controller. Visual observations never replace the declaration.
 				var navigator = GameInputFactory.CreateNavigator();
 				var screenCapture = new NavigationGameScreenCapture();
+				var foregroundActivator = new NavigationGameForegroundActivator();
 				var paimonDetector = new PaimonMenuDetector(positionalOcrService, imagePreprocessor);
 				var modeDetector = new GenshinInputModeDetector(
 					screenCapture, ocrService, imagePreprocessor, paimonDetector);
 				gameInputSession = CreateGameInputSession(
-					navigator, modeDetector, paimonDetector, screenCapture);
+					navigator, modeDetector, paimonDetector, screenCapture, foregroundActivator);
 				try
 				{
 					if (!gameInputSession.Prepare(scanSession.CancellationToken, out string preparationFailure))
@@ -477,6 +491,22 @@ namespace InventoryKamera
 								Logger.Info("Done scanning characters");
 							else
 								Logger.Warn("Character scanning did not continue because Character entry was not verified.");
+						}
+
+						if (achievementStage != null && !scanSession.IsCancellationRequested)
+						{
+							// Inventory capture work is already closed above. Drain its OCR workers before
+							// achievement OCR begins so the stages do not contend for pooled engines.
+							AwaitProcessors();
+							Logger.Info("Starting achievement scan stage inside the active input session.");
+							progressReporter.SetProgramStatus("Scanning Achievements");
+							achievementStage(new AchievementScanRuntimeContext(
+								navigator,
+								ocrService,
+								imagePreprocessor,
+								screenCapture,
+								foregroundActivator,
+								scanSession.CancellationToken));
 						}
 					}
 				}

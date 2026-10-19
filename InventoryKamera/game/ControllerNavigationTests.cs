@@ -43,6 +43,7 @@ namespace InventoryKamera.game
             public bool ScanCharacters => inner.ScanCharacters;
             public bool ScanCharDevItems => inner.ScanCharDevItems;
             public bool ScanMaterials => inner.ScanMaterials;
+            public bool ScanAchievements => inner.ScanAchievements;
             public int ScannerDelay => inner.ScannerDelay;
             public decimal MinimumWeaponRarity => inner.MinimumWeaponRarity;
             public decimal MinimumArtifactRarity => inner.MinimumArtifactRarity;

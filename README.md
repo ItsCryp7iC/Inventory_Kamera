@@ -62,6 +62,9 @@ To upgrade from a previous version, download a newer release and unzip its files
 Before starting the scanner, you can (optionally) edit the following options:
 
 - Select which categories (weapons, artifacts, characters, items) you want to scan.
+- Select `Achievements` to run the achievement scanner. This option defaults off because a full
+  catalog scan is long. Claim pending achievement rewards first for the best staged-achievement
+  accuracy; Inventory Kamera never claims rewards automatically.
 - Configure minimum weapon and artifact rarity to be scanned.
 - Set the scanner delays to slow Inventory Kamera's scanning speed if you experience problems with scanning.
 - Set the file export destination in the File Directory.
@@ -77,6 +80,16 @@ Before starting the scanner, you can (optionally) edit the following options:
 > If you want to terminate the scan early, you can press `ENTER` button at any time. This will cancel the scan, and the application will not automatically output any scanned results. You may press the 'Export Scanned Data' button to force the export of the most recently collected data (whether it's complete or incomplete).
 
 2. Wait for Inventory Kamera to complete its scan for the `Scan Items` selections.
+
+   When Achievements is selected, Inventory Kamera asks you to open the idle Achievements screen
+   before that stage starts. If an unclaimed reward is found, manually claim it and choose Resume to
+   scan the same achievement again, or choose Skip Achievement. Ambiguous families remain
+   unresolved rather than guessed. You may optionally import a previous GOOD-like or Traveler's
+   Toolkit achievement file for an update scan, then explicitly export trusted completion IDs to a
+   separate `InventoryKamera_Achievements.json` file.
+
+   The Achievement Scanner is still awaiting the Phase 6K.3 live release-validation gate and is not
+   yet advertised as production-ready.
 
 3. Press the `Open Export Folder` button to open a File Explorer window. This is where Inventory Kamera exports its scanned data.
 

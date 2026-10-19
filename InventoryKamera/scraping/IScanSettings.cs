@@ -12,6 +12,7 @@ namespace InventoryKamera
         bool ScanCharacters { get; }
         bool ScanCharDevItems { get; }
         bool ScanMaterials { get; }
+        bool ScanAchievements { get; }
         int ScannerDelay { get; }
         decimal MinimumWeaponRarity { get; }
         decimal MinimumArtifactRarity { get; }

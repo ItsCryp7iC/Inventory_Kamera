@@ -29,6 +29,9 @@
     <Setting Name="ScanMaterials" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
     </Setting>
+    <Setting Name="ScanAchievements" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
     <Setting Name="MinimumWeaponRarity" Type="System.Decimal" Scope="User">
       <Value Profile="(Default)">3</Value>
     </Setting>

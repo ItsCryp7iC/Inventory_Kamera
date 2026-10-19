@@ -569,6 +569,8 @@ namespace InventoryKamera.Tests
                 return !cancellationToken.IsCancellationRequested;
             }
             public void ShowScanning() => State = ScanCompanionState.Scanning;
+            public void ShowAchievementProgress(string progress, string details) =>
+                State = ScanCompanionState.Scanning;
             public void ShowCancelling() => State = ScanCompanionState.Cancelling;
             public void ShowRestoringKeyboard() => State = ScanCompanionState.RestoringKeyboard;
             public void ShowInputRequired() { }

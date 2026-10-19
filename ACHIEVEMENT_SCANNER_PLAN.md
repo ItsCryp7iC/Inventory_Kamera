@@ -427,10 +427,11 @@ achievement and pauses again while `Claim` remains visible, including when multi
 staged rewards are waiting to be claimed. Skip Achievement performs no completion or stage
 inference for that achievement, records the skip, and continues with the next achievement.
 
-At the end of the scan, the scanner should report each skipped achievement's name, canonical ID or
-stage group when known, and reason for the skip. If stage context remains ambiguous after pending
-rewards are cleared, the scanner must fail closed rather than guess. This is a future orchestration
-and full-scan rule; Phase 6E documents it but does not implement its UI or workflow.
+At the end of the scan, the scanner reports each skipped achievement's name, canonical ID or stage
+group when known, and reason for the skip. If stage context remains ambiguous after pending rewards
+are cleared, the scanner fails closed rather than guessing. Phase 6K.2 implements this workflow as
+a UI-independent interactive coordinator plus WinForms dialogs. Each Resume is explicitly
+user-driven and re-scans the same target; Skip records no completion evidence.
 
 When `Claim` is absent, the staged position may be resolved only from positive reward-number
 evidence that uniquely identifies one member of the current canonical stage family. Reward mapping
@@ -858,6 +859,32 @@ Includes:
 - update scan;
 - cancellation/recovery tests.
 
+#### Phase 6K.1 — staged achievement progress resolution
+
+The packaged schema retains each canonical Primogem reward. A staged family is resolved only when
+the visible reward uniquely identifies one stage in that family. Pending Claim, duplicate reward
+patterns, unreadable rewards, and unmapped rewards add no stage IDs.
+
+#### Phase 6K.2 — application UI and lifecycle integration
+
+The MainForm exposes an `Achievements` selection that defaults off. Achievement scanning runs as a
+self-contained final stage inside the existing `ScanRun`/`ScanSession` and its single
+`GameInputSession`; it does not create a second controller or perform independent restoration.
+Before game input, the user sees the pending-reward accuracy warning. Once the active input session
+is ready, scanning pauses for the user to open the idle Achievements screen manually.
+
+Pending Claim pauses hide the companion overlay and offer Resume, Skip Achievement, or Cancel Scan.
+Resume requires the user to claim manually, return to a search-ready Achievement screen, and then
+explicitly re-scans the same target. Skip records an unclaimed-reward skip and trusts no IDs for the
+target. Cancellation uses the active `ScanSession` token, and unsafe reset or operational failure
+still stops before another target.
+
+GOOD-like and Traveler's Toolkit native v1 progress can be imported as a validated update seed;
+unknown IDs fail closed. Trusted results can be explicitly exported as a separate deterministic
+GOOD-like achievement file after complete, partial, or cancelled scans. Existing inventory GOOD
+export behavior remains separate and unchanged. No reward is claimed automatically, and the
+feature remains behind the release gate until Phase 6K.3 live validation is complete.
+
 ---
 
 ## 18. First milestone fixture set
@@ -1053,21 +1080,7 @@ Achievement Scanner must not be advertised as production-ready until all of the 
 
 ## 27. Immediate next task
 
-The next implementation task is **Phase 6A only**:
-
-> Achievement screen and search-state detector.
-
-It must not implement full scanning, catalog iteration, export, resume, or collision correction yet.
-
-The first Phase 6A agent should:
-
-- derive normalized geometry from the supplied current Genshin screenshots;
-- create sanitized crops/fixtures;
-- implement Achievement-screen detection;
-- implement search idle/active detection;
-- implement `Match(es): N` parsing;
-- expose normalized result-title and completion-state crop regions;
-- add diagnostics and deterministic tests;
-- validate across current 16:9 and 16:10 scaling conventions;
-- stop before navigation automation.
+The next task after the automated Phase 6K.2 integration gate is **Phase 6K.3 live validation**.
+It must be performed manually by the user under a separately approved brief. Phase 6K.2 must not
+launch Genshin, run a live harness, or control ViGEm outside the normal application lifecycle.
 

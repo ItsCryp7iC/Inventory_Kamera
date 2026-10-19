@@ -43,6 +43,9 @@ namespace InventoryKamera
         private readonly CorrectionDialogPositioner correctionDialogPositioner;
         private readonly CorrectionDialogForegroundService correctionDialogForeground;
         private ScanCompanionOverlay scanOverlay;
+        private AchievementCatalogProvider achievementCatalogProvider;
+        private AchievementResumeDataState achievementResumeData;
+        private AchievementInteractiveScanResult lastAchievementScanResult;
 
         public MainForm()
         {
@@ -63,8 +66,12 @@ namespace InventoryKamera
             databaseManager = new DatabaseManager();
             var gameDataFactory = new GameDataSnapshotFactory(databaseManager);
             gameDataProvider = new GameDataSnapshotProvider(gameDataFactory.Load);
+            achievementCatalogProvider = new AchievementCatalogProvider();
+            achievementResumeData = new AchievementResumeDataState(
+                new AchievementToolkitImporter(achievementCatalogProvider));
 
             BindSettings();
+            RefreshAchievementResumeUi();
 
             Language_ComboBox.SelectedItem = "ENG";
 
@@ -96,6 +103,8 @@ namespace InventoryKamera
             UiTheme.RoundCorners(StartScan_Button, 8);
             UiTheme.RoundCorners(ManualExportButton, 6);
             UiTheme.RoundCorners(button1, 6);
+            UiTheme.RoundCorners(ImportAchievementProgress_Button, 4);
+            UiTheme.RoundCorners(ClearAchievementProgress_Button, 4);
             UiTheme.ApplyTheme(this);
 
             // Phase 3 §6c's controller-navigation debug tools (MODERNIZATION_PLAN.md §6c) are not
@@ -125,6 +134,7 @@ namespace InventoryKamera
             Bind(Characters_CheckBox, "Checked", "ScanCharacters");
             Bind(Materials_CheckBox, "Checked", "ScanMaterials");
             Bind(CharDevItems_CheckBox, "Checked", "ScanCharDevItems");
+            Bind(Achievements_CheckBox, "Checked", "ScanAchievements");
 
             Bind(EquipWeaponsCheckBox, "Checked", "EquipWeapons");
             Bind(EquipArtifactsCheckBox, "Checked", "EquipArtifacts");
@@ -520,6 +530,388 @@ namespace InventoryKamera
             return false;
         }
 
+        private bool AchievementWarningAccepted()
+        {
+            using var dialog = new AchievementPreScanWarningForm();
+            return dialog.ShowDialog(this) == DialogResult.OK;
+        }
+
+        private void ImportAchievementProgress_Click(object sender, EventArgs e)
+        {
+            using var dialog = new OpenFileDialog
+            {
+                AddExtension = true,
+                CheckFileExists = true,
+                DefaultExt = "json",
+                Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+                Multiselect = false,
+                Title = "Import Achievement Progress",
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                string json = File.ReadAllText(dialog.FileName, Encoding.UTF8);
+                AchievementImportResult result = achievementResumeData.Import(
+                    json,
+                    Path.GetFileName(dialog.FileName));
+                RefreshAchievementResumeUi();
+                if (!result.Success)
+                {
+                    Logger.Warn(result.Diagnostics);
+                    MessageBox.Show(
+                        this,
+                        result.FailureReason,
+                        "Achievement Progress Import Failed",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                Logger.Info(result.Diagnostics);
+                MessageBox.Show(
+                    this,
+                    $"Achievement resume data loaded: {result.ResumeSeed.TrustedCompletedIds.Count:N0} completed.",
+                    "Achievement Progress Loaded",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                string message = $"The selected achievement progress file could not be read: {ex.Message}";
+                achievementResumeData.SetFileReadFailure(message);
+                RefreshAchievementResumeUi();
+                Logger.Warn(ex, "Achievement progress import file read failed.");
+                MessageBox.Show(
+                    this,
+                    message,
+                    "Achievement Progress Import Failed",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+
+        private void ClearAchievementProgress_Click(object sender, EventArgs e)
+        {
+            achievementResumeData.Clear();
+            RefreshAchievementResumeUi();
+        }
+
+        private void RefreshAchievementResumeUi()
+        {
+            if (achievementResumeData == null) return;
+            AchievementResumeStatus_Label.Text = achievementResumeData.StatusText;
+            AchievementResumeStatus_Label.ForeColor = achievementResumeData.HasBlockingError
+                ? Color.Firebrick
+                : ForeColor;
+            bool canClear = achievementResumeData.HasResumeSeed || achievementResumeData.HasBlockingError;
+            ClearAchievementProgress_Button.Enabled = canClear;
+            ClearAchievementProgressMenuItem.Enabled = canClear;
+        }
+
+        private void SetAchievementImportControlsEnabled(bool enabled)
+        {
+            ImportAchievementProgress_Button.Enabled = enabled;
+            ImportAchievementProgressMenuItem.Enabled = enabled;
+            bool canClear = enabled && (achievementResumeData.HasResumeSeed || achievementResumeData.HasBlockingError);
+            ClearAchievementProgress_Button.Enabled = canClear;
+            ClearAchievementProgressMenuItem.Enabled = canClear;
+        }
+
+        private void SetAchievementExportEnabled(bool enabled)
+        {
+            ExportAchievementProgressMenuItem.Enabled = enabled;
+        }
+
+        private void RunAchievementStage(
+            AchievementScanRuntimeContext runtime,
+            AchievementResumeSeed resumeSeed,
+            ScanRun scanRun)
+        {
+            AchievementScannerProductionComponents components =
+                AchievementScannerProductionFactory.Create(achievementCatalogProvider, runtime);
+            var decisionProvider = new MainFormPendingClaimDecisionProvider(this, scanRun);
+            var coordinator = new AchievementInteractiveScanCoordinator(
+                achievementCatalogProvider,
+                components.CatalogScanner,
+                decisionProvider,
+                scanRun.RequestCancellation);
+
+            if (!ShowAchievementStartHandoff(runtime.CancellationToken, scanRun))
+            {
+                lastAchievementScanResult = coordinator.CancelledBeforeStart(
+                    resumeSeed,
+                    "The achievement scan was cancelled before the start screen was confirmed.");
+                return;
+            }
+
+            var progress = new MainFormAchievementProgressReporter(this);
+            lastAchievementScanResult = coordinator.Scan(
+                resumeSeed,
+                runtime.CancellationToken,
+                progress);
+            Logger.Info(
+                "Achievement interactive scan finished: state={0}; processed={1}; planned={2}; trusted={3}; reason={4}",
+                lastAchievementScanResult.State,
+                lastAchievementScanResult.ProcessedScanTargets,
+                lastAchievementScanResult.PlannedScanTargets,
+                lastAchievementScanResult.TrustedCompletedIds.Count,
+                lastAchievementScanResult.StopReason);
+        }
+
+        private bool ShowAchievementStartHandoff(
+            CancellationToken cancellationToken,
+            ScanRun scanRun)
+        {
+            DialogResult result = ShowAchievementInteractionDialog(
+                new AchievementStartHandoffForm(),
+                cancellationToken);
+            if (result != DialogResult.OK)
+            {
+                scanRun.RequestCancellation();
+                return false;
+            }
+            if (scanRunOwner.TryResumeAfterInteractiveDialog(out string failureReason))
+                return true;
+
+            scanViewModel.AddError(failureReason ?? "Scanner control could not resume after the Achievement-screen handoff.");
+            scanRun.RequestCancellation();
+            return false;
+        }
+
+        private AchievementPendingClaimDecision ShowPendingClaimDecision(
+            AchievementPendingClaimRequest request,
+            CancellationToken cancellationToken,
+            ScanRun scanRun)
+        {
+            DialogResult result = ShowAchievementInteractionDialog(
+                new AchievementPendingClaimForm(request.Target.CanonicalTitle),
+                cancellationToken);
+            if (result == DialogResult.Cancel || cancellationToken.IsCancellationRequested)
+            {
+                scanRun.RequestCancellation();
+                return AchievementPendingClaimDecision.CancelScan;
+            }
+
+            if (!scanRunOwner.TryResumeAfterInteractiveDialog(out string failureReason))
+            {
+                scanViewModel.AddError(failureReason ?? "Scanner control could not resume after the unclaimed-reward handoff.");
+                scanRun.RequestCancellation();
+                return AchievementPendingClaimDecision.CancelScan;
+            }
+
+            return result == DialogResult.Retry
+                ? AchievementPendingClaimDecision.Resume
+                : AchievementPendingClaimDecision.SkipAchievement;
+        }
+
+        private DialogResult ShowAchievementInteractionDialog(
+            Form dialog,
+            CancellationToken cancellationToken)
+        {
+            DialogResult result = DialogResult.Cancel;
+            try
+            {
+                CorrectionDialogLifecycle.Run(scanOverlay, () =>
+                {
+                    Invoke((System.Windows.Forms.MethodInvoker)delegate
+                    {
+                        using (dialog)
+                        {
+                            void PositionDialog()
+                            {
+                                if (!correctionDialogPositioner.TryPosition(dialog))
+                                    dialog.StartPosition = FormStartPosition.CenterParent;
+                            }
+
+                            EventHandler shown = (_, _) =>
+                            {
+                                PositionDialog();
+                                if (!correctionDialogForeground.RequestForeground(dialog))
+                                    Logger.Warn("Windows did not confirm the achievement dialog foreground request.");
+                            };
+                            DpiChangedEventHandler dpiChanged = (_, _) => PositionDialog();
+                            dialog.Shown += shown;
+                            dialog.DpiChanged += dpiChanged;
+                            try
+                            {
+                                PositionDialog();
+                                correctionDialogForeground.PrepareForShow(dialog);
+                                IntPtr handle = dialog.Handle;
+                                using CancellationTokenRegistration registration = cancellationToken.Register(() =>
+                                {
+                                    try
+                                    {
+                                        if (!dialog.IsDisposed && dialog.IsHandleCreated)
+                                        {
+                                            dialog.BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
+                                            {
+                                                if (dialog.IsDisposed) return;
+                                                dialog.DialogResult = DialogResult.Cancel;
+                                                dialog.Close();
+                                            });
+                                        }
+                                    }
+                                    catch (ObjectDisposedException) { }
+                                    catch (InvalidOperationException) { }
+                                });
+                                result = dialog.ShowDialog(this);
+                            }
+                            finally
+                            {
+                                correctionDialogForeground.Release(dialog);
+                                dialog.Shown -= shown;
+                                dialog.DpiChanged -= dpiChanged;
+                            }
+                        }
+                    });
+                });
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+            return result;
+        }
+
+        private void ShowAchievementScanSummary(AchievementInteractiveScanResult result)
+        {
+            Invoke((System.Windows.Forms.MethodInvoker)delegate
+            {
+                string summary = AchievementScanReportBuilder.BuildSummary(result);
+                IReadOnlyList<AchievementScanReportItem> issues =
+                    AchievementScanReportBuilder.GetIssues(result);
+                if (issues.Count > 0)
+                    summary += $"\n\n{issues.Count:N0} skipped or unresolved item(s) are available in the detail report.";
+                MessageBox.Show(
+                    this,
+                    summary,
+                    result.IsPartial ? "Achievement Scan - Partial Result" : "Achievement Scan Complete",
+                    MessageBoxButtons.OK,
+                    result.State == AchievementCatalogScanState.Failed ||
+                    result.State == AchievementCatalogScanState.StoppedUnsafe
+                        ? MessageBoxIcon.Warning
+                        : MessageBoxIcon.Information);
+
+                if (issues.Count > 0 && MessageBox.Show(
+                    this,
+                    "View the skipped and unresolved achievement list?",
+                    "Achievement Scan Details",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question) == DialogResult.Yes)
+                {
+                    using var report = new AchievementIssueReportForm(
+                        AchievementScanReportBuilder.BuildIssueReport(result));
+                    report.ShowDialog(this);
+                }
+
+                SetAchievementExportEnabled(result.TrustedCompletedIds.Count > 0);
+                if (result.TrustedCompletedIds.Count > 0 && MessageBox.Show(
+                    this,
+                    result.IsPartial
+                        ? "Save the trusted achievement progress collected so far? The file will be partial and will exclude skipped or unresolved achievements."
+                        : "Save the completed achievement progress for Traveler's Toolkit?",
+                    "Export Achievement Progress",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question) == DialogResult.Yes)
+                {
+                    SaveAchievementProgress(result.TrustedCompletedIds);
+                }
+            });
+        }
+
+        private void ExportAchievementProgress_Click(object sender, EventArgs e)
+        {
+            if (lastAchievementScanResult?.TrustedCompletedIds.Count > 0)
+                SaveAchievementProgress(lastAchievementScanResult.TrustedCompletedIds);
+        }
+
+        private void SaveAchievementProgress(IEnumerable<int> trustedCompletedIds)
+        {
+            var exporter = new AchievementToolkitExporter(achievementCatalogProvider);
+            AchievementToolkitExportResult export = exporter.ExportGood(trustedCompletedIds);
+            if (!export.Success)
+            {
+                Logger.Warn(export.Diagnostics);
+                MessageBox.Show(
+                    this,
+                    export.FailureReason,
+                    "Achievement Export Failed",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            using var dialog = new SaveFileDialog
+            {
+                AddExtension = true,
+                DefaultExt = "json",
+                FileName = "InventoryKamera_Achievements.json",
+                Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+                InitialDirectory = Directory.Exists(Properties.Settings.Default.OutputPath)
+                    ? Properties.Settings.Default.OutputPath
+                    : string.Empty,
+                OverwritePrompt = true,
+                Title = "Export Achievement Progress",
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                File.WriteAllText(dialog.FileName, export.Json, new UTF8Encoding(false));
+                Logger.Info(export.Diagnostics);
+                MessageBox.Show(
+                    this,
+                    $"Achievement progress saved to:\n{dialog.FileName}",
+                    "Achievement Progress Exported",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn(ex, "Achievement progress export write failed.");
+                MessageBox.Show(
+                    this,
+                    $"Achievement progress could not be saved: {ex.Message}",
+                    "Achievement Export Failed",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+
+        private sealed class MainFormPendingClaimDecisionProvider : IAchievementPendingClaimDecisionProvider
+        {
+            private readonly MainForm form;
+            private readonly ScanRun scanRun;
+
+            internal MainFormPendingClaimDecisionProvider(MainForm form, ScanRun scanRun)
+            {
+                this.form = form;
+                this.scanRun = scanRun;
+            }
+
+            public AchievementPendingClaimDecision Decide(
+                AchievementPendingClaimRequest request,
+                CancellationToken cancellationToken) =>
+                form.ShowPendingClaimDecision(request, cancellationToken, scanRun);
+        }
+
+        private sealed class MainFormAchievementProgressReporter : IAchievementInteractiveScanProgressReporter
+        {
+            private readonly MainForm form;
+
+            internal MainFormAchievementProgressReporter(MainForm form)
+            {
+                this.form = form;
+            }
+
+            public void Report(AchievementInteractiveScanProgress progress)
+            {
+                form.scanViewModel.SetProgramStatus("Scanning Achievements");
+                form.scanOverlay.ShowAchievementProgress(
+                    AchievementScanReportBuilder.BuildProgress(progress),
+                    AchievementScanReportBuilder.BuildProgressDetails(progress));
+            }
+        }
+
         private void StartButton_Clicked(object sender, EventArgs e)
         {
             if (scanRunOwner.HasActiveRun)
@@ -535,13 +927,33 @@ namespace InventoryKamera
             }
 
             var startSettings = Properties.Settings.Default;
-            bool controllerScanSelected = startSettings.ScanWeapons || startSettings.ScanArtifacts ||
+            bool achievementScanSelected = startSettings.ScanAchievements;
+            bool legacyScanSelected = startSettings.ScanWeapons || startSettings.ScanArtifacts ||
                 startSettings.ScanCharacters || startSettings.ScanCharDevItems || startSettings.ScanMaterials;
+            bool controllerScanSelected = legacyScanSelected || achievementScanSelected;
+            if (achievementScanSelected && achievementResumeData.HasBlockingError)
+            {
+                MessageBox.Show(
+                    this,
+                    achievementResumeData.BlockingError +
+                    "\n\nClear the imported data or choose another achievement progress file before starting.",
+                    "Achievement Progress Cannot Be Used",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
             if (!ControllerScanPreflight.TryProceed(
                     controllerScanSelected,
-                    ScanSetupAccepted,
+                    () => ScanSetupAccepted() &&
+                        (!AchievementScanStartPolicy.ShouldShowAchievementWarning(achievementScanSelected) ||
+                            AchievementWarningAccepted()),
                     PreflightChecksPass))
                 return;
+
+            AchievementResumeSeed achievementResumeSeed = achievementScanSelected
+                ? achievementResumeData.ResumeSeed
+                : null;
 
             GC.Collect();
 
@@ -591,6 +1003,7 @@ namespace InventoryKamera
                     $"\tCharacters:\t\t\t\t {settings.ScanCharacters}\n" +
                     $"\tDev Items:\t\t\t\t {settings.ScanCharDevItems}\n" +
                     $"\tMaterials:\t\t\t\t {settings.ScanMaterials}\n" +
+                    $"\tAchievements:\t\t\t {achievementScanSelected}\n" +
                     $"\tMin Weapon Rarity:\t\t {settings.MinimumWeaponRarity}\n" +
                     $"\tMin Weapon Level:\t\t {settings.MinimumWeaponLevel}\n" +
                     $"\tEquip Weapons:\t\t\t {settings.EquipWeapons}\n" +
@@ -600,6 +1013,13 @@ namespace InventoryKamera
                     $"\tDelay:\t\t\t\t\t {settings.ScannerDelay}";
 
                 Logger.Info("Scan settings: {0}", options);
+
+                if (achievementScanSelected)
+                {
+                    lastAchievementScanResult = null;
+                    SetAchievementImportControlsEnabled(false);
+                    SetAchievementExportEnabled(false);
+                }
 
                 scanRun.Start(() =>
                 {
@@ -642,7 +1062,21 @@ namespace InventoryKamera
 
 
                         // The Data object of json object
-                        currentScanner.GatherData();
+                        currentScanner.GatherData(achievementScanSelected
+                            ? runtime => RunAchievementStage(
+                                runtime,
+                                achievementResumeSeed,
+                                scanRun)
+                            : null);
+
+                        if (achievementScanSelected && lastAchievementScanResult != null)
+                        {
+                            if (!currentScanner.HasPendingInputModeRecovery)
+                                ShowAchievementScanSummary(lastAchievementScanResult);
+                            else
+                                Logger.Info(
+                                    "Achievement summary/export prompt deferred while input-mode Recovery is active; trusted progress remains available from the File menu.");
+                        }
 
                         bool recoveryPending = currentScanner.HasPendingInputModeRecovery;
                         ScanCompletionPlan completion = ScanCompletionPolicy.Evaluate(
@@ -665,6 +1099,12 @@ namespace InventoryKamera
                             // Thread.Abort behaviour: skip GOOD conversion/export/optimizer dialog.
                             // The user can still use "Export Scanned Data" to export what was collected.
                             currentScanner?.StopImageProcessorWorkers();
+                            scanViewModel.SetProgramStatus(completion.Status, completion.StatusOk);
+                            if (completion.ShowCompletedOverlay)
+                                scanOverlay.ShowCompleted(completion.CompletionMessage);
+                        }
+                        else if (!legacyScanSelected && achievementScanSelected)
+                        {
                             scanViewModel.SetProgramStatus(completion.Status, completion.StatusOk);
                             if (completion.ShowCompletedOverlay)
                                 scanOverlay.ShowCompleted(completion.CompletionMessage);
@@ -722,6 +1162,13 @@ namespace InventoryKamera
                         });
                         if (lastScanData?.HasPendingInputModeRecovery != true)
                             MainForm_Activate();
+                        if (achievementScanSelected)
+                            BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
+                            {
+                                SetAchievementImportControlsEnabled(true);
+                                SetAchievementExportEnabled(
+                                    lastAchievementScanResult?.TrustedCompletedIds.Count > 0);
+                            });
                     }
                 });
             }
