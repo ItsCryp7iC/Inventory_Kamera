@@ -274,7 +274,7 @@ namespace InventoryKamera
                 cancellationToken,
                 adapter);
 
-            MergeVerifiedUniqueCompletions(plan.ScanTargets, scanResult.Results, updatedIds);
+            AchievementTrustedCompletionExtractor.MergeInto(updatedIds, scanResult.Results);
             return Finish(
                 scanResult.State,
                 plan,
@@ -354,23 +354,6 @@ namespace InventoryKamera
                 diagnostics);
         }
 
-        private static void MergeVerifiedUniqueCompletions(
-            IReadOnlyList<AchievementScanTarget> targets,
-            IReadOnlyList<AchievementSingleScanResult> results,
-            ISet<int> updatedIds)
-        {
-            for (int index = 0; index < results.Count && index < targets.Count; index++)
-            {
-                AchievementScanTarget target = targets[index];
-                if (results[index].State == AchievementSingleScanState.Completed &&
-                    target.TitleGroupKind == AchievementTitleGroupKind.Unique &&
-                    target.CandidateIds.Count == 1)
-                {
-                    updatedIds.Add(target.CandidateIds[0]);
-                }
-            }
-        }
-
         private static string BuildDiagnostics(
             AchievementCatalogScanState state,
             int totalCatalogTargets,
@@ -448,11 +431,12 @@ namespace InventoryKamera
                 if (value.CurrentIndex > 0 && value.CompletedCount > lastCompletedCount)
                 {
                     AchievementScanTarget target = plan.ScanTargets[value.CurrentIndex - 1];
-                    if (target.TitleGroupKind == AchievementTitleGroupKind.Unique &&
-                        target.CandidateIds.Count == 1)
-                    {
-                        updatedIds.Add(target.CandidateIds[0]);
-                    }
+                    if (AchievementTrustedCompletionExtractor.TryGetTrustedCompletedId(
+                        target.TitleGroupKind,
+                        target.CandidateIds,
+                        AchievementSingleScanState.Completed,
+                        out int id))
+                        updatedIds.Add(id);
                 }
                 lastCompletedCount = value.CompletedCount;
 

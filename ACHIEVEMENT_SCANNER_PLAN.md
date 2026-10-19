@@ -805,7 +805,7 @@ failure, progress-callback, and `ReadyForNextAchievement` safety behavior.
 
 Goal:
 
-Produce import-ready achievement output.
+Produce and consume import-ready achievement progress without UI or file-path coupling.
 
 Primary output:
 
@@ -815,11 +815,18 @@ Primary output:
 }
 ```
 
-Optional later work:
+Phase 6J also supports Traveler's Toolkit native
+`TRAVELERS_TOOLKIT_ACHIEVEMENTS` version 1 import/export. Native exports always use
+`completedAt: null` because Inventory Kamera has no trusted completion timestamps. Both formats
+deduplicate and numerically sort canonical IDs. Import accepts GOOD-like achievement arrays and
+native version 1 progress objects; unknown canonical IDs remain visible in the structured result
+and prevent trusted resume-seed creation rather than being silently discarded.
 
-- native Traveler's Toolkit format;
-- date-only completion support;
-- direct app-to-app workflow if explicitly requested.
+The import/export core operates on JSON strings and immutable models without file dialogs or UI.
+Only validated trusted canonical completion IDs may be exported. Fresh full-scan extraction trusts
+only a positively `Completed` unique-title result with exactly one candidate ID, using the same rule
+as Phase 6I. Stage families, collisions, ambiguous results, and unresolved states add no IDs.
+Direct app-to-app integration and user workflow remain deferred.
 
 ### Phase 6K — Hardening
 
