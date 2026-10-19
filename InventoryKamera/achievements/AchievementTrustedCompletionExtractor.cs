@@ -6,8 +6,9 @@ using System.Linq;
 namespace InventoryKamera
 {
     /// <summary>
-    /// Extracts only canonical completions that the current scanner can identify without stage or
-    /// collision inference. The same predicate is used by update scanning and export preparation.
+    /// Extracts canonical completions from unique positive completion evidence and from the exact
+    /// completed IDs supplied by resolved staged progress. Collision and unresolved evidence never
+    /// contributes IDs. The same rules are used by update scanning and export preparation.
     /// </summary>
     internal static class AchievementTrustedCompletionExtractor
     {
@@ -40,6 +41,13 @@ namespace InventoryKamera
             {
                 if (TryGetTrustedCompletedId(result, out int id))
                     trustedIds.Add(id);
+
+                if (result?.TitleGroupKind == AchievementTitleGroupKind.StageFamily &&
+                    result.StageProgressResult?.State == AchievementStageProgressState.Resolved)
+                {
+                    foreach (int stageId in result.StageProgressResult.CompletedStageIds)
+                        trustedIds.Add(stageId);
+                }
             }
         }
 

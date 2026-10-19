@@ -106,6 +106,9 @@ namespace InventoryKamera
                     throw new AchievementCatalogException($"Achievement '{entry.Id}' has an invalid version.");
                 if (entry.Order < 0)
                     throw new AchievementCatalogException($"Achievement '{entry.Id}' has an invalid order.");
+                if (entry.Primogems < 0)
+                    throw new AchievementCatalogException(
+                        $"Achievement '{entry.Id}' has an invalid Primogem reward.");
 
                 int stageFieldCount = (entry.StageGroupId.HasValue ? 1 : 0)
                     + (entry.StageIndex.HasValue ? 1 : 0)

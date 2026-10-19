@@ -10,7 +10,7 @@ namespace InventoryKamera
 {
     public static class AchievementCatalogLoader
     {
-        public const int SupportedSchemaVersion = 1;
+        public const int SupportedSchemaVersion = 2;
         internal const string PackagedResourceName =
             "InventoryKamera.Resources.Data.achievements-scanner.json";
 
@@ -93,6 +93,7 @@ namespace InventoryKamera
             int id = ReadInteger(item, "id", minimum: 1, context: index);
             string name = ReadString(item, "name", index, allowEmpty: false);
             string description = ReadString(item, "description", index, allowEmpty: true);
+            int primogems = ReadInteger(item, "primogems", minimum: 0, context: index);
             int categoryId = ReadInteger(item, "categoryId", minimum: 0, context: index);
             bool hidden = ReadBoolean(item, "hidden", index);
             string version = ReadString(item, "version", index, allowEmpty: false);
@@ -119,7 +120,8 @@ namespace InventoryKamera
                 order,
                 stageGroupId,
                 stageIndex,
-                stageCount);
+                stageCount,
+                primogems);
         }
 
         private static int ReadInteger(JObject item, string propertyName, int minimum, int? context = null)

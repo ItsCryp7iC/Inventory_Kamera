@@ -94,6 +94,7 @@ namespace InventoryKamera
             int categoryId = ReadCanonicalIntegerString(item, "categoryId", index, minimum: 0);
             string name = ReadSourceString(item, "name", index, allowEmpty: false);
             string description = ReadSourceString(item, "description", index, allowEmpty: true);
+            int primogems = ReadSourceInteger(item, "primogems", index, minimum: 0);
             bool hidden = ReadSourceBoolean(item, "hidden", index);
             string version = ReadSourceString(item, "version", index, allowEmpty: false);
             int order = ReadSourceInteger(item, "order", index, minimum: 0);
@@ -125,7 +126,8 @@ namespace InventoryKamera
                 order,
                 stageGroupId,
                 stageIndex,
-                stageCount);
+                stageCount,
+                primogems);
         }
 
         private static string Serialize(IReadOnlyList<AchievementCatalogEntry> entries)
@@ -157,6 +159,7 @@ namespace InventoryKamera
                     Write(writer, "id", entry.Id);
                     Write(writer, "name", entry.Name);
                     Write(writer, "description", entry.Description);
+                    Write(writer, "primogems", entry.Primogems);
                     Write(writer, "categoryId", entry.CategoryId);
                     Write(writer, "hidden", entry.Hidden);
                     Write(writer, "version", entry.Version);
@@ -192,6 +195,17 @@ namespace InventoryKamera
                 .Select(group => group.Key)
                 .OrderBy(name => name, StringComparer.Ordinal)
                 .ToArray();
+            IGrouping<int, AchievementCatalogEntry>[] stageGroups = catalog.All
+                .Where(entry => entry.StageGroupId.HasValue)
+                .GroupBy(entry => entry.StageGroupId.Value)
+                .ToArray();
+            int rewardResolvableStageGroups = stageGroups.Count(group =>
+                group.Select(entry => entry.Primogems).Distinct().Count() == group.Count());
+            string[] rewardAmbiguousStageGroupNames = stageGroups
+                .Where(group => group.Select(entry => entry.Primogems).Distinct().Count() != group.Count())
+                .Select(group => group.First().Name)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray();
 
             return new AchievementCatalogGenerationResult(
                 catalog.All.Count,
@@ -202,7 +216,9 @@ namespace InventoryKamera
                     .Select(entry => entry.StageGroupId.Value).Distinct().Count(),
                 duplicateNames.Length,
                 stagedDuplicateNames,
-                nonStageDuplicateNames);
+                nonStageDuplicateNames,
+                rewardResolvableStageGroups,
+                rewardAmbiguousStageGroupNames);
         }
 
         private static void Write(JsonWriter writer, string name, object value)
@@ -310,7 +326,9 @@ namespace InventoryKamera
             int stageGroupCount,
             int duplicateNameCount,
             int stagedDuplicateNameCount,
-            IEnumerable<string> nonStageDuplicateNames)
+            IEnumerable<string> nonStageDuplicateNames,
+            int rewardResolvableStageGroupCount,
+            IEnumerable<string> rewardAmbiguousStageGroupNames)
         {
             TotalCount = totalCount;
             HiddenCount = hiddenCount;
@@ -320,6 +338,9 @@ namespace InventoryKamera
             DuplicateNameCount = duplicateNameCount;
             StagedDuplicateNameCount = stagedDuplicateNameCount;
             NonStageDuplicateNames = new ReadOnlyCollection<string>(nonStageDuplicateNames.ToArray());
+            RewardResolvableStageGroupCount = rewardResolvableStageGroupCount;
+            RewardAmbiguousStageGroupNames = new ReadOnlyCollection<string>(
+                rewardAmbiguousStageGroupNames.ToArray());
         }
 
         public int TotalCount { get; }
@@ -330,5 +351,7 @@ namespace InventoryKamera
         public int DuplicateNameCount { get; }
         public int StagedDuplicateNameCount { get; }
         public IReadOnlyList<string> NonStageDuplicateNames { get; }
+        public int RewardResolvableStageGroupCount { get; }
+        public IReadOnlyList<string> RewardAmbiguousStageGroupNames { get; }
     }
 }

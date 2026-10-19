@@ -363,6 +363,7 @@ namespace InventoryKamera.Tests
             AssertNormalized(regions.FirstResultTitle, size, 840.0 / 1919.0, 245.0 / 1079.0, 590.0 / 1919.0, 70.0 / 1079.0);
             AssertNormalized(regions.FirstResultCompletionState, size, 1545.0 / 1919.0, 235.0 / 1079.0, 290.0 / 1919.0, 120.0 / 1079.0);
             AssertNormalized(regions.FirstResultCompletionLabel, size, 1670.0 / 1919.0, 280.0 / 1079.0, 150.0 / 1919.0, 50.0 / 1079.0);
+            AssertNormalized(regions.FirstResultRewardValue, size, 1585.0 / 1919.0, 319.0 / 1079.0, 65.0 / 1919.0, 35.0 / 1079.0);
         }
 
         [Fact]
@@ -378,6 +379,8 @@ namespace InventoryKamera.Tests
             Assert.Equal(Rectangle.FromLTRB(840, 245, 1430, 315), regions.FirstResultTitle);
             Assert.Equal(Rectangle.FromLTRB(1545, 235, 1835, 355), regions.FirstResultCompletionState);
             Assert.Equal(Rectangle.FromLTRB(1670, 280, 1820, 330), regions.FirstResultCompletionLabel);
+            Assert.Equal(Rectangle.FromLTRB(1585, 319, 1650, 354), regions.FirstResultRewardValue);
+            Assert.True(regions.FirstResultCompletionState.Contains(regions.FirstResultRewardValue));
         }
 
         [Theory]

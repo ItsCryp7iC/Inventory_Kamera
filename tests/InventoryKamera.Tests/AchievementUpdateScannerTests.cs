@@ -360,7 +360,7 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
-        public void StageFamilyCompletedResultPreservesPartialTrustWithoutAddingStages()
+        public void StageFamilyWithoutResolvedProgressPreservesPartialTrustWithoutAddingStages()
         {
             AchievementCatalog catalog = StageCatalog();
             var single = new RecordingSingleScanner((id, _) =>
@@ -373,6 +373,59 @@ namespace InventoryKamera.Tests
             Assert.Equal(new[] { 10 }, result.UpdatedTrustedCompletedIds);
             Assert.Equal(0, result.NewlyVerifiedCompletedCount);
             Assert.Equal(new[] { 10 }, single.RequestedIds);
+        }
+
+        [Fact]
+        public void ResolvedStageProgressMergesWithPriorIdsAndPreservesThemOnUpdate()
+        {
+            AchievementCatalog catalog = StageCatalog();
+            AchievementStageProgressResult progress = StageProgress(
+                AchievementStageProgressState.Resolved,
+                currentStageIndex: 3,
+                currentStageId: 12,
+                completedIds: new[] { 10, 11 });
+            var single = new RecordingSingleScanner((id, _) =>
+                Result(
+                    catalog,
+                    id,
+                    AchievementSingleScanState.Incomplete,
+                    stageProgressResult: progress));
+
+            AchievementUpdateScanResult result = Scanner(catalog, single).Scan(
+                new AchievementResumeSeed(new[] { 10 }),
+                CancellationToken.None);
+
+            Assert.Equal(AchievementCatalogScanState.Completed, result.State);
+            Assert.Equal(new[] { 10, 11 }, result.UpdatedTrustedCompletedIds);
+            Assert.Equal(1, result.NewlyVerifiedCompletedCount);
+            Assert.Equal(new[] { 10 }, single.RequestedIds);
+        }
+
+        [Theory]
+        [InlineData((int)AchievementStageProgressState.PendingClaim)]
+        [InlineData((int)AchievementStageProgressState.AmbiguousReward)]
+        [InlineData((int)AchievementStageProgressState.UnresolvedReward)]
+        public void UnresolvedStageProgressNeverAddsIds(int stateValue)
+        {
+            AchievementCatalog catalog = StageCatalog();
+            AchievementStageProgressResult progress = StageProgress(
+                (AchievementStageProgressState)stateValue,
+                currentStageIndex: null,
+                currentStageId: null,
+                completedIds: Array.Empty<int>());
+            var single = new RecordingSingleScanner((id, _) =>
+                Result(
+                    catalog,
+                    id,
+                    AchievementSingleScanState.Incomplete,
+                    stageProgressResult: progress));
+
+            AchievementUpdateScanResult result = Scanner(catalog, single).Scan(
+                new AchievementResumeSeed(new[] { 10 }),
+                CancellationToken.None);
+
+            Assert.Equal(new[] { 10 }, result.UpdatedTrustedCompletedIds);
+            Assert.Equal(0, result.NewlyVerifiedCompletedCount);
         }
 
         [Fact]
@@ -641,7 +694,8 @@ namespace InventoryKamera.Tests
             AchievementCatalog catalog,
             int requestedId,
             AchievementSingleScanState state,
-            bool ready = true)
+            bool ready = true,
+            AchievementStageProgressResult stageProgressResult = null)
         {
             AchievementCatalogEntry entry = catalog.GetById(requestedId);
             return new AchievementSingleScanResult(
@@ -659,8 +713,24 @@ namespace InventoryKamera.Tests
                 finalScreenState: ready ? AchievementScreenState.Idle : AchievementScreenState.Unknown,
                 pendingClaim: state == AchievementSingleScanState.PendingClaimRequiresUserAction,
                 reason: "test result",
-                diagnostics: "single diagnostics");
+                diagnostics: "single diagnostics",
+                stageProgressResult: stageProgressResult);
         }
+
+        private static AchievementStageProgressResult StageProgress(
+            AchievementStageProgressState state,
+            int? currentStageIndex,
+            int? currentStageId,
+            int[] completedIds) =>
+            new(
+                state,
+                stageGroupId: 10,
+                currentStageIndex,
+                currentStageId,
+                completedIds,
+                rewardResult: null,
+                reason: "test stage progress",
+                diagnostics: "stage diagnostics");
 
         private sealed class TestCatalogProvider : IAchievementCatalogProvider
         {

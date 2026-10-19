@@ -20,8 +20,8 @@ namespace InventoryKamera
     }
 
     /// <summary>
-    /// Completed and Incomplete describe the verified visible row. Stage-family identity remains
-    /// explicit in the nested identity result and never implies an individual canonical stage ID.
+    /// Completed and Incomplete describe the verified visible row. Stage-family canonical IDs are
+    /// exposed only through a separately resolved StageProgressResult.
     /// </summary>
     internal enum AchievementSingleScanState
     {
@@ -52,7 +52,8 @@ namespace InventoryKamera
             AchievementScreenState? finalScreenState,
             bool pendingClaim,
             string reason,
-            string diagnostics)
+            string diagnostics,
+            AchievementStageProgressResult stageProgressResult = null)
         {
             State = state;
             RequestedId = requestedId;
@@ -71,6 +72,7 @@ namespace InventoryKamera
             PendingClaim = pendingClaim;
             Reason = reason ?? string.Empty;
             Diagnostics = diagnostics ?? string.Empty;
+            StageProgressResult = stageProgressResult;
         }
 
         internal AchievementSingleScanState State { get; }
@@ -104,6 +106,7 @@ namespace InventoryKamera
             ExitSucceeded && FinalScreenState == AchievementScreenState.Idle;
         internal string Reason { get; }
         internal string Diagnostics { get; }
+        internal AchievementStageProgressResult StageProgressResult { get; }
     }
 
     /// <summary>
@@ -121,6 +124,8 @@ namespace InventoryKamera
         private readonly IAchievementResultIdentityVerifier identityVerifier;
         private readonly IAchievementCompletionClassifier completionClassifier;
         private readonly IGameScreenCapture screenCapture;
+        private readonly IAchievementRewardReader rewardReader;
+        private readonly AchievementStageProgressResolver stageProgressResolver;
 
         internal AchievementSingleScanner(
             IAchievementCatalogProvider catalogProvider,
@@ -128,7 +133,9 @@ namespace InventoryKamera
             IAchievementSearchNavigator searchNavigator,
             IAchievementResultIdentityVerifier identityVerifier,
             IAchievementCompletionClassifier completionClassifier,
-            IGameScreenCapture screenCapture)
+            IGameScreenCapture screenCapture,
+            IAchievementRewardReader rewardReader,
+            AchievementStageProgressResolver stageProgressResolver)
         {
             if (catalogProvider == null) throw new ArgumentNullException(nameof(catalogProvider));
             catalog = catalogProvider.Catalog ?? throw new ArgumentException(
@@ -138,6 +145,8 @@ namespace InventoryKamera
             this.identityVerifier = identityVerifier ?? throw new ArgumentNullException(nameof(identityVerifier));
             this.completionClassifier = completionClassifier ?? throw new ArgumentNullException(nameof(completionClassifier));
             this.screenCapture = screenCapture ?? throw new ArgumentNullException(nameof(screenCapture));
+            this.rewardReader = rewardReader ?? throw new ArgumentNullException(nameof(rewardReader));
+            this.stageProgressResolver = stageProgressResolver ?? throw new ArgumentNullException(nameof(stageProgressResolver));
         }
 
         public AchievementSingleScanResult Scan(
@@ -358,6 +367,8 @@ namespace InventoryKamera
                         $"Achievement completion classification failed: {ex.GetType().Name}: {ex.Message}",
                         cancellationToken);
                 }
+
+                ResolveStageProgress(context, resultScreenshot);
             }
 
             AchievementSingleScanState evidenceState = MapEvidenceState(context);
@@ -369,6 +380,37 @@ namespace InventoryKamera
                     $"Single-achievement scanning was cancelled before search exit. {evidenceReason}");
 
             return FinishWithExit(context, evidenceState, evidenceReason, cancellationToken);
+        }
+
+        private void ResolveStageProgress(ScanContext context, Bitmap resultScreenshot)
+        {
+            if (context.IdentityResult?.State != AchievementIdentityState.StageGroupIdentified ||
+                context.TitleGroup?.Kind != AchievementTitleGroupKind.StageFamily ||
+                context.CompletionResult == null)
+                return;
+
+            AchievementRewardResult reward = null;
+            if (context.CompletionResult.State == AchievementCompletionState.Incomplete ||
+                context.CompletionResult.State == AchievementCompletionState.CompletedClaimed)
+            {
+                try
+                {
+                    reward = rewardReader.Read(resultScreenshot) ??
+                        AchievementRewardResult.Unresolved(
+                            "The reward reader returned no structured result.");
+                }
+                catch (Exception ex)
+                {
+                    reward = AchievementRewardResult.Unresolved(
+                        $"Reward OCR failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
+            context.StageProgressResult = stageProgressResolver.Resolve(
+                context.IdentityResult,
+                context.CompletionResult,
+                reward,
+                context.TitleGroup);
         }
 
         private AchievementSingleScanResult FinishWithExit(
@@ -451,16 +493,21 @@ namespace InventoryKamera
             {
                 AchievementSingleScanState.Completed =>
                     context.IdentityResult.State == AchievementIdentityState.StageGroupIdentified
-                        ? "The staged title-family and visible completed state were preserved without selecting an individual stage."
+                        ? StageEvidenceReason(context, "The staged title-family has visible completed-and-claimed evidence.")
                         : "The unique achievement identity and visible completed state were positively verified.",
                 AchievementSingleScanState.Incomplete =>
                     context.IdentityResult.State == AchievementIdentityState.StageGroupIdentified
-                        ? "The staged title-family and visible incomplete state were preserved without inferring completed stages."
+                        ? StageEvidenceReason(context, "The staged title-family has visible incomplete evidence.")
                         : "The unique achievement identity and visible incomplete state were positively verified.",
                 AchievementSingleScanState.PendingClaimRequiresUserAction =>
                     "The staged title-family shows Claim; pending rewards prevent safe stage resolution and require user action.",
                 _ => context.CompletionResult?.Reason ?? "Completion state was unresolved.",
             };
+
+        private static string StageEvidenceReason(ScanContext context, string prefix) =>
+            context.StageProgressResult == null
+                ? $"{prefix} Staged progress was not resolved."
+                : $"{prefix} {context.StageProgressResult.Reason}";
 
         private static AchievementScreenState? MostRecentScreenState(
             AchievementSearchNavigationResult navigation) =>
@@ -494,7 +541,8 @@ namespace InventoryKamera
                 context.FinalScreenState,
                 context.PendingClaim,
                 reason,
-                diagnostics);
+                diagnostics,
+                context.StageProgressResult);
         }
 
         private static string BuildDiagnostics(
@@ -518,6 +566,8 @@ namespace InventoryKamera
             builder.AppendLine($"completionState={Format(context.CompletionResult?.State)}");
             builder.AppendLine($"completionInvoked={context.CompletionInvoked}");
             builder.AppendLine($"pendingClaim={context.PendingClaim}");
+            builder.AppendLine($"stageProgressState={Format(context.StageProgressResult?.State)}");
+            builder.AppendLine($"completedStageIds={string.Join(",", context.StageProgressResult?.CompletedStageIds ?? Array.Empty<int>())}");
             builder.AppendLine($"exitAttempted={context.ExitAttempted}");
             builder.AppendLine($"exitSucceeded={context.ExitSucceeded}");
             builder.AppendLine($"finalState={Format(context.FinalScreenState)}");
@@ -527,6 +577,7 @@ namespace InventoryKamera
             AppendNested(builder, "search", context.SearchResult?.Diagnostics);
             AppendNested(builder, "identity", context.IdentityResult?.Diagnostics);
             AppendNested(builder, "completion", context.CompletionResult?.Diagnostics);
+            AppendNested(builder, "stageProgress", context.StageProgressResult?.Diagnostics);
             AppendNested(builder, "exit", context.ExitResult?.Diagnostics);
             return builder.ToString().TrimEnd();
         }
@@ -576,6 +627,7 @@ namespace InventoryKamera
             internal AchievementSearchNavigationResult SearchResult { get; set; }
             internal AchievementIdentityResult IdentityResult { get; set; }
             internal AchievementCompletionResult CompletionResult { get; set; }
+            internal AchievementStageProgressResult StageProgressResult { get; set; }
             internal AchievementSearchNavigationResult ExitResult { get; set; }
             internal bool ExitAttempted { get; set; }
             internal bool ExitSucceeded { get; set; }

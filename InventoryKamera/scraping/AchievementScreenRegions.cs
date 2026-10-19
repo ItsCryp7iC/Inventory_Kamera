@@ -33,6 +33,11 @@ namespace InventoryKamera
         // approaches the UID area.
         private static readonly NormalizedRectangle FirstResultCompletionLabelDefinition =
             new NormalizedRectangle(1670.0 / 1919.0, 280.0 / 1079.0, 150.0 / 1919.0, 50.0 / 1079.0);
+        // Narrow number-only crop over the Primogem amount in the first result row. It is wholly
+        // inside the completion-state crop, ends before the progress/date column, and is far from
+        // the bottom-right UID area.
+        private static readonly NormalizedRectangle FirstResultRewardValueDefinition =
+            new NormalizedRectangle(1585.0 / 1919.0, 319.0 / 1079.0, 65.0 / 1919.0, 35.0 / 1079.0);
 
         private AchievementScreenRegions(
             Rectangle heading,
@@ -42,7 +47,8 @@ namespace InventoryKamera
             Rectangle pageCounter,
             Rectangle firstResultTitle,
             Rectangle firstResultCompletionState,
-            Rectangle firstResultCompletionLabel)
+            Rectangle firstResultCompletionLabel,
+            Rectangle firstResultRewardValue)
         {
             Heading = heading;
             SearchField = searchField;
@@ -52,6 +58,7 @@ namespace InventoryKamera
             FirstResultTitle = firstResultTitle;
             FirstResultCompletionState = firstResultCompletionState;
             FirstResultCompletionLabel = firstResultCompletionLabel;
+            FirstResultRewardValue = firstResultRewardValue;
         }
 
         internal Rectangle Heading { get; }
@@ -62,6 +69,7 @@ namespace InventoryKamera
         internal Rectangle FirstResultTitle { get; }
         internal Rectangle FirstResultCompletionState { get; }
         internal Rectangle FirstResultCompletionLabel { get; }
+        internal Rectangle FirstResultRewardValue { get; }
 
         internal static AchievementScreenRegions For(Size captureSize)
         {
@@ -76,7 +84,8 @@ namespace InventoryKamera
                 PageCounterDefinition.ToRectangle(captureSize),
                 FirstResultTitleDefinition.ToRectangle(captureSize),
                 FirstResultCompletionStateDefinition.ToRectangle(captureSize),
-                FirstResultCompletionLabelDefinition.ToRectangle(captureSize));
+                FirstResultCompletionLabelDefinition.ToRectangle(captureSize),
+                FirstResultRewardValueDefinition.ToRectangle(captureSize));
         }
     }
 }

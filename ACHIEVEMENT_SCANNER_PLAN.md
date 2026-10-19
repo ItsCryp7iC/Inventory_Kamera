@@ -432,6 +432,15 @@ stage group when known, and reason for the skip. If stage context remains ambigu
 rewards are cleared, the scanner must fail closed rather than guess. This is a future orchestration
 and full-scan rule; Phase 6E documents it but does not implement its UI or workflow.
 
+When `Claim` is absent, the staged position may be resolved only from positive reward-number
+evidence that uniquely identifies one member of the current canonical stage family. Reward mapping
+is catalog-driven and is never a global 5/10/20 rule. An incomplete current stage means only its
+earlier stages are complete; a completed-and-claimed current stage includes that stage as well as
+its predecessors. Duplicate reward patterns, unreadable or conflicting reward OCR, and rewards not
+present in the family remain unresolved and add no stage IDs. No stage inference uses stars,
+descriptions, categories, the requested representative ID, or progress-fraction targets. Users
+should claim pending achievement rewards before scanning for the most accurate staged results.
+
 ---
 
 ## 13. Resume / update scan
@@ -796,10 +805,11 @@ fail validation before scanning, while duplicate valid IDs canonicalize determin
 skipping operates on the Phase 6H title groups: a target is skipped only when every candidate ID is
 already trusted, so partially trusted staged families and collisions are still scanned once.
 Exposed trusted-ID collections use ascending canonical numeric order.
-Previous trusted IDs are always preserved. A scan may add only a positively verified `Completed`
-result for a unique-title target; staged-family, collision, ambiguous, unresolved, and pending-Claim
-results add no IDs. Phase 6I adds no outer retries and retains all Phase 6H ordering, cancellation,
-failure, progress-callback, and `ReadyForNextAchievement` safety behavior.
+Previous trusted IDs are always preserved. A scan may add a positively verified `Completed` result
+for a unique-title target, and may add only the completed stage IDs supplied by a `Resolved`
+`StageProgressResult` for a staged family. Pending-Claim, reward-ambiguous, unresolved, collision,
+and multi-match results add no IDs. Phase 6I adds no outer retries and retains all Phase 6H
+ordering, cancellation, failure, progress-callback, and `ReadyForNextAchievement` safety behavior.
 
 ### Phase 6J — Traveler's Toolkit export integration
 
@@ -824,9 +834,10 @@ and prevent trusted resume-seed creation rather than being silently discarded.
 
 The import/export core operates on JSON strings and immutable models without file dialogs or UI.
 Only validated trusted canonical completion IDs may be exported. Fresh full-scan extraction trusts
-only a positively `Completed` unique-title result with exactly one candidate ID, using the same rule
-as Phase 6I. Stage families, collisions, ambiguous results, and unresolved states add no IDs.
-Direct app-to-app integration and user workflow remain deferred.
+a positively `Completed` unique-title result with exactly one candidate ID, plus only the completed
+stage IDs supplied by a `Resolved` `StageProgressResult`, using the same rules as Phase 6I.
+Pending-Claim or reward-ambiguous stage families, collisions, multi-match results, and unresolved
+states add no IDs. Direct app-to-app integration and user workflow remain deferred.
 
 ### Phase 6K — Hardening
 

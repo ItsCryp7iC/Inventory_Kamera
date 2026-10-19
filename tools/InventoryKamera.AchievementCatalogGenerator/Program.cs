@@ -20,6 +20,11 @@ try
     Console.WriteLine(
         $"Stages: {result.StagedEntryCount} entries in {result.StageGroupCount} groups");
     Console.WriteLine(
+        $"Reward-resolvable stage groups: {result.RewardResolvableStageGroupCount}; "
+        + $"ambiguous: {result.RewardAmbiguousStageGroupNames.Count}");
+    foreach (string name in result.RewardAmbiguousStageGroupNames)
+        Console.WriteLine($"Ambiguous stage rewards: {name}");
+    Console.WriteLine(
         $"Duplicate names: {result.DuplicateNameCount} "
         + $"({result.StagedDuplicateNameCount} single-stage-group, "
         + $"{result.NonStageDuplicateNames.Count} non-stage/cross-group)");

@@ -15,7 +15,8 @@ namespace InventoryKamera
             int order,
             int? stageGroupId,
             int? stageIndex,
-            int? stageCount)
+            int? stageCount,
+            int primogems = 0)
         {
             Id = id;
             Name = name;
@@ -27,6 +28,7 @@ namespace InventoryKamera
             StageGroupId = stageGroupId;
             StageIndex = stageIndex;
             StageCount = stageCount;
+            Primogems = primogems;
         }
 
         public int Id { get; }
@@ -39,6 +41,7 @@ namespace InventoryKamera
         public int? StageGroupId { get; }
         public int? StageIndex { get; }
         public int? StageCount { get; }
+        public int Primogems { get; }
         public bool IsStaged => StageGroupId.HasValue;
     }
 }

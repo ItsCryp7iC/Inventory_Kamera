@@ -8,9 +8,10 @@ ItsCryp7iC/travelers-toolkit
 src/data/achievements/achievements.json
 ```
 
-The snapshot uses schema version 1, preserves Toolkit source order, and contains canonical ID,
-name, description, category ID, hidden status, version, order, and complete stage metadata when
-present. IDs are emitted as validated integers. The generator uses UTF-8 without a byte-order mark,
+The snapshot uses schema version 2, preserves Toolkit source order, and contains canonical ID,
+name, description, Primogem reward, category ID, hidden status, version, order, and complete stage
+metadata when present. Schema version 2 makes the nonnegative `primogems` field required, so older
+version 1 snapshots fail closed. IDs and rewards are emitted as validated integers. The generator uses UTF-8 without a byte-order mark,
 two-space indentation, LF line endings, fixed field order, and no timestamp.
 
 ## Updating the snapshot

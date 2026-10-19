@@ -592,6 +592,47 @@ namespace InventoryKamera.Tests
             AchievementSkippedTarget skipped = Assert.Single(plan.SkippedTargets);
             Assert.Equal("You There! Fly!", skipped.CanonicalTitle);
         }
+
+        [Fact]
+        public void ResolvedStagedCompletionsRoundTripThroughToolkitGoodExport()
+        {
+            AchievementCatalog catalog = new AchievementCatalogProvider().Catalog;
+            var stageProgress = new AchievementStageProgressResult(
+                AchievementStageProgressState.Resolved,
+                80490,
+                3,
+                80492,
+                new[] { 80490, 80491 },
+                rewardResult: null,
+                reason: "test resolved progress",
+                diagnostics: "stage diagnostics");
+            var scan = new AchievementSingleScanResult(
+                AchievementSingleScanState.Incomplete,
+                80490,
+                "Moonmist Treasure Hunter",
+                catalog.GetTitleGroup("Moonmist Treasure Hunter"),
+                null, null, null, null, null,
+                exitAttempted: true,
+                exitSucceeded: true,
+                finalScreenState: AchievementScreenState.Idle,
+                pendingClaim: false,
+                reason: "test scan",
+                diagnostics: "scan diagnostics",
+                stageProgressResult: stageProgress);
+            IReadOnlyList<int> trusted = AchievementTrustedCompletionExtractor.Extract(new[] { scan });
+
+            AchievementToolkitExportResult exported = AchievementToolkitGoodExportTests
+                .Exporter()
+                .ExportGood(trusted);
+            AchievementImportResult imported = AchievementToolkitGoodImportTests
+                .Importer()
+                .Import(exported.Json);
+
+            Assert.True(exported.Success, exported.FailureReason);
+            Assert.True(imported.Success, imported.FailureReason);
+            Assert.Equal(new[] { 80490, 80491 }, imported.ResumeSeed.TrustedCompletedIds);
+            Assert.DoesNotContain(80492, imported.ResumeSeed.TrustedCompletedIds);
+        }
     }
 
     public sealed class AchievementTrustedCompletionExtractorTests
@@ -653,10 +694,65 @@ namespace InventoryKamera.Tests
                 Assert.IsAssignableFrom<IList<int>>(trusted).RemoveAt(0));
         }
 
+        [Fact]
+        public void ResolvedStageProgressAddsOnlyResolverProvidedCompletedIds()
+        {
+            AchievementCatalog catalog = new AchievementCatalogProvider().Catalog;
+            AchievementStageProgressResult stageProgress = StageProgress(
+                AchievementStageProgressState.Resolved,
+                80490,
+                3,
+                80492,
+                new[] { 80490, 80491 });
+
+            IReadOnlyList<int> trusted = AchievementTrustedCompletionExtractor.Merge(
+                new[] { 80001 },
+                new[]
+                {
+                    Result(
+                        catalog,
+                        80490,
+                        AchievementSingleScanState.Incomplete,
+                        stageProgress),
+                });
+
+            Assert.Equal(new[] { 80001, 80490, 80491 }, trusted);
+            Assert.DoesNotContain(80492, trusted);
+        }
+
+        [Theory]
+        [InlineData((int)AchievementStageProgressState.PendingClaim)]
+        [InlineData((int)AchievementStageProgressState.AmbiguousReward)]
+        [InlineData((int)AchievementStageProgressState.UnresolvedReward)]
+        [InlineData((int)AchievementStageProgressState.InvalidContext)]
+        public void NonResolvedStageProgressAddsNothing(int stateValue)
+        {
+            AchievementCatalog catalog = new AchievementCatalogProvider().Catalog;
+            AchievementStageProgressResult stageProgress = StageProgress(
+                (AchievementStageProgressState)stateValue,
+                80490,
+                null,
+                null,
+                Array.Empty<int>());
+
+            IReadOnlyList<int> trusted = AchievementTrustedCompletionExtractor.Extract(
+                new[]
+                {
+                    Result(
+                        catalog,
+                        80490,
+                        AchievementSingleScanState.Incomplete,
+                        stageProgress),
+                });
+
+            Assert.Empty(trusted);
+        }
+
         private static AchievementSingleScanResult Result(
             AchievementCatalog catalog,
             int requestedId,
-            AchievementSingleScanState state)
+            AchievementSingleScanState state,
+            AchievementStageProgressResult stageProgressResult = null)
         {
             AchievementCatalogEntry entry = catalog.GetById(requestedId);
             return new AchievementSingleScanResult(
@@ -674,7 +770,24 @@ namespace InventoryKamera.Tests
                 finalScreenState: AchievementScreenState.Idle,
                 pendingClaim: state == AchievementSingleScanState.PendingClaimRequiresUserAction,
                 reason: "test",
-                diagnostics: "test diagnostics");
+                diagnostics: "test diagnostics",
+                stageProgressResult: stageProgressResult);
         }
+
+        private static AchievementStageProgressResult StageProgress(
+            AchievementStageProgressState state,
+            int stageGroupId,
+            int? currentStageIndex,
+            int? currentStageId,
+            int[] completedIds) =>
+            new(
+                state,
+                stageGroupId,
+                currentStageIndex,
+                currentStageId,
+                completedIds,
+                rewardResult: null,
+                reason: "test stage progress",
+                diagnostics: "stage diagnostics");
     }
 }

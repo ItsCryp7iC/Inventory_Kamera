@@ -42,6 +42,7 @@ namespace InventoryKamera.Tests
             Assert.True(result.ReadyForNextAchievement);
             Assert.Equal(AchievementScreenState.Idle, result.FinalScreenState);
             Assert.Equal(2, harness.Capture.CaptureCount);
+            Assert.Equal(0, harness.RewardReader.CallCount);
         }
 
         [Theory]
@@ -80,10 +81,64 @@ namespace InventoryKamera.Tests
             Assert.Equal(
                 (AchievementCompletionState)completionStateValue,
                 result.CompletionResult.State);
+            Assert.NotNull(result.StageProgressResult);
+            Assert.Equal(
+                pendingClaim
+                    ? AchievementStageProgressState.PendingClaim
+                    : AchievementStageProgressState.Resolved,
+                result.StageProgressResult.State);
+            Assert.Equal(pendingClaim ? 0 : 1, harness.RewardReader.CallCount);
+            Assert.Equal(
+                completionStateValue == (int)AchievementCompletionState.CompletedClaimed
+                    ? new[] { 80127 }
+                    : Array.Empty<int>(),
+                result.StageProgressResult.CompletedStageIds);
             Assert.DoesNotContain("starCount=", result.Diagnostics, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("inferredStageId=", result.Diagnostics, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("descriptionEvidence=", result.Diagnostics, StringComparison.OrdinalIgnoreCase);
             Assert.True(result.ReadyForNextAchievement);
+        }
+
+        [Fact]
+        public void StageRewardOcrFailureRemainsStructuredAndStillExitsSearch()
+        {
+            Harness harness = Harness.Create(
+                AchievementCompletionClassifierTests.Identity(
+                    AchievementIdentityState.StageGroupIdentified),
+                AchievementCompletionState.Incomplete);
+            harness.RewardReader.Exception = new InvalidOperationException("reward OCR boom");
+
+            AchievementSingleScanResult result = harness.Scan(StageGroupId);
+
+            Assert.Equal(AchievementSingleScanState.Incomplete, result.State);
+            Assert.Equal(AchievementStageProgressState.UnresolvedReward, result.StageProgressResult.State);
+            Assert.Empty(result.StageProgressResult.CompletedStageIds);
+            Assert.Contains("Reward OCR failed", result.StageProgressResult.Reason);
+            Assert.Equal(1, harness.RewardReader.CallCount);
+            Assert.True(result.ExitSucceeded);
+            Assert.True(result.ReadyForNextAchievement);
+        }
+
+        [Theory]
+        [InlineData((int)AchievementCompletionState.Incomplete, new int[] { 80127, 80128 })]
+        [InlineData((int)AchievementCompletionState.CompletedClaimed, new int[] { 80127, 80128, 80129 })]
+        public void StageFamilyPreservesResolvedStageThreeProgress(
+            int completionStateValue,
+            int[] expectedCompletedIds)
+        {
+            Harness harness = Harness.Create(
+                AchievementCompletionClassifierTests.Identity(
+                    AchievementIdentityState.StageGroupIdentified),
+                (AchievementCompletionState)completionStateValue);
+            harness.RewardReader.Result = Reward(20);
+
+            AchievementSingleScanResult result = harness.Scan(StageGroupId);
+
+            Assert.Equal(AchievementStageProgressState.Resolved, result.StageProgressResult.State);
+            Assert.Equal(3, result.StageProgressResult.CurrentStageIndex);
+            Assert.Equal(80129, result.StageProgressResult.CurrentStageId);
+            Assert.Equal(expectedCompletedIds, result.StageProgressResult.CompletedStageIds);
+            Assert.True(result.ExitSucceeded);
         }
 
         [Theory]
@@ -558,6 +613,20 @@ namespace InventoryKamera.Tests
                 "completion diagnostics");
         }
 
+        private static AchievementRewardResult Reward(int value)
+        {
+            var attempt = new AchievementRewardOcrAttempt(
+                AchievementRewardOcrVariant.GrayscaleContrast,
+                value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                0.95f);
+            return new AchievementRewardResult(
+                new[] { attempt },
+                attempt,
+                value,
+                "test reward",
+                "reward diagnostics");
+        }
+
         private sealed class Harness
         {
             private readonly AchievementSingleScanner scanner;
@@ -588,6 +657,7 @@ namespace InventoryKamera.Tests
                 IdentityVerifier = new RecordingIdentityVerifier(identity);
                 Classifier = new RecordingCompletionClassifier(
                     Completion(identity, completionState));
+                RewardReader = new RecordingRewardReader(Reward(5));
                 Capture = new RecordingCapture();
                 scanner = new AchievementSingleScanner(
                     new TestCatalogProvider(TestCatalog()),
@@ -595,13 +665,16 @@ namespace InventoryKamera.Tests
                     Navigator,
                     IdentityVerifier,
                     Classifier,
-                    Capture);
+                    Capture,
+                    RewardReader,
+                    new AchievementStageProgressResolver());
             }
 
             internal RecordingScreenDetector StartDetector { get; }
             internal RecordingSearchNavigator Navigator { get; }
             internal RecordingIdentityVerifier IdentityVerifier { get; }
             internal RecordingCompletionClassifier Classifier { get; }
+            internal RecordingRewardReader RewardReader { get; }
             internal RecordingCapture Capture { get; }
 
             internal static Harness Create(
@@ -621,22 +694,22 @@ namespace InventoryKamera.Tests
         {
             new AchievementCatalogEntry(
                 UniqueId, "You There! Fly!", "description", 1, false, "1.0", 1,
-                null, null, null),
+                null, null, null, 5),
             new AchievementCatalogEntry(
                 80127, "Zoo Tycoon", "stage 1", 1, false, "1.0", 2,
-                80127, 1, 3),
+                80127, 1, 3, 5),
             new AchievementCatalogEntry(
                 80128, "Zoo Tycoon", "stage 2", 1, false, "1.0", 3,
-                80127, 2, 3),
+                80127, 2, 3, 10),
             new AchievementCatalogEntry(
                 80129, "Zoo Tycoon", "stage 3", 1, false, "1.0", 4,
-                80127, 3, 3),
+                80127, 3, 3, 20),
             new AchievementCatalogEntry(
                 CollisionIdB, "Let the Wind Lead", "collision B", 1, false, "1.0", 5,
-                null, null, null),
+                null, null, null, 5),
             new AchievementCatalogEntry(
                 CollisionIdA, "Let the Wind Lead", "collision A", 1, false, "1.0", 6,
-                null, null, null),
+                null, null, null, 5),
         });
 
         private sealed class TestCatalogProvider : IAchievementCatalogProvider
@@ -731,6 +804,21 @@ namespace InventoryKamera.Tests
             }
         }
 
+        private sealed class RecordingRewardReader : IAchievementRewardReader
+        {
+            internal RecordingRewardReader(AchievementRewardResult result) => Result = result;
+            internal AchievementRewardResult Result { get; set; }
+            internal Exception Exception { get; set; }
+            internal int CallCount { get; private set; }
+
+            public AchievementRewardResult Read(Bitmap screenshot)
+            {
+                CallCount++;
+                if (Exception != null) throw Exception;
+                return Result;
+            }
+        }
+
         private sealed class RecordingCapture : IGameScreenCapture
         {
             internal int CaptureCount { get; private set; }
@@ -785,7 +873,9 @@ namespace InventoryKamera.Tests
                 navigator,
                 identityVerifier,
                 completionClassifier,
-                capture);
+                capture,
+                new AchievementRewardReader(ocr, processor),
+                new AchievementStageProgressResolver());
 
             AchievementSingleScanResult result = scanner.Scan(81665, CancellationToken.None);
 

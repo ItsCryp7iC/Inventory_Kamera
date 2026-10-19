@@ -22,6 +22,7 @@ namespace InventoryKamera.Tests
             Assert.Equal(444, catalog.All.Count(entry => entry.IsStaged));
             Assert.Equal(148, catalog.All.Where(entry => entry.StageGroupId.HasValue)
                 .Select(entry => entry.StageGroupId.Value).Distinct().Count());
+            Assert.All(catalog.All, entry => Assert.True(entry.Primogems >= 0));
         }
 
         [Fact]
@@ -85,6 +86,7 @@ namespace InventoryKamera.Tests
             Assert.NotNull(entry);
             Assert.Equal("Zoo Tycoon", entry.Name);
             Assert.Equal("Use the Omni-Ubiquity Net item to capture 1 wild animal.", entry.Description);
+            Assert.Equal(5, entry.Primogems);
             Assert.Null(catalog.GetById(999999));
         }
 
@@ -223,6 +225,69 @@ namespace InventoryKamera.Tests
             Assert.Equal(148, result.DuplicateNameCount);
             Assert.Equal(147, result.StagedDuplicateNameCount);
             Assert.Equal(new[] { "Let the Wind Lead" }, result.NonStageDuplicateNames);
+            Assert.Equal(147, result.RewardResolvableStageGroupCount);
+            Assert.Equal(new[] { "The Final Fonta Sea" }, result.RewardAmbiguousStageGroupNames);
+        }
+
+        [Fact]
+        public void StageRewardsPreserveResolvableAndAmbiguousFamilies()
+        {
+            AchievementCatalog catalog = LoadPackaged();
+
+            AchievementTitleGroup moonmist = catalog.GetTitleGroup("Moonmist Treasure Hunter");
+            Assert.Equal(new[] { 80490, 80491, 80492 }, moonmist.CandidateIds);
+            Assert.Equal(new[] { 5, 10, 20 }, moonmist.Entries.Select(entry => entry.Primogems));
+
+            AchievementTitleGroup fonta = catalog.GetTitleGroup("The Final Fonta Sea");
+            Assert.Equal(new[] { 81399, 81403, 81404 }, fonta.CandidateIds);
+            Assert.Equal(new[] { 5, 5, 5 }, fonta.Entries.Select(entry => entry.Primogems));
+        }
+
+        [Fact]
+        public void CurrentStageGroupRewardMappingsHaveExpectedBreakdown()
+        {
+            AchievementCatalog catalog = LoadPackaged();
+            var stageGroups = catalog.All
+                .Where(entry => entry.StageGroupId.HasValue)
+                .GroupBy(entry => entry.StageGroupId.Value)
+                .ToArray();
+            var ambiguous = stageGroups
+                .Where(group => group.Select(entry => entry.Primogems).Distinct().Count() != group.Count())
+                .ToArray();
+
+            Assert.Equal(148, stageGroups.Length);
+            Assert.Equal(147, stageGroups.Length - ambiguous.Length);
+            Assert.Equal("The Final Fonta Sea", Assert.Single(ambiguous).First().Name);
+        }
+
+        [Fact]
+        public void MissingOrNegativePrimogemRewardIsRejected()
+        {
+            string missing = Entry(1, "One").Replace("\"primogems\":5,", string.Empty);
+            AchievementCatalogException missingError = Assert.Throws<AchievementCatalogException>(() =>
+                LoadJson(Snapshot(missing)));
+            Assert.Contains("primogems", missingError.Message, StringComparison.OrdinalIgnoreCase);
+
+            string negative = Entry(1, "One").Replace("\"primogems\":5", "\"primogems\":-1");
+            AchievementCatalogException negativeError = Assert.Throws<AchievementCatalogException>(() =>
+                LoadJson(Snapshot(negative)));
+            Assert.Contains("primogems", negativeError.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void GeneratorRejectsMissingOrNegativePrimogemReward()
+        {
+            string source = SourceEntry("1", "One");
+            string missing = source.Replace("\"primogems\":5,", string.Empty);
+            string negative = source.Replace("\"primogems\":5", "\"primogems\":-1");
+
+            AchievementCatalogException missingError = Assert.Throws<AchievementCatalogException>(() =>
+                AchievementCatalogGenerator.Generate($"[{missing}]", out _));
+            AchievementCatalogException negativeError = Assert.Throws<AchievementCatalogException>(() =>
+                AchievementCatalogGenerator.Generate($"[{negative}]", out _));
+
+            Assert.Contains("primogems", missingError.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("primogems", negativeError.Message, StringComparison.OrdinalIgnoreCase);
         }
 
         [Fact]
@@ -323,8 +388,8 @@ namespace InventoryKamera.Tests
         }
 
         [Theory]
-        [InlineData("{\"schemaVersion\":1}")]
-        [InlineData("{\"schemaVersion\":1,\"achievements\":null}")]
+        [InlineData("{\"schemaVersion\":2}")]
+        [InlineData("{\"schemaVersion\":2,\"achievements\":null}")]
         public void MissingAchievementsArrayIsRejected(string json)
         {
             AchievementCatalogException error = Assert.Throws<AchievementCatalogException>(() =>
@@ -337,7 +402,7 @@ namespace InventoryKamera.Tests
         public void UnsupportedSchemaIsRejected()
         {
             AchievementCatalogException error = Assert.Throws<AchievementCatalogException>(() =>
-                LoadJson("{\"schemaVersion\":2,\"achievements\":[]}"));
+                LoadJson("{\"schemaVersion\":1,\"achievements\":[]}"));
 
             Assert.Contains("Unsupported", error.Message);
         }
@@ -375,7 +440,7 @@ namespace InventoryKamera.Tests
         }
 
         private static string Snapshot(params string[] entries) =>
-            $"{{\"schemaVersion\":1,\"achievements\":[{string.Join(",", entries)}]}}";
+            $"{{\"schemaVersion\":2,\"achievements\":[{string.Join(",", entries)}]}}";
 
         private static string Entry(
             int id,
@@ -388,12 +453,12 @@ namespace InventoryKamera.Tests
                 ? $",\"stageGroupId\":{stageGroupId},\"stageIndex\":{stageIndex},\"stageCount\":{stageCount}"
                 : string.Empty;
             return $"{{\"id\":{id},\"name\":{Newtonsoft.Json.JsonConvert.SerializeObject(name)},\"description\":\"Description\","
-                + $"\"categoryId\":0,\"hidden\":false,\"version\":\"1.0\",\"order\":1{stages}}}";
+                + $"\"primogems\":5,\"categoryId\":0,\"hidden\":false,\"version\":\"1.0\",\"order\":1{stages}}}";
         }
 
         private static string SourceEntry(string id, string name) =>
             $"{{\"id\":{Newtonsoft.Json.JsonConvert.SerializeObject(id)},\"categoryId\":\"0\",\"name\":{Newtonsoft.Json.JsonConvert.SerializeObject(name)},"
-            + "\"description\":\"Description\",\"hidden\":false,\"version\":\"1.0\",\"order\":1}";
+            + "\"description\":\"Description\",\"primogems\":5,\"hidden\":false,\"version\":\"1.0\",\"order\":1}";
 
         private static string FindToolkitSourceOrReconstructFromSnapshot()
         {
@@ -425,6 +490,7 @@ namespace InventoryKamera.Tests
                     ["categoryId"] = entry.CategoryId.ToString(System.Globalization.CultureInfo.InvariantCulture),
                     ["name"] = entry.Name,
                     ["description"] = entry.Description,
+                    ["primogems"] = entry.Primogems,
                     ["hidden"] = entry.Hidden,
                     ["version"] = entry.Version,
                     ["order"] = entry.Order,
