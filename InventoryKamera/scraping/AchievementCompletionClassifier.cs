@@ -10,6 +10,13 @@ using System.Text.RegularExpressions;
 
 namespace InventoryKamera
 {
+    internal interface IAchievementCompletionClassifier
+    {
+        AchievementCompletionResult Classify(
+            AchievementIdentityResult identity,
+            Bitmap screenshot);
+    }
+
     internal enum AchievementCompletionState
     {
         CompletedUnclaimed,
@@ -80,7 +87,7 @@ namespace InventoryKamera
     /// SearchActive screen evidence, then classifies only explicit row-level semantic evidence.
     /// It never infers completion from absence and never selects a staged canonical ID.
     /// </summary>
-    internal sealed class AchievementCompletionClassifier
+    internal sealed class AchievementCompletionClassifier : IAchievementCompletionClassifier
     {
         // This is the established semantic OCR floor used by the Phase 6A screen detector and
         // Phase 6D title verifier. Exact whole-token/fraction parsing remains mandatory above it.
@@ -98,7 +105,7 @@ namespace InventoryKamera
             this.completionReader = completionReader ?? throw new ArgumentNullException(nameof(completionReader));
         }
 
-        internal AchievementCompletionResult Classify(
+        public AchievementCompletionResult Classify(
             AchievementIdentityResult identity,
             Bitmap screenshot)
         {

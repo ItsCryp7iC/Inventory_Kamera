@@ -7,6 +7,12 @@ using System.Threading;
 
 namespace InventoryKamera.game
 {
+    internal interface IAchievementSearchNavigator
+    {
+        AchievementSearchNavigationResult Search(string query, CancellationToken cancellationToken);
+        AchievementSearchNavigationResult ExitSearch(CancellationToken cancellationToken);
+    }
+
     internal sealed class AchievementSearchNavigationTiming
     {
         internal static AchievementSearchNavigationTiming Default { get; } = new(
@@ -114,7 +120,7 @@ namespace InventoryKamera.game
     /// zero-results layout remains Unknown, so it produces a bounded unverified-result failure;
     /// a future detector can enable that layout without changing this navigator.
     /// </summary>
-    internal sealed class AchievementSearchNavigator
+    internal sealed class AchievementSearchNavigator : IAchievementSearchNavigator
     {
         private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
 
@@ -147,7 +153,7 @@ namespace InventoryKamera.game
             this.wait = wait ?? WaitWithCancellation;
         }
 
-        internal AchievementSearchNavigationResult Search(
+        public AchievementSearchNavigationResult Search(
             string query,
             CancellationToken cancellationToken)
         {
@@ -300,7 +306,7 @@ namespace InventoryKamera.game
             }
         }
 
-        internal AchievementSearchNavigationResult ExitSearch(CancellationToken cancellationToken)
+        public AchievementSearchNavigationResult ExitSearch(CancellationToken cancellationToken)
         {
             const string operation = "exit";
             var trace = new List<string>();

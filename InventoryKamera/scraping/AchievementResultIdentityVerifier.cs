@@ -11,6 +11,14 @@ using System.Text.RegularExpressions;
 
 namespace InventoryKamera
 {
+    internal interface IAchievementResultIdentityVerifier
+    {
+        AchievementIdentityResult Verify(
+            AchievementSearchNavigationResult searchResult,
+            int expectedId,
+            Bitmap screenshot);
+    }
+
     internal enum AchievementIdentityState
     {
         Identified,
@@ -182,7 +190,7 @@ namespace InventoryKamera
     /// screen evidence, then proves the visible title against the supplied canonical ID. It never
     /// interprets completion state or chooses the first catalog/result candidate.
     /// </summary>
-    internal sealed class AchievementResultIdentityVerifier
+    internal sealed class AchievementResultIdentityVerifier : IAchievementResultIdentityVerifier
     {
         private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
         private readonly AchievementCatalog catalog;
@@ -201,7 +209,7 @@ namespace InventoryKamera
             this.titleReader = titleReader ?? throw new ArgumentNullException(nameof(titleReader));
         }
 
-        internal AchievementIdentityResult Verify(
+        public AchievementIdentityResult Verify(
             AchievementSearchNavigationResult searchResult,
             int expectedId,
             Bitmap screenshot)

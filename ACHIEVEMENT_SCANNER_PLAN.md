@@ -709,6 +709,10 @@ Flow:
 - clear search;
 - return result.
 
+For a staged title-family with visible `Claim`, Phase 6F reports the formal orchestration state
+`PendingClaimRequiresUserAction`. This preserves the verified family and Claim evidence without
+selecting an individual stage; pause/Resume/Skip UI remains deferred to the later full-scan flow.
+
 Exit criteria:
 
 - multiple live completed/incomplete examples pass;
