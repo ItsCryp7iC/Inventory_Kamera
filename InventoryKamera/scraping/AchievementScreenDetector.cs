@@ -142,7 +142,8 @@ namespace InventoryKamera
             AchievementPageCounterParseResult resultPage,
             AchievementScreenRegions regions,
             string reason,
-            AchievementTextEvidence noResultsEvidence = null)
+            AchievementTextEvidence noResultsEvidence = null,
+            AchievementResultRowEvidence resultRowEvidence = null)
         {
             ScreenState = screenState;
             AchievementHeading = achievementHeading ?? throw new ArgumentNullException(nameof(achievementHeading));
@@ -156,6 +157,8 @@ namespace InventoryKamera
                 string.Empty,
                 accepted: false,
                 reason: "The explicit no-results phrase was not read for this state.");
+            ResultRowEvidence = resultRowEvidence ??
+                AchievementResultRowEvidence.ForTest(AchievementResultRowPresence.Unknown);
             Regions = regions ?? throw new ArgumentNullException(nameof(regions));
             Reason = reason ?? string.Empty;
             Diagnostics = BuildDiagnostics();
@@ -170,6 +173,7 @@ namespace InventoryKamera
         internal AchievementTextEvidence ResultPageEvidence { get; }
         internal AchievementPageCounterParseResult ResultPage { get; }
         internal AchievementTextEvidence NoResultsEvidence { get; }
+        internal AchievementResultRowEvidence ResultRowEvidence { get; }
         internal AchievementScreenRegions Regions { get; }
         internal string Reason { get; }
         internal string Diagnostics { get; }
@@ -223,6 +227,7 @@ namespace InventoryKamera
             builder.AppendLine($"  accepted={ResultPage.Accepted}");
             builder.AppendLine($"  reason={Bound(ResultPage.Reason)}");
             AppendText(builder, "noResultsMessage", NoResultsEvidence);
+            builder.AppendLine($"resultRow: {ResultRowEvidence.Diagnostics}");
             builder.AppendLine($"finalState={ScreenState}");
             builder.Append($"reason={Bound(Reason)}");
             return builder.ToString();
@@ -312,17 +317,25 @@ namespace InventoryKamera
                 string.Empty,
                 accepted: false,
                 reason: "No-results OCR was not needed for this screen state.");
+            AchievementResultRowEvidence resultRow =
+                AchievementResultRowEvidence.ForTest(AchievementResultRowPresence.Unknown);
             int achievementSignals =
                 (heading.Accepted ? 1 : 0) +
                 (search.Accepted ? 1 : 0) +
                 (completed.Accepted ? 1 : 0);
             if (achievementSignals >= 2 && search.ActiveControlsAccepted && !match.Accepted)
             {
-                noResults = ReadSemanticRegion(
+                resultRow = AchievementFirstResultRowDetector.Detect(
                     screenshot,
-                    regions.NoResultsMessage,
-                    PageSegMode.SingleLine,
-                    EvaluateNoResultsMessage);
+                    regions.FirstResultTitle);
+                if (!resultRow.Present)
+                {
+                    noResults = ReadSemanticRegion(
+                        screenshot,
+                        regions.NoResultsMessage,
+                        PageSegMode.SingleLine,
+                        EvaluateNoResultsMessage);
+                }
             }
 
             AchievementScreenDetection detection = Classify(
@@ -335,7 +348,8 @@ namespace InventoryKamera
                 regions,
                 matchText,
                 pageText,
-                noResults);
+                noResults,
+                resultRow);
             Logger.Debug(detection.Diagnostics);
             return detection;
         }
@@ -350,7 +364,8 @@ namespace InventoryKamera
             AchievementScreenRegions regions = null,
             AchievementTextEvidence matchCountEvidence = null,
             AchievementTextEvidence pageCounterEvidence = null,
-            AchievementTextEvidence noResultsEvidence = null)
+            AchievementTextEvidence noResultsEvidence = null,
+            AchievementResultRowEvidence resultRowEvidence = null)
         {
             if (heading == null) throw new ArgumentNullException(nameof(heading));
             if (search == null) throw new ArgumentNullException(nameof(search));
@@ -373,6 +388,8 @@ namespace InventoryKamera
                 string.Empty,
                 accepted: false,
                 reason: "No explicit no-results phrase was supplied.");
+            resultRowEvidence ??=
+                AchievementResultRowEvidence.ForTest(AchievementResultRowPresence.Unknown);
             int achievementSignals =
                 (heading.Accepted ? 1 : 0) +
                 (search.Accepted ? 1 : 0) +
@@ -384,7 +401,8 @@ namespace InventoryKamera
             bool contradictoryPositiveMatch =
                 matchCount.Accepted && matchCount.Value.GetValueOrDefault() > 0;
             bool strongNoResults = search.ActiveControlsAccepted &&
-                noResultsEvidence.Accepted &&
+                (resultRowEvidence.AbsenceAccepted ||
+                 (noResultsEvidence.Accepted && !resultRowEvidence.Present)) &&
                 !contradictoryPositiveMatch;
 
             AchievementScreenState state;
@@ -397,7 +415,9 @@ namespace InventoryKamera
             else if (strongAchievementScreen && strongNoResults)
             {
                 state = AchievementScreenState.SearchNoResults;
-                reason = "Achievement screen, populated search controls, and the explicit no-results phrase were positively recognized.";
+                reason = resultRowEvidence.AbsenceAccepted
+                    ? "Achievement screen and populated search controls were recognized, with no first-result row structure present."
+                    : "Achievement screen, populated search controls, and the explicit no-results phrase were positively recognized.";
             }
             else if (strongAchievementScreen && strongActive)
             {
@@ -436,7 +456,8 @@ namespace InventoryKamera
                 pageCounter,
                 regions,
                 reason,
-                noResultsEvidence);
+                noResultsEvidence,
+                resultRowEvidence);
         }
 
         private AchievementTextEvidence ReadSemanticRegion(

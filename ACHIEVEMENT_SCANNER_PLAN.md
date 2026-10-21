@@ -958,12 +958,18 @@ positive. Completion recovery reruns completion only. Logs record `identityRecov
 `completionRecoveryUsed`, `extraCaptureCount`, `recoveryDelayMs`, and the recovery result; aggregate
 timing reports separate healthy fast-path and recovered-target buckets.
 
-An explicit keyboard/mouse no-results screen is a separate positive state, not a blank-panel
-inference. When normal Match(es) evidence is absent, the detector lazily OCRs a bounded central
-message band and requires the semantic phrase `No achievements related to`, active populated-search
-controls, and multiple Achievement-page signals, with no contradictory positive match count. The
-navigator accepts that state as a successful submission only when the exact normalized canonical
-query is also visible in the search field or quoted no-results message.
+An explicit keyboard/mouse no-results screen is a separate positive structural state, not a generic
+blank-panel inference. When normal Match(es) evidence is absent, the detector requires multiple
+Achievement-page signals, active Clear/search controls, and a structurally absent first result row,
+with no contradictory positive match count. The first-row check uses the highlighted exact-query
+title structure and does not invoke title OCR. OCR of the bounded central `No achievements related
+to` message remains optional supporting diagnostics and may establish no-results when row presence
+is otherwise unknown, but failed sentence OCR does not reject a structurally blank result.
+
+The keyboard/mouse navigator retains the exact text it submitted. No-results classification requires
+that retained submitted query to equal the target's canonical title; it does not require OCR to read
+the entire query back from the search field. Visual active-search proof is still mandatory, and a
+positively present first result row always returns to the ordinary identity/completion path.
 
 For a unique hidden canonical title, positively verified exact-title no-results evidence means the
 achievement is Incomplete and contributes no trusted completed ID. The same conclusion is safe for

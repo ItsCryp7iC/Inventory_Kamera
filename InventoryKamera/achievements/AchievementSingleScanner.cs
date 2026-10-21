@@ -298,8 +298,24 @@ namespace InventoryKamera
             {
                 context.SearchResult.ResultScreenshot?.Dispose();
                 context.ExplicitNoResultsHandled = true;
-                AchievementSingleScanState zeroResultState =
-                    ClassifyExplicitNoResults(context, target, out string zeroResultReason);
+                bool exactSubmittedQuery = string.Equals(
+                    context.SearchResult.SubmittedQuery,
+                    target.Name,
+                    StringComparison.Ordinal);
+                AchievementSingleScanState zeroResultState;
+                string zeroResultReason;
+                if (exactSubmittedQuery)
+                {
+                    zeroResultState =
+                        ClassifyExplicitNoResults(context, target, out zeroResultReason);
+                }
+                else
+                {
+                    context.ZeroResultDecision = "submitted-query-mismatch-unresolved";
+                    zeroResultState = AchievementSingleScanState.Unresolved;
+                    zeroResultReason =
+                        "The structural blank-result screen did not retain the exact canonical query in navigation state.";
+                }
                 return FinishWithExit(
                     context,
                     zeroResultState,
@@ -641,7 +657,7 @@ namespace InventoryKamera
             AchievementTitleGroup group = context.TitleGroup;
             if (group?.Kind == AchievementTitleGroupKind.Unique && target.Hidden)
             {
-                context.ZeroResultDecision = "hidden-unique-incomplete";
+                context.ZeroResultDecision = "hidden-incomplete";
                 reason =
                     "The hidden unique achievement is absent from a positively verified exact-title no-results search.";
                 return AchievementSingleScanState.Incomplete;
@@ -825,6 +841,11 @@ namespace InventoryKamera
             builder.AppendLine($"startState={Format(context.StartDetection?.ScreenState)}");
             builder.AppendLine($"startStateReused={context.StartStateReused}");
             builder.AppendLine($"searchSucceeded={context.SearchResult?.Succeeded == true}");
+            builder.AppendLine($"submittedQuery={context.SearchResult?.SubmittedQuery ?? string.Empty}");
+            builder.AppendLine($"searchActive={context.SearchResult?.AfterDetection?.SearchField.ActiveControlsAccepted == true}");
+            builder.AppendLine($"resultRowPresent={context.SearchResult?.AfterDetection?.ResultRowEvidence.Present == true}");
+            builder.AppendLine($"noResultsPhraseDetected={context.SearchResult?.AfterDetection?.NoResultsEvidence.Accepted == true}");
+            builder.AppendLine($"structuralZeroResult={context.SearchResult?.AfterDetection?.ResultRowEvidence.AbsenceAccepted == true}");
             builder.AppendLine($"searchNoResults={context.SearchResult?.AfterDetection?.ScreenState == AchievementScreenState.SearchNoResults}");
             builder.AppendLine($"targetHidden={context.TargetHidden}");
             builder.AppendLine($"zeroResultHandled={context.ExplicitNoResultsHandled}");

@@ -16,20 +16,25 @@ namespace InventoryKamera.Tests
         private const int CollisionIdA = 80032;
         private const int CollisionIdB = 84004;
         private const int NoAirForceId = 81581;
+        private const int TalesOfMonstrousMadnessId = 80091;
         private const int HiddenStageGroupId = 90001;
 
-        [Fact]
-        public void NoAirForce_ExplicitNoResultsIsIncompleteClearsAndTrustsNoId()
+        [Theory]
+        [InlineData(NoAirForceId, "No Air Force")]
+        [InlineData(TalesOfMonstrousMadnessId, "Tales of Monstrous Madness")]
+        public void HiddenUnique_StructuralNoResultsWithoutPhraseIsIncompleteAndSafe(
+            int id,
+            string title)
         {
             Harness harness = Harness.Create();
             harness.Navigator.SearchResult = NoResultsNavigationResult(
-                "No Air Force",
+                title,
                 new Bitmap(8, 8));
 
-            AchievementSingleScanResult result = harness.Scan(NoAirForceId);
+            AchievementSingleScanResult result = harness.Scan(id);
 
             Assert.Equal(AchievementSingleScanState.Incomplete, result.State);
-            Assert.Equal("No Air Force", result.CanonicalTitle);
+            Assert.Equal(title, result.CanonicalTitle);
             Assert.True(result.ReadyForNextAchievement);
             Assert.True(result.ExitSucceeded);
             Assert.Equal(AchievementScreenState.Idle, result.FinalScreenState);
@@ -39,7 +44,47 @@ namespace InventoryKamera.Tests
             Assert.Equal(0, harness.Classifier.CallCount);
             Assert.Equal(0, harness.RewardReader.CallCount);
             Assert.Empty(AchievementTrustedCompletionExtractor.Extract(new[] { result }));
-            Assert.Contains("zeroResultDecision=hidden-unique-incomplete", result.Diagnostics);
+            Assert.Contains("noResultsPhraseDetected=False", result.Diagnostics);
+            Assert.Contains("structuralZeroResult=True", result.Diagnostics);
+            Assert.Contains("zeroResultDecision=hidden-incomplete", result.Diagnostics);
+        }
+
+        [Fact]
+        public void HiddenTargetWithVisibleResultRowUsesNormalIdentityAndCompletionPath()
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NavigationResult(
+                "search",
+                succeeded: true,
+                cancelled: false,
+                AchievementScreenState.Idle,
+                AchievementScreenState.SearchActive,
+                null,
+                resultScreenshot: new Bitmap(8, 8));
+
+            AchievementSingleScanResult result = harness.Scan(NoAirForceId);
+
+            Assert.Equal(AchievementSingleScanState.Completed, result.State);
+            Assert.Equal(1, harness.IdentityVerifier.CallCount);
+            Assert.Equal(1, harness.Classifier.CallCount);
+            Assert.DoesNotContain("zeroResultDecision=hidden-incomplete", result.Diagnostics);
+        }
+
+        [Fact]
+        public void StructuralNoResultsWithDifferentSubmittedQueryRemainsUnresolved()
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NoResultsNavigationResult(
+                "Different Canonical Query",
+                new Bitmap(8, 8));
+
+            AchievementSingleScanResult result = harness.Scan(NoAirForceId);
+
+            Assert.Equal(AchievementSingleScanState.Unresolved, result.State);
+            Assert.True(result.ReadyForNextAchievement);
+            Assert.Contains("zeroResultDecision=submitted-query-mismatch-unresolved", result.Diagnostics);
+            Assert.Equal(0, harness.IdentityVerifier.CallCount);
+            Assert.Equal(0, harness.Classifier.CallCount);
         }
 
         [Fact]
@@ -874,7 +919,8 @@ namespace InventoryKamera.Tests
                 NoResultsDetection(query),
                 1,
                 "explicit no-results navigation",
-                resultScreenshot);
+                resultScreenshot,
+                submittedQuery: query);
 
         private static AchievementScreenDetection NoResultsDetection(string query) =>
             AchievementScreenDetector.Classify(
@@ -887,8 +933,10 @@ namespace InventoryKamera.Tests
                 AchievementMatchCountParser.Parse(string.Empty),
                 AchievementPageCounterParser.Parse(string.Empty),
                 noResultsEvidence: AchievementTextEvidence.ForTest(
-                    $"No achievements related to \"{query}\"",
-                    true));
+                    string.Empty,
+                    false),
+                resultRowEvidence: AchievementResultRowEvidence.ForTest(
+                    AchievementResultRowPresence.Absent));
 
         private static AchievementCompletionResult Completion(
             AchievementIdentityResult identity,
@@ -1031,10 +1079,13 @@ namespace InventoryKamera.Tests
                 NoAirForceId, "No Air Force", "Catch and defeat the Capybara King.", 0, true, "5.8", 7,
                 null, null, null, 5),
             new AchievementCatalogEntry(
-                HiddenStageGroupId, "Hidden Stage Family", "stage 1", 1, true, "1.0", 8,
+                TalesOfMonstrousMadnessId, "Tales of Monstrous Madness", "Collect the entire Toki Alley Tales series.", 0, true, "2.0", 8,
+                null, null, null, 5),
+            new AchievementCatalogEntry(
+                HiddenStageGroupId, "Hidden Stage Family", "stage 1", 1, true, "1.0", 9,
                 HiddenStageGroupId, 1, 2, 5),
             new AchievementCatalogEntry(
-                HiddenStageGroupId + 1, "Hidden Stage Family", "stage 2", 1, true, "1.0", 9,
+                HiddenStageGroupId + 1, "Hidden Stage Family", "stage 2", 1, true, "1.0", 10,
                 HiddenStageGroupId, 2, 2, 10),
         });
 

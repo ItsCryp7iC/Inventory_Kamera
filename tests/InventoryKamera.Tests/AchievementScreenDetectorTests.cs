@@ -230,6 +230,39 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void StructuralBlankResultDoesNotRequireNoResultsPhraseOcr()
+        {
+            AchievementScreenDetection result = Classify(
+                heading: true,
+                completed: true,
+                search: AchievementSearchFieldEvidence.ForTest(
+                    activeControlsAccepted: true,
+                    rawText: "Tales of Monstrous Madness Clear"),
+                noResultsText: string.Empty,
+                rowPresence: AchievementResultRowPresence.Absent);
+
+            Assert.Equal(AchievementScreenState.SearchNoResults, result.ScreenState);
+            Assert.True(result.ResultRowEvidence.AbsenceAccepted);
+            Assert.False(result.NoResultsEvidence.Accepted);
+        }
+
+        [Fact]
+        public void VisibleResultRowRejectsNoResultsEvenWhenPhraseOcrIsAccidentallyPositive()
+        {
+            AchievementScreenDetection result = Classify(
+                heading: true,
+                completed: true,
+                search: AchievementSearchFieldEvidence.ForTest(
+                    activeControlsAccepted: true,
+                    rawText: "No Air Force Clear"),
+                noResultsText: "No achievements related to",
+                rowPresence: AchievementResultRowPresence.Present);
+
+            Assert.Equal(AchievementScreenState.Unknown, result.ScreenState);
+            Assert.True(result.ResultRowEvidence.Present);
+        }
+
+        [Fact]
         public void PositiveMatchCountWinsOverAccidentalNoResultsPhrase()
         {
             AchievementScreenDetection result = Classify(
@@ -416,6 +449,70 @@ namespace InventoryKamera.Tests
             Assert.Single(result.NoResultsEvidence.Attempts);
         }
 
+        [Fact]
+        public void ScreenshotPipeline_StructuralBlankSurvivesGarbagePhraseOcr()
+        {
+            using var screenshot = new Bitmap(1920, 1080);
+            using (Graphics graphics = Graphics.FromImage(screenshot))
+                graphics.Clear(Color.FromArgb(241, 238, 231));
+            var detector = new AchievementScreenDetector(
+                new SequenceOcrService(
+                    "Achievements",
+                    "Tales of Monstrous Madness Clear",
+                    "Achievements completed: 17",
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    "DT",
+                    "DT"),
+                new ImageProcessor());
+
+            AchievementScreenDetection result = detector.Detect(screenshot);
+
+            Assert.Equal(AchievementScreenState.SearchNoResults, result.ScreenState);
+            Assert.True(result.ResultRowEvidence.AbsenceAccepted, result.Diagnostics);
+            Assert.False(result.NoResultsEvidence.Accepted, result.Diagnostics);
+            Assert.Equal(2, result.NoResultsEvidence.Attempts.Count);
+        }
+
+        [Theory]
+        [InlineData("achievement_result_title_you_there_01.png")]
+        [InlineData("achievement_result_title_moonmist_01.png")]
+        [InlineData("achievement_result_title_pur_01.png")]
+        public void FirstResultRowDetector_RecognizesRealHighlightedTitleFixtures(string fixtureName)
+        {
+            using var screenshot = new Bitmap(FixtureSourceSize.Width, FixtureSourceSize.Height);
+            using (Graphics graphics = Graphics.FromImage(screenshot))
+            {
+                graphics.Clear(Color.FromArgb(241, 238, 231));
+                DrawFixture(
+                    graphics,
+                    fixtureName,
+                    AchievementScreenRegions.For(FixtureSourceSize).FirstResultTitle);
+            }
+
+            AchievementResultRowEvidence result = AchievementFirstResultRowDetector.Detect(
+                screenshot,
+                AchievementScreenRegions.For(FixtureSourceSize).FirstResultTitle);
+
+            Assert.Equal(AchievementResultRowPresence.Present, result.Presence);
+        }
+
+        [Fact]
+        public void FirstResultRowDetector_AcceptsClearlyBlankTitleBandAsAbsent()
+        {
+            using var screenshot = new Bitmap(FixtureSourceSize.Width, FixtureSourceSize.Height);
+            using (Graphics graphics = Graphics.FromImage(screenshot))
+                graphics.Clear(Color.FromArgb(241, 238, 231));
+
+            AchievementResultRowEvidence result = AchievementFirstResultRowDetector.Detect(
+                screenshot,
+                AchievementScreenRegions.For(FixtureSourceSize).FirstResultTitle);
+
+            Assert.Equal(AchievementResultRowPresence.Absent, result.Presence);
+        }
+
         [Theory]
         [InlineData(1920, 1080)]
         [InlineData(1280, 720)]
@@ -558,7 +655,8 @@ namespace InventoryKamera.Tests
             AchievementSearchFieldEvidence search = null,
             string matchText = "",
             string pageText = "",
-            string noResultsText = "") =>
+            string noResultsText = "",
+            AchievementResultRowPresence rowPresence = AchievementResultRowPresence.Unknown) =>
             AchievementScreenDetector.Classify(
                 FullHd,
                 AchievementTextEvidence.ForTest("Achievements", heading),
@@ -568,7 +666,8 @@ namespace InventoryKamera.Tests
                 AchievementPageCounterParser.Parse(pageText),
                 noResultsEvidence: AchievementTextEvidence.ForTest(
                     noResultsText,
-                    !string.IsNullOrWhiteSpace(noResultsText)));
+                    !string.IsNullOrWhiteSpace(noResultsText)),
+                resultRowEvidence: AchievementResultRowEvidence.ForTest(rowPresence));
 
         private static void AssertNormalized(
             Rectangle actual,

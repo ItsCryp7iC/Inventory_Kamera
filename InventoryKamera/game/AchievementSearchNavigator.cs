@@ -130,7 +130,8 @@ namespace InventoryKamera.game
             int attempts,
             string diagnostics,
             Bitmap resultScreenshot = null,
-            AchievementTargetTiming timing = null)
+            AchievementTargetTiming timing = null,
+            string submittedQuery = null)
         {
             Operation = operation ?? string.Empty;
             Succeeded = succeeded;
@@ -145,6 +146,7 @@ namespace InventoryKamera.game
             Diagnostics = diagnostics ?? string.Empty;
             ResultScreenshot = resultScreenshot;
             Timing = timing ?? new AchievementTargetTiming();
+            SubmittedQuery = submittedQuery ?? string.Empty;
         }
 
         internal string Operation { get; }
@@ -160,6 +162,7 @@ namespace InventoryKamera.game
         internal string Diagnostics { get; }
         internal Bitmap ResultScreenshot { get; }
         internal AchievementTargetTiming Timing { get; }
+        internal string SubmittedQuery { get; }
 
         public void Dispose() => ResultScreenshot?.Dispose();
     }
@@ -237,7 +240,7 @@ namespace InventoryKamera.game
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!TryEnsureForeground(cancellationToken, out string failure))
-                    return Finish("search", false, false, failure, null, 0, trace, null, targetTiming);
+                    return Finish("search", false, false, failure, null, 0, trace, null, targetTiming, query);
                 EnsurePointerAtTogglePoint(cancellationToken, trace);
 
                 for (int attempt = 1; attempt <= timing.SearchAttempts; attempt++)
@@ -275,18 +278,21 @@ namespace InventoryKamera.game
                     cancellationToken.ThrowIfCancellationRequested();
                     targetTiming.ScreenDetectionMilliseconds += Measure(() =>
                         resultDetection = screenDetector.Detect(resultScreenshot));
-                    bool verifiedNoResults = HasVerifiedNoResultsForQuery(resultDetection, query);
+                    bool verifiedNoResults = HasVerifiedNoResultsForSubmittedQuery(resultDetection, query);
                     trace.Add(
                         $"searchAttempt={attempt}; result={resultDetection?.ScreenState}; " +
                         $"match={resultDetection?.MatchCountValue?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}; " +
-                        $"noResultsForQuery={verifiedNoResults}");
+                        $"resultRowPresent={resultDetection?.ResultRowEvidence?.Present == true}; " +
+                        $"structuralZeroResult={resultDetection?.ResultRowEvidence?.AbsenceAccepted == true}; " +
+                        $"noResultsPhraseDetected={resultDetection?.NoResultsEvidence?.Accepted == true}; " +
+                        $"noResultsForSubmittedQuery={verifiedNoResults}");
 
                     bool accepted = resultDetection?.ScreenState == AchievementScreenState.SearchActive ||
                         HasCorroboratedSingleResultMarkers(resultDetection) ||
                         verifiedNoResults;
                     if (accepted)
                         return Finish("search", true, false, null, resultDetection, attempt, trace,
-                            resultScreenshot, targetTiming);
+                            resultScreenshot, targetTiming, query);
 
                     resultScreenshot.Dispose();
                     resultScreenshot = null;
@@ -294,20 +300,20 @@ namespace InventoryKamera.game
 
                 string reason = $"Submitted Achievement result was not safely recognized after {timing.SearchAttempts} bounded attempts; observed {resultDetection?.ScreenState.ToString() ?? "no state"}.";
                 return Finish("search", false, false, reason, resultDetection,
-                    timing.SearchAttempts, trace, null, targetTiming);
+                    timing.SearchAttempts, trace, null, targetTiming, query);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 resultScreenshot?.Dispose();
                 return Finish("search", false, true, "Achievement search navigation was cancelled.",
-                    resultDetection, resultDetection == null ? 0 : 1, trace, null, targetTiming);
+                    resultDetection, resultDetection == null ? 0 : 1, trace, null, targetTiming, query);
             }
             catch (Exception ex)
             {
                 resultScreenshot?.Dispose();
                 return Finish("search", false, false,
                     $"Achievement search navigation failed: {ex.GetType().Name}: {ex.Message}",
-                    resultDetection, resultDetection == null ? 0 : 1, trace, null, targetTiming);
+                    resultDetection, resultDetection == null ? 0 : 1, trace, null, targetTiming, query);
             }
         }
 
@@ -400,31 +406,18 @@ namespace InventoryKamera.game
             detection.MatchCountAccepted && detection.MatchCountValue == 1 &&
             detection.ResultPageAccepted && detection.ResultPageCurrent == 1 && detection.ResultPageTotal == 1;
 
-        private static bool HasVerifiedNoResultsForQuery(
+        private static bool HasVerifiedNoResultsForSubmittedQuery(
             AchievementScreenDetection detection,
             string query)
         {
             if (detection?.ScreenState != AchievementScreenState.SearchNoResults ||
                 !detection.SearchField.ActiveControlsAccepted ||
-                !detection.NoResultsEvidence.Accepted ||
+                detection.ResultRowEvidence.Present ||
                 (detection.MatchCountAccepted && detection.MatchCountValue.GetValueOrDefault() > 0))
                 return false;
 
-            string normalizedQuery = AchievementScreenDetector.Normalize(query);
-            if (normalizedQuery.Length == 0) return false;
-
-            return ContainsNormalizedPhrase(
-                    detection.SearchField.Text.NormalizedText,
-                    normalizedQuery) ||
-                ContainsNormalizedPhrase(
-                    detection.NoResultsEvidence.NormalizedText,
-                    normalizedQuery);
+            return !string.IsNullOrWhiteSpace(query);
         }
-
-        private static bool ContainsNormalizedPhrase(string text, string phrase) =>
-            (" " + (text ?? string.Empty) + " ").Contains(
-                " " + phrase + " ",
-                StringComparison.Ordinal);
 
         private AchievementSearchNavigationResult Finish(
             string operation,
@@ -435,13 +428,15 @@ namespace InventoryKamera.game
             int attempts,
             IReadOnlyList<string> trace,
             Bitmap screenshot,
-            AchievementTargetTiming targetTiming)
+            AchievementTargetTiming targetTiming,
+            string submittedQuery = null)
         {
             var diagnostics = new StringBuilder(640);
             diagnostics.AppendLine($"operation={operation}");
             diagnostics.AppendLine("inputBackend=keyboard-mouse-sendinput");
             diagnostics.AppendLine($"attempt={attempts.ToString(CultureInfo.InvariantCulture)}");
             diagnostics.AppendLine($"afterState={after?.ScreenState.ToString() ?? "(none)"}");
+            diagnostics.AppendLine($"submittedQuery={submittedQuery ?? string.Empty}");
             diagnostics.AppendLine($"cancelled={cancelled}");
             diagnostics.AppendLine($"reason={reason ?? "success"}");
             for (int i = 0; i < trace.Count; i++) diagnostics.AppendLine($"trace[{i}]={trace[i]}");
@@ -450,7 +445,8 @@ namespace InventoryKamera.game
             if (succeeded) Logger.Info(value); else Logger.Warn(value);
             return new AchievementSearchNavigationResult(
                 operation, succeeded, cancelled, reason,
-                null, null, null, null, after, attempts, value, screenshot, targetTiming);
+                null, null, null, null, after, attempts, value, screenshot, targetTiming,
+                submittedQuery);
         }
 
         private static long Measure(Action action)

@@ -72,11 +72,11 @@ namespace InventoryKamera.Tests
             Assert.Equal(AchievementScreenState.SearchNoResults, result.AfterDetection.ScreenState);
             Assert.Equal(AchievementResultCountState.NoResults, result.AfterDetection.ResultCountState);
             Assert.Equal(1, capture.Count);
-            Assert.Contains("noResultsForQuery=True", result.Diagnostics);
+            Assert.Contains("noResultsForSubmittedQuery=True", result.Diagnostics);
         }
 
         [Fact]
-        public void Search_NoResultsForDifferentVisibleQueryFailsClosed()
+        public void Search_StructuralNoResultsDoesNotRequireQueryOcrReadback()
         {
             var events = new List<string>();
             var navigator = Create(
@@ -91,9 +91,10 @@ namespace InventoryKamera.Tests
                 "No Air Force",
                 CancellationToken.None);
 
-            Assert.False(result.Succeeded);
-            Assert.Equal(2, result.Attempts);
-            Assert.Contains("noResultsForQuery=False", result.Diagnostics);
+            Assert.True(result.Succeeded, result.Diagnostics);
+            Assert.Equal(1, result.Attempts);
+            Assert.Equal("No Air Force", result.SubmittedQuery);
+            Assert.Contains("noResultsForSubmittedQuery=True", result.Diagnostics);
         }
 
         [Fact]
@@ -355,8 +356,10 @@ namespace InventoryKamera.Tests
                 AchievementMatchCountParser.Parse(string.Empty),
                 AchievementPageCounterParser.Parse(string.Empty),
                 noResultsEvidence: AchievementTextEvidence.ForTest(
-                    $"No achievements related to \"{visibleQuery}\"",
-                    true));
+                    string.Empty,
+                    false),
+                resultRowEvidence: AchievementResultRowEvidence.ForTest(
+                    AchievementResultRowPresence.Absent));
 
         private static AchievementScreenDetection UnknownWithSingleResult() => new(
             AchievementScreenState.Unknown,
