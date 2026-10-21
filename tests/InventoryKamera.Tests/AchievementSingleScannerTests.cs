@@ -15,6 +15,277 @@ namespace InventoryKamera.Tests
         private const int StageGroupId = 80127;
         private const int CollisionIdA = 80032;
         private const int CollisionIdB = 84004;
+        private const int NoAirForceId = 81581;
+        private const int HiddenStageGroupId = 90001;
+
+        [Fact]
+        public void NoAirForce_ExplicitNoResultsIsIncompleteClearsAndTrustsNoId()
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NoResultsNavigationResult(
+                "No Air Force",
+                new Bitmap(8, 8));
+
+            AchievementSingleScanResult result = harness.Scan(NoAirForceId);
+
+            Assert.Equal(AchievementSingleScanState.Incomplete, result.State);
+            Assert.Equal("No Air Force", result.CanonicalTitle);
+            Assert.True(result.ReadyForNextAchievement);
+            Assert.True(result.ExitSucceeded);
+            Assert.Equal(AchievementScreenState.Idle, result.FinalScreenState);
+            Assert.Null(result.IdentityResult);
+            Assert.Null(result.CompletionResult);
+            Assert.Equal(0, harness.IdentityVerifier.CallCount);
+            Assert.Equal(0, harness.Classifier.CallCount);
+            Assert.Equal(0, harness.RewardReader.CallCount);
+            Assert.Empty(AchievementTrustedCompletionExtractor.Extract(new[] { result }));
+            Assert.Contains("zeroResultDecision=hidden-unique-incomplete", result.Diagnostics);
+        }
+
+        [Fact]
+        public void ExplicitNoResultsForNonHiddenTargetIsUnresolvedButSafeToContinue()
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NoResultsNavigationResult(
+                "You There! Fly!",
+                new Bitmap(8, 8));
+
+            AchievementSingleScanResult result = harness.Scan(UniqueId);
+
+            Assert.Equal(AchievementSingleScanState.Unresolved, result.State);
+            Assert.True(result.ReadyForNextAchievement);
+            Assert.Contains("non-hidden canonical achievement", result.Reason);
+            Assert.Equal(0, harness.IdentityVerifier.CallCount);
+            Assert.Equal(0, harness.Classifier.CallCount);
+        }
+
+        [Fact]
+        public void ExplicitNoResultsForAllHiddenStageFamilyMeansZeroStagesComplete()
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NoResultsNavigationResult(
+                "Hidden Stage Family",
+                new Bitmap(8, 8));
+
+            AchievementSingleScanResult result = harness.Scan(HiddenStageGroupId);
+
+            Assert.Equal(AchievementSingleScanState.Incomplete, result.State);
+            Assert.Equal(AchievementStageProgressState.Resolved, result.StageProgressResult.State);
+            Assert.Empty(result.StageProgressResult.CompletedStageIds);
+            Assert.True(result.ReadyForNextAchievement);
+            Assert.Empty(AchievementTrustedCompletionExtractor.Extract(new[] { result }));
+        }
+
+        [Fact]
+        public void ZeroResultClearFailureIsUnsafeAndStopsBeforeAnotherTarget()
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NoResultsNavigationResult(
+                "No Air Force",
+                new Bitmap(8, 8));
+            harness.Navigator.ExitResult = NavigationResult(
+                "exit",
+                succeeded: false,
+                cancelled: false,
+                AchievementScreenState.SearchNoResults,
+                AchievementScreenState.SearchNoResults,
+                "clear failed");
+
+            AchievementSingleScanResult result = harness.Scan(NoAirForceId);
+
+            Assert.Equal(AchievementSingleScanState.Failed, result.State);
+            Assert.False(result.ReadyForNextAchievement);
+            Assert.True(result.ExitAttempted);
+        }
+
+        [Fact]
+        public void CancellationDuringZeroResultHandlingIsPromptAndRunsNoOcr()
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NoResultsNavigationResult(
+                "No Air Force",
+                new Bitmap(8, 8));
+            using var cancellation = new CancellationTokenSource();
+            harness.Navigator.AfterSearch = cancellation.Cancel;
+
+            AchievementSingleScanResult result = harness.Scan(
+                NoAirForceId,
+                cancellation.Token);
+
+            Assert.Equal(AchievementSingleScanState.Cancelled, result.State);
+            Assert.False(result.ExitAttempted);
+            Assert.Equal(0, harness.IdentityVerifier.CallCount);
+            Assert.Equal(0, harness.Classifier.CallCount);
+        }
+
+        [Fact]
+        public void SuccessfulZeroResultClearSuppliesIdleProofForNextTarget()
+        {
+            Harness harness = Harness.Create();
+            harness.Navigator.SearchResult = NoResultsNavigationResult(
+                "No Air Force",
+                new Bitmap(8, 8));
+            AchievementSingleScanResult zero = harness.Scan(NoAirForceId);
+            int capturesAfterZero = harness.Capture.CaptureCount;
+            harness.Navigator.SearchResult = NavigationResult(
+                "search",
+                succeeded: true,
+                cancelled: false,
+                AchievementScreenState.Idle,
+                AchievementScreenState.SearchActive,
+                null,
+                resultScreenshot: new Bitmap(8, 8));
+
+            AchievementSingleScanResult next = harness.Scan(UniqueId);
+
+            Assert.True(zero.ReadyForNextAchievement);
+            Assert.Equal(AchievementSingleScanState.Completed, next.State);
+            Assert.Equal(capturesAfterZero, harness.Capture.CaptureCount);
+            Assert.Equal(2, harness.Navigator.SearchCount);
+        }
+
+        [Fact]
+        public void NavigatorOwnedResultFrame_IsReusedWithoutSecondResultCapture()
+        {
+            Harness harness = Harness.Create(
+                AchievementCompletionClassifierTests.Identity(),
+                AchievementCompletionState.CompletedClaimed);
+            harness.Navigator.SearchResult = NavigationResult(
+                "search",
+                succeeded: true,
+                cancelled: false,
+                AchievementScreenState.Idle,
+                AchievementScreenState.SearchActive,
+                null,
+                resultScreenshot: new Bitmap(8, 8));
+
+            AchievementSingleScanResult result = harness.Scan(UniqueId);
+
+            Assert.Equal(AchievementSingleScanState.Completed, result.State);
+            Assert.Equal(1, harness.Capture.CaptureCount);
+            Assert.True(result.ExitSucceeded);
+        }
+
+        [Fact]
+        public void PreparedSteadyState_ReusesReadinessAndClearProofWithoutStartCapture()
+        {
+            Harness harness = Harness.Create(
+                AchievementCompletionClassifierTests.Identity(),
+                AchievementCompletionState.CompletedClaimed);
+            harness.Prepare();
+            harness.Navigator.SearchResult = NavigationResult(
+                "search", true, false,
+                AchievementScreenState.Idle,
+                AchievementScreenState.SearchActive,
+                null,
+                resultScreenshot: new Bitmap(8, 8));
+
+            AchievementSingleScanResult first = harness.Scan(UniqueId);
+            harness.Navigator.SearchResult = NavigationResult(
+                "search", true, false,
+                AchievementScreenState.Idle,
+                AchievementScreenState.SearchActive,
+                null,
+                resultScreenshot: new Bitmap(8, 8));
+            AchievementSingleScanResult second = harness.Scan(UniqueId);
+
+            Assert.Equal(AchievementSingleScanState.Completed, first.State);
+            Assert.Equal(AchievementSingleScanState.Completed, second.State);
+            Assert.Equal(0, harness.Capture.CaptureCount);
+            Assert.Equal(1, harness.Navigator.PrepareCount);
+        }
+
+        [Theory]
+        [InlineData((int)AchievementCompletionState.CompletedClaimed, (int)AchievementSingleScanState.Completed)]
+        [InlineData((int)AchievementCompletionState.CompletedUnclaimed, (int)AchievementSingleScanState.Completed)]
+        [InlineData((int)AchievementCompletionState.Incomplete, (int)AchievementSingleScanState.Incomplete)]
+        public void CompletionRecovery_UsesOneFreshFrameAndAcceptsOnlyResolvedEvidence(
+            int recoveredCompletionValue,
+            int expectedStateValue)
+        {
+            AchievementIdentityResult identity = AchievementCompletionClassifierTests.Identity();
+            Harness harness = Harness.Create(identity, AchievementCompletionState.Unresolved);
+            AchievementCompletionState recovered = (AchievementCompletionState)recoveredCompletionValue;
+            harness.Classifier.Enqueue(Completion(identity, recovered));
+
+            AchievementSingleScanResult result = harness.Scan(UniqueId);
+
+            Assert.Equal((AchievementSingleScanState)expectedStateValue, result.State);
+            Assert.Equal(2, harness.Classifier.CallCount);
+            Assert.True(result.Timing.CompletionRecoveryUsed);
+            Assert.False(result.Timing.IdentityRecoveryUsed);
+            Assert.Equal(1, result.Timing.ExtraCaptureCount);
+            Assert.Equal(AchievementSingleScanner.RecognitionRecoveryDelayMs,
+                result.Timing.RecoveryDelayMilliseconds);
+        }
+
+        [Fact]
+        public void CompletionRecovery_BothFramesUncertain_RemainsUnresolved()
+        {
+            Harness harness = Harness.Create(
+                AchievementCompletionClassifierTests.Identity(),
+                AchievementCompletionState.Unresolved);
+
+            AchievementSingleScanResult result = harness.Scan(UniqueId);
+
+            Assert.Equal(AchievementSingleScanState.Unresolved, result.State);
+            Assert.Equal(2, harness.Classifier.CallCount);
+            Assert.Equal(1, result.Timing.ExtraCaptureCount);
+            Assert.Contains("completion:Unresolved", result.Timing.RecoveryResult);
+        }
+
+        [Fact]
+        public void CompletionRecovery_ConflictingSecondFrame_RemainsUnresolved()
+        {
+            AchievementIdentityResult identity = AchievementCompletionClassifierTests.Identity();
+            Harness harness = Harness.Create(identity, AchievementCompletionState.Unresolved);
+            harness.Classifier.Enqueue(Completion(
+                identity,
+                AchievementCompletionState.Unresolved,
+                "Claim evidence conflicts with progress evidence."));
+
+            AchievementSingleScanResult result = harness.Scan(UniqueId);
+
+            Assert.Equal(AchievementSingleScanState.Unresolved, result.State);
+            Assert.Contains("conflicts", result.Reason);
+            Assert.Equal(1, result.Timing.ExtraCaptureCount);
+        }
+
+        [Fact]
+        public void IdentityRecovery_SecondExactFrameContinuesToCompletionWithoutSecondRecoveryCapture()
+        {
+            AchievementIdentityResult unresolved = AchievementCompletionClassifierTests.Identity(
+                AchievementIdentityState.Unresolved);
+            AchievementIdentityResult identified = AchievementCompletionClassifierTests.Identity();
+            Harness harness = Harness.Create(unresolved, AchievementCompletionState.CompletedClaimed);
+            harness.IdentityVerifier.Enqueue(identified);
+
+            AchievementSingleScanResult result = harness.Scan(UniqueId);
+
+            Assert.Equal(AchievementSingleScanState.Completed, result.State);
+            Assert.Equal(2, harness.IdentityVerifier.CallCount);
+            Assert.Equal(1, harness.Classifier.CallCount);
+            Assert.True(result.Timing.IdentityRecoveryUsed);
+            Assert.False(result.Timing.CompletionRecoveryUsed);
+            Assert.Equal(1, result.Timing.ExtraCaptureCount);
+        }
+
+        [Fact]
+        public void CancellationBeforeRecognitionRecovery_StopsPromptlyWithoutCaptureOrExit()
+        {
+            Harness harness = Harness.Create(
+                AchievementCompletionClassifierTests.Identity(),
+                AchievementCompletionState.Unresolved);
+            using var cancellation = new CancellationTokenSource();
+            harness.Classifier.AfterClassify = cancellation.Cancel;
+
+            AchievementSingleScanResult result = harness.Scan(UniqueId, cancellation.Token);
+
+            Assert.Equal(AchievementSingleScanState.Cancelled, result.State);
+            Assert.Equal(0, result.Timing.ExtraCaptureCount);
+            Assert.Equal(2, harness.Capture.CaptureCount);
+            Assert.Equal(0, harness.Navigator.ExitCount);
+        }
 
         [Theory]
         [InlineData((int)AchievementCompletionState.CompletedClaimed, (int)AchievementSingleScanState.Completed)]
@@ -41,7 +312,9 @@ namespace InventoryKamera.Tests
             Assert.True(result.ExitSucceeded);
             Assert.True(result.ReadyForNextAchievement);
             Assert.Equal(AchievementScreenState.Idle, result.FinalScreenState);
-            Assert.Equal(2, harness.Capture.CaptureCount);
+            Assert.Equal(
+                completionState == AchievementCompletionState.Unresolved ? 3 : 2,
+                harness.Capture.CaptureCount);
             Assert.Equal(0, harness.RewardReader.CallCount);
         }
 
@@ -159,6 +432,11 @@ namespace InventoryKamera.Tests
             Assert.Equal(1, harness.Navigator.ExitCount);
             Assert.True(result.ExitSucceeded);
             Assert.True(result.ReadyForNextAchievement);
+            bool expectedRecovery =
+                (AchievementIdentityState)identityStateValue == AchievementIdentityState.Unresolved;
+            Assert.Equal(expectedRecovery ? 2 : 1, harness.IdentityVerifier.CallCount);
+            Assert.Equal(expectedRecovery, result.Timing.IdentityRecoveryUsed);
+            Assert.Equal(expectedRecovery ? 1 : 0, result.Timing.ExtraCaptureCount);
         }
 
         [Theory]
@@ -176,6 +454,7 @@ namespace InventoryKamera.Tests
             Assert.Equal(1, result.MatchCount);
             Assert.Equal(0, harness.Classifier.CallCount);
             Assert.Equal(1, harness.IdentityVerifier.CallCount);
+            Assert.False(result.Timing.IdentityRecoveryUsed);
             Assert.Equal(1, harness.Navigator.ExitCount);
             Assert.True(result.ReadyForNextAchievement);
             Assert.Contains("individual ID", result.Reason);
@@ -203,6 +482,7 @@ namespace InventoryKamera.Tests
             Assert.Equal(matchCount, result.MatchCount);
             Assert.Equal(0, harness.Classifier.CallCount);
             Assert.Equal(1, harness.IdentityVerifier.CallCount);
+            Assert.False(result.Timing.IdentityRecoveryUsed);
             Assert.Equal(1, harness.Navigator.ExitCount);
             Assert.True(result.ReadyForNextAchievement);
         }
@@ -563,7 +843,8 @@ namespace InventoryKamera.Tests
             AchievementScreenState after,
             string failureReason,
             string diagnostics = "navigation diagnostics",
-            int afterMatchCount = 1) =>
+            int afterMatchCount = 1,
+            Bitmap resultScreenshot = null) =>
             new(
                 operation,
                 succeeded,
@@ -575,11 +856,44 @@ namespace InventoryKamera.Tests
                 null,
                 Detection(after, after == AchievementScreenState.SearchActive ? afterMatchCount : 0),
                 1,
-                diagnostics);
+                diagnostics,
+                resultScreenshot);
+
+        private static AchievementSearchNavigationResult NoResultsNavigationResult(
+            string query,
+            Bitmap resultScreenshot = null) =>
+            new(
+                "search",
+                succeeded: true,
+                cancelled: false,
+                failureReason: null,
+                Detection(AchievementScreenState.Idle, 0),
+                null,
+                null,
+                null,
+                NoResultsDetection(query),
+                1,
+                "explicit no-results navigation",
+                resultScreenshot);
+
+        private static AchievementScreenDetection NoResultsDetection(string query) =>
+            AchievementScreenDetector.Classify(
+                new Size(1920, 1080),
+                AchievementTextEvidence.ForTest("Achievements", true),
+                AchievementSearchFieldEvidence.ForTest(
+                    activeControlsAccepted: true,
+                    rawText: query + " Clear"),
+                AchievementTextEvidence.ForTest("Achievements completed: 1", true),
+                AchievementMatchCountParser.Parse(string.Empty),
+                AchievementPageCounterParser.Parse(string.Empty),
+                noResultsEvidence: AchievementTextEvidence.ForTest(
+                    $"No achievements related to \"{query}\"",
+                    true));
 
         private static AchievementCompletionResult Completion(
             AchievementIdentityResult identity,
-            AchievementCompletionState state)
+            AchievementCompletionState state,
+            string unresolvedReason = null)
         {
             bool claim = state == AchievementCompletionState.CompletedUnclaimed;
             bool completed = state == AchievementCompletionState.CompletedClaimed;
@@ -608,7 +922,7 @@ namespace InventoryKamera.Tests
                 0.90f,
                 attempts,
                 state == AchievementCompletionState.Unresolved
-                    ? "test unresolved completion"
+                    ? unresolvedReason ?? "test unresolved completion"
                     : "test positive completion evidence",
                 "completion diagnostics");
         }
@@ -667,7 +981,8 @@ namespace InventoryKamera.Tests
                     Classifier,
                     Capture,
                     RewardReader,
-                    new AchievementStageProgressResolver());
+                    new AchievementStageProgressResolver(),
+                    (milliseconds, token) => token.ThrowIfCancellationRequested());
             }
 
             internal RecordingScreenDetector StartDetector { get; }
@@ -688,6 +1003,8 @@ namespace InventoryKamera.Tests
                 int id,
                 CancellationToken cancellationToken = default) =>
                 scanner.Scan(id, cancellationToken);
+
+            internal void Prepare() => scanner.PrepareForScan(CancellationToken.None);
         }
 
         private static AchievementCatalog TestCatalog() => new(new[]
@@ -710,6 +1027,15 @@ namespace InventoryKamera.Tests
             new AchievementCatalogEntry(
                 CollisionIdA, "Let the Wind Lead", "collision A", 1, false, "1.0", 6,
                 null, null, null, 5),
+            new AchievementCatalogEntry(
+                NoAirForceId, "No Air Force", "Catch and defeat the Capybara King.", 0, true, "5.8", 7,
+                null, null, null, 5),
+            new AchievementCatalogEntry(
+                HiddenStageGroupId, "Hidden Stage Family", "stage 1", 1, true, "1.0", 8,
+                HiddenStageGroupId, 1, 2, 5),
+            new AchievementCatalogEntry(
+                HiddenStageGroupId + 1, "Hidden Stage Family", "stage 2", 1, true, "1.0", 9,
+                HiddenStageGroupId, 2, 2, 10),
         });
 
         private sealed class TestCatalogProvider : IAchievementCatalogProvider
@@ -741,7 +1067,14 @@ namespace InventoryKamera.Tests
             internal Action AfterExit { get; set; }
             internal int SearchCount { get; private set; }
             internal int ExitCount { get; private set; }
+            internal int PrepareCount { get; private set; }
             internal string LastQuery { get; private set; }
+
+            public void PreparePointer(CancellationToken cancellationToken, bool forceReposition = false)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                PrepareCount++;
+            }
 
             public AchievementSearchNavigationResult Search(
                 string query,
@@ -754,7 +1087,7 @@ namespace InventoryKamera.Tests
                 return SearchResult;
             }
 
-            public AchievementSearchNavigationResult ExitSearch(CancellationToken cancellationToken)
+            public AchievementSearchNavigationResult ClearSearch(CancellationToken cancellationToken)
             {
                 ExitCount++;
                 if (ExitException != null) throw ExitException;
@@ -765,11 +1098,13 @@ namespace InventoryKamera.Tests
 
         private sealed class RecordingIdentityVerifier : IAchievementResultIdentityVerifier
         {
+            private readonly Queue<AchievementIdentityResult> queued = new();
             internal RecordingIdentityVerifier(AchievementIdentityResult result) => Result = result;
             internal AchievementIdentityResult Result { get; set; }
             internal Exception Exception { get; set; }
             internal Action AfterVerify { get; set; }
             internal int CallCount { get; private set; }
+            internal void Enqueue(AchievementIdentityResult result) => queued.Enqueue(result);
 
             public AchievementIdentityResult Verify(
                 AchievementSearchNavigationResult searchResult,
@@ -778,7 +1113,9 @@ namespace InventoryKamera.Tests
             {
                 CallCount++;
                 if (Exception != null) throw Exception;
-                AchievementIdentityResult result = Result;
+                AchievementIdentityResult result = CallCount > 1 && queued.Count > 0
+                    ? queued.Dequeue()
+                    : Result;
                 AfterVerify?.Invoke();
                 return result;
             }
@@ -786,11 +1123,13 @@ namespace InventoryKamera.Tests
 
         private sealed class RecordingCompletionClassifier : IAchievementCompletionClassifier
         {
+            private readonly Queue<AchievementCompletionResult> queued = new();
             internal RecordingCompletionClassifier(AchievementCompletionResult result) => Result = result;
             internal AchievementCompletionResult Result { get; set; }
             internal Exception Exception { get; set; }
             internal Action AfterClassify { get; set; }
             internal int CallCount { get; private set; }
+            internal void Enqueue(AchievementCompletionResult result) => queued.Enqueue(result);
 
             public AchievementCompletionResult Classify(
                 AchievementIdentityResult identity,
@@ -798,7 +1137,9 @@ namespace InventoryKamera.Tests
             {
                 CallCount++;
                 if (Exception != null) throw Exception;
-                AchievementCompletionResult result = Result;
+                AchievementCompletionResult result = CallCount > 1 && queued.Count > 0
+                    ? queued.Dequeue()
+                    : Result;
                 AfterClassify?.Invoke();
                 return result;
             }
@@ -933,7 +1274,7 @@ namespace InventoryKamera.Tests
                     AchievementScreenState.Idle,
                     AchievementScreenState.SearchActive);
 
-            public AchievementSearchNavigationResult ExitSearch(CancellationToken cancellationToken) =>
+            public AchievementSearchNavigationResult ClearSearch(CancellationToken cancellationToken) =>
                 Result(
                     "exit",
                     AchievementScreenState.SearchActive,

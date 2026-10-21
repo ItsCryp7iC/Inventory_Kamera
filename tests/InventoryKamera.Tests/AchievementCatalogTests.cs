@@ -26,6 +26,35 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void PackagedHiddenTitleGroupsSupportConservativeZeroResultPolicy()
+        {
+            AchievementCatalog catalog = new AchievementCatalogProvider().Catalog;
+            AchievementTitleGroup[] hiddenUnique = catalog.TitleGroups
+                .Where(group => group.Kind == AchievementTitleGroupKind.Unique && group.Entries[0].Hidden)
+                .ToArray();
+            AchievementTitleGroup[] allHiddenStages = catalog.TitleGroups
+                .Where(group => group.Kind == AchievementTitleGroupKind.StageFamily &&
+                    group.Entries.All(entry => entry.Hidden))
+                .ToArray();
+            AchievementTitleGroup[] mixed = catalog.TitleGroups
+                .Where(group => group.Entries.Any(entry => entry.Hidden) &&
+                    group.Entries.Any(entry => !entry.Hidden))
+                .ToArray();
+
+            Assert.Equal(995, hiddenUnique.Length);
+            Assert.Equal(
+                new[] { "The Final Fonta Sea", "Purveyor of Punishment" },
+                allHiddenStages.Select(group => group.CanonicalTitle));
+            Assert.Equal("Let the Wind Lead", Assert.Single(mixed).CanonicalTitle);
+
+            AchievementCatalogEntry noAirForce = catalog.GetById(81581);
+            Assert.Equal("No Air Force", noAirForce.Name);
+            Assert.True(noAirForce.Hidden);
+            Assert.False(noAirForce.IsStaged);
+            Assert.Equal("5.8", noAirForce.Version);
+        }
+
+        [Fact]
         public void PackagedLoadingDoesNotDependOnCurrentWorkingDirectory()
         {
             string originalDirectory = Environment.CurrentDirectory;

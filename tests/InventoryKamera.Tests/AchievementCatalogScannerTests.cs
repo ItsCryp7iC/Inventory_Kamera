@@ -171,6 +171,33 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void HiddenZeroResultIncompleteCountsAndContinuesAfterSafeClear()
+        {
+            AchievementCatalog catalog = AchievementScanTargetTests.SmallCatalog();
+            var single = new RecordingSingleScanner((id, _) => Result(
+                catalog,
+                id,
+                id == 1
+                    ? AchievementSingleScanState.Incomplete
+                    : AchievementSingleScanState.Completed,
+                ready: true,
+                reason: id == 1
+                    ? "hidden exact-title no results"
+                    : "completed"));
+
+            AchievementCatalogScanResult result = Scanner(catalog, single)
+                .Scan(CancellationToken.None);
+
+            Assert.Equal(AchievementCatalogScanState.Completed, result.State);
+            Assert.Equal(3, result.ProcessedTargets);
+            Assert.Equal(1, result.IncompleteCount);
+            Assert.Equal(2, result.CompletedCount);
+            Assert.Equal(0, result.UnresolvedCount);
+            Assert.Equal(0, result.FailedCount);
+            Assert.Equal(new[] { 1, 2, 3 }, single.RequestedIds);
+        }
+
+        [Fact]
         public void UnsafeResetStopsBeforeNextTargetAndPreservesEvidence()
         {
             AchievementCatalog catalog = AchievementScanTargetTests.SmallCatalog();

@@ -35,6 +35,32 @@ namespace InventoryKamera.Tests
                 AchievementTitleNormalizer.Normalize(right));
         }
 
+        [Theory]
+        [InlineData("It's the Same As Having Wings", "Its the Same As Having Wings")]
+        [InlineData("Prodigal Son's Return", "Prodigal Sons Return")]
+        [InlineData("Snow-Stored History", "Snow Stored History")]
+        [InlineData("Snow—Stored History", "Snow Stored History")]
+        [InlineData("Déjà Vu!", "Deja Vu!")]
+        [InlineData("Déjà Vu!", "Déja Vu!")]
+        [InlineData("Déjà Vu!", "Dejà Vu!")]
+        public void ComparisonNormalization_FoldsOnlyApprovedOcrUnstableForms(
+            string left,
+            string right)
+        {
+            Assert.Equal(
+                AchievementTitleNormalizer.NormalizeForComparison(left),
+                AchievementTitleNormalizer.NormalizeForComparison(right));
+        }
+
+        [Fact]
+        public void ComparisonNormalization_DoesNotAlterCanonicalNormalization()
+        {
+            Assert.Equal("déjà vu!", AchievementTitleNormalizer.Normalize("Déjà Vu!"));
+            Assert.Equal("deja vu!", AchievementTitleNormalizer.NormalizeForComparison("Déjà Vu!"));
+            Assert.Equal("snow-stored history", AchievementTitleNormalizer.Normalize("Snow-Stored History"));
+            Assert.Equal("snow stored history", AchievementTitleNormalizer.NormalizeForComparison("Snow-Stored History"));
+        }
+
         [Fact]
         public void Match_OneCharacterOcrSubstitutionExceedsCalibratedThreshold()
         {
@@ -60,6 +86,44 @@ namespace InventoryKamera.Tests
             Assert.True(match.Margin < AchievementTitleMatcher.MinimumRunnerUpMargin, match.Margin.ToString());
         }
 
+        [Theory]
+        [InlineData("Narzissenkreuz Notes: The Labyrinth", "Narzissenkreuz Notes")]
+        [InlineData("The Finishing Touch?", "The Finishing Touch")]
+        public void Match_CanonicalTitleExtensionIsNotTreatedAsNoisySuffix(
+            string expectedTitle,
+            string shorterCanonicalTitle)
+        {
+            AchievementTitleMatch match = AchievementTitleMatcher.Match(
+                expectedTitle,
+                expectedTitle,
+                new[] { shorterCanonicalTitle });
+
+            Assert.Equal(100, match.Score);
+            Assert.True(match.RunnerUpScore < 100, match.RunnerUpScore.ToString());
+            Assert.True(match.Margin >= AchievementTitleMatcher.MinimumRunnerUpMargin, match.Margin.ToString());
+        }
+
+        [Theory]
+        [InlineData("Cecilia Garden", "Cecilla Garden")]
+        [InlineData("Hidden Palace of Zhou Formula", "Hidden Palace of Zhou FormuIa")]
+        [InlineData("It's the Same As Having Wings", "Its the Same As Having Wings")]
+        [InlineData("Prodigal Son's Return", "Prodigal Sons Return")]
+        [InlineData("Snow-Stored History", "Snow Stored History")]
+        [InlineData("Déjà Vu!", "Deja Vu!")]
+        [InlineData("As You Wish", "As You Wlsh")]
+        [InlineData("Cat in the Clouds", "Cat in the CIouds")]
+        public void Match_LiveFailureTitlePlausibleOcrFormsMeetUnchangedThreshold(
+            string expectedTitle,
+            string observedTitle)
+        {
+            AchievementTitleMatch match = AchievementTitleMatcher.Match(
+                observedTitle,
+                expectedTitle,
+                Array.Empty<string>());
+
+            Assert.True(match.Score >= AchievementTitleMatcher.MinimumScore, match.Score.ToString());
+        }
+
         [Fact]
         public void PackagedPunctuationHeavyTitlesRemainCanonicalAndDistinct()
         {
@@ -79,6 +143,32 @@ namespace InventoryKamera.Tests
                 .Select(AchievementTitleNormalizer.Normalize)
                 .Distinct(StringComparer.Ordinal)
                 .Count());
+        }
+
+        [Fact]
+        public void PackagedCatalog_ComparisonKeysIntroduceNoNewUnrelatedCollision()
+        {
+            AchievementCatalog catalog = new AchievementCatalogProvider().Catalog;
+            var comparisonGroups = catalog.All
+                .GroupBy(entry => AchievementTitleNormalizer.NormalizeForComparison(entry.Name))
+                .ToArray();
+            var newlyCollapsedTitles = comparisonGroups
+                .Where(group => group
+                    .Select(entry => AchievementTitleNormalizer.Normalize(entry.Name))
+                    .Distinct(StringComparer.Ordinal)
+                    .Count() > 1)
+                .ToArray();
+
+            Assert.Equal(1854, catalog.All.Count);
+            Assert.Equal(1559, comparisonGroups.Length);
+            Assert.Empty(newlyCollapsedTitles);
+            Assert.Single(catalog.TitleGroups.Where(group => group.IsUnrelatedCollision));
+            Assert.Equal(
+                "Let the Wind Lead",
+                catalog.TitleGroups.Single(group => group.IsUnrelatedCollision).CanonicalTitle);
+            Assert.All(
+                catalog.TitleGroups.Where(group => group.Entries.Count > 1 && !group.IsUnrelatedCollision),
+                group => Assert.True(group.IsStageFamily, group.CanonicalTitle));
         }
     }
 
@@ -104,7 +194,11 @@ namespace InventoryKamera.Tests
 
             AchievementResultTitleRead result = reader.Read(screenshot);
 
-            Assert.Equal(3, result.Attempts.Count);
+            Assert.Equal(6, result.Attempts.Count);
+            Assert.Equal(3, result.Attempts.Count(attempt =>
+                attempt.Scope == AchievementTitleOcrScope.Primary));
+            Assert.Equal(3, result.Attempts.Count(attempt =>
+                attempt.Scope == AchievementTitleOcrScope.WideFallback));
             foreach (AchievementTitleOcrAttempt attempt in result.Attempts)
             {
                 double score = AchievementTitleMatcher.Similarity(attempt.NormalizedText, expectedTitle);
@@ -167,6 +261,48 @@ namespace InventoryKamera.Tests
 
             Assert.Equal(AchievementIdentityState.Identified, result.State);
             Assert.True(result.Score >= AchievementTitleMatcher.MinimumScore, result.Diagnostics);
+        }
+
+        [Theory]
+        [InlineData(81015, "Cecilia Garden", "Cecilia Garden al =. __* _tL 24-1")]
+        [InlineData(81016, "Hidden Palace of Zhou Formula", "Hidden Palace of Zhou Formula cereal = —=T1o Al = +")]
+        [InlineData(81021, "It's the Same As Having Wings", "Its the Same As Having Wings")]
+        [InlineData(81035, "Prodigal Son's Return", "Prodigal Son's Return —c = == 1 = == Jd")]
+        [InlineData(81036, "Snow-Stored History", "Snow-Stored History 1 = a 2---_- - “@&°")]
+        [InlineData(81078, "Déjà Vu!", "Déja Vu!")]
+        [InlineData(81150, "As You Wish", "As You Wish a =1 1 Ff 2°... - - BL")]
+        [InlineData(81158, "Cat in the Clouds", "Cat in the Clouds meee = 1 “8 -2T oo =")]
+        public void LiveFailureTitles_HaveSafePositiveComparisonEvidence(
+            int expectedId,
+            string expectedTitle,
+            string observedTitle)
+        {
+            Harness harness = Harness.Create(Active(1), observedTitle, 0.90f);
+
+            AchievementIdentityResult result = harness.Verify(expectedId);
+
+            Assert.Equal(expectedTitle, result.ExpectedTitle);
+            Assert.Equal(AchievementIdentityState.Identified, result.State);
+            Assert.True(result.Score >= AchievementTitleMatcher.MinimumScore, result.Diagnostics);
+            Assert.True(result.Margin >= AchievementTitleMatcher.MinimumRunnerUpMargin, result.Diagnostics);
+        }
+
+        [Fact]
+        public void AcceptedVariant_IsNotMaskedByHigherScoreLowConfidenceVariant()
+        {
+            Harness harness = Harness.Create(
+                Active(1),
+                new[]
+                {
+                    Attempt("You There! Fly!", 0.20f),
+                    Attempt("You There! FIy!", 0.90f),
+                });
+
+            AchievementIdentityResult result = harness.Verify(YouThereId);
+
+            Assert.Equal(AchievementIdentityState.Identified, result.State);
+            Assert.Equal("You There! FIy!", result.RawTitle);
+            Assert.Equal(0.90f, result.OcrConfidence);
         }
 
         [Fact]
@@ -251,6 +387,21 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void PriorSearchActiveAndFreshSinglePageMarkers_AllowTitleProofAfterTransientUnknown()
+        {
+            Harness harness = Harness.Create(
+                Detection(AchievementScreenState.Unknown, "Match(es): 1", "1/1"),
+                "It's the Same As Having Wings",
+                0.96f);
+
+            AchievementIdentityResult result = harness.Verify(81021);
+
+            Assert.Equal(AchievementIdentityState.Identified, result.State);
+            Assert.True(result.UsedCorroboratedSearchResult);
+            Assert.Equal(1, harness.TitleReader.ReadCount);
+        }
+
+        [Fact]
         public void EmptyTitleOcr_IsUnresolved()
         {
             Harness harness = Harness.Create(Active(1), string.Empty, 0.95f);
@@ -299,7 +450,7 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
-        public void LongCanonicalTitle_VisiblePrefixDoesNotPretendFullEquality()
+        public void LongCanonicalTitle_StrongLeftPrefixAndSingleResultIsIdentified()
         {
             Harness harness = Harness.Create(
                 Active(1),
@@ -308,13 +459,13 @@ namespace InventoryKamera.Tests
 
             AchievementIdentityResult result = harness.Verify(86010);
 
-            Assert.Equal(AchievementIdentityState.Unresolved, result.State);
-            Assert.Contains("clipped canonical prefix", result.Reason);
-            Assert.Null(result.IdentifiedId);
+            Assert.Equal(AchievementIdentityState.Identified, result.State);
+            Assert.True(result.UsedClippedPrefixEvidence);
+            Assert.Equal(86010, result.IdentifiedId);
         }
 
         [Fact]
-        public void LongCanonicalTitle_LiveClippedPrefixWithMinorOcrErrorRemainsUnresolved()
+        public void LongCanonicalTitle_LiveClippedPrefixWithBoundedTailErrorIsIdentified()
         {
             Harness harness = Harness.Create(
                 Active(1),
@@ -323,9 +474,72 @@ namespace InventoryKamera.Tests
 
             AchievementIdentityResult result = harness.Verify(86010);
 
+            Assert.Equal(AchievementIdentityState.Identified, result.State);
+            Assert.True(result.UsedClippedPrefixEvidence);
+            Assert.Equal(86010, result.IdentifiedId);
+        }
+
+        [Theory]
+        [InlineData(81048, "...You could hear Paimon all along, couldn!")]
+        [InlineData(81154, "Today, This Seal — Tomorrow, Watatstimi")]
+        [InlineData(81168, "Nihil Sul Caligine Novi")]
+        [InlineData(81220, "\"All We Need Is Some Firewood and Some \\")]
+        [InlineData(81252, "The Jasmines Whisper, the Pomegranates /")]
+        [InlineData(81309, "From Soil You Are, and to the Sand You Sh:")]
+        [InlineData(81315, "Like a Morning Sun Coming Out of Gloomy")]
+        [InlineData(81335, "When the Red Scarf Transforms Into a Bir")]
+        [InlineData(81337, "Whose Descendant Are You, and What's Yo")]
+        [InlineData(81366, "Fontaine Expects That Everyone Will Do TI")]
+        [InlineData(81384, "The Calendar of the Future Is Longer Than")]
+        [InlineData(81388, "The Worst! Fontaine's Eight Evil Clockwor")]
+        [InlineData(81389, "Automated Supercomputing Field Genera!")]
+        [InlineData(81390, "Slam-Bang No-Holds Barred Meropide-Style")]
+        public void LiveClippedTitleForms_ResolveOnlyThroughCorroboratedPrefix(
+            int expectedId,
+            string observed)
+        {
+            Harness harness = Harness.Create(Active(1), observed, 0.90f);
+
+            AchievementIdentityResult result = harness.Verify(expectedId);
+
+            Assert.True(
+                result.State == AchievementIdentityState.Identified ||
+                result.State == AchievementIdentityState.StageGroupIdentified,
+                result.Diagnostics);
+            Assert.True(result.UsedClippedPrefixEvidence, result.Diagnostics);
+        }
+
+        [Fact]
+        public void ClippedPrefixSharedByUnrelatedCatalogTitle_RemainsUnresolved()
+        {
+            const string observed = "A Conservatively Long Shared Prefix";
+            AchievementCatalog catalog = BuildCatalog(
+                Entry(1, observed + " First Ending"),
+                Entry(2, observed + " Second Ending"));
+            Harness harness = Harness.Create(
+                Active(1),
+                observed,
+                0.95f,
+                new AchievementCatalogProvider(catalog));
+
+            AchievementIdentityResult result = harness.Verify(1);
+
             Assert.Equal(AchievementIdentityState.Unresolved, result.State);
-            Assert.Contains("clipped canonical prefix", result.Reason);
-            Assert.Null(result.IdentifiedId);
+            Assert.False(result.UsedClippedPrefixEvidence);
+        }
+
+        [Fact]
+        public void ShortCanonicalPrefix_RemainsUnresolvedEvenWithSingleResult()
+        {
+            Harness harness = Harness.Create(
+                Active(1),
+                "Just Me and You",
+                0.95f);
+
+            AchievementIdentityResult result = harness.Verify(86010);
+
+            Assert.Equal(AchievementIdentityState.Unresolved, result.State);
+            Assert.False(result.UsedClippedPrefixEvidence);
         }
 
         [Theory]
@@ -383,14 +597,18 @@ namespace InventoryKamera.Tests
 
             Assert.Contains("operation=identity-verify", result.Diagnostics);
             Assert.Contains("expectedId=81665", result.Diagnostics);
+            Assert.Contains("expectedTitle=You There! Fly!", result.Diagnostics);
             Assert.Contains("expectedTitleLength=15", result.Diagnostics);
             Assert.Contains("screenState=SearchActive", result.Diagnostics);
+            Assert.Contains("matchCountRaw=Match(es): 1", result.Diagnostics);
             Assert.Contains("matchCount=1", result.Diagnostics);
             Assert.Contains("page=1/1", result.Diagnostics);
             Assert.Contains("rawTitle=", result.Diagnostics);
             Assert.Contains("normalizedTitle=", result.Diagnostics);
+            Assert.Contains("comparisonTitle=", result.Diagnostics);
             Assert.Contains("ocrConfidence=", result.Diagnostics);
             Assert.Contains("score=", result.Diagnostics);
+            Assert.Contains("bestAlternateTitle=", result.Diagnostics);
             Assert.Contains("runnerUpScore=", result.Diagnostics);
             Assert.Contains("margin=", result.Diagnostics);
             Assert.Contains("titleGroupKind=Unique", result.Diagnostics);
@@ -398,8 +616,11 @@ namespace InventoryKamera.Tests
             Assert.Contains("candidateIds=81665", result.Diagnostics);
             Assert.Contains("collision=False", result.Diagnostics);
             Assert.Contains("multiMatch=False", result.Diagnostics);
+            Assert.Contains("usedCorroboratedSearchResult=False", result.Diagnostics);
             Assert.Contains("state=", result.Diagnostics);
+            Assert.Contains("finalIdentityState=", result.Diagnostics);
             Assert.Contains("reason=", result.Diagnostics);
+            Assert.Contains("finalRejectionReason=", result.Diagnostics);
             Assert.DoesNotContain(new string('X', 200), result.Diagnostics);
             Assert.DoesNotContain("completion", result.Diagnostics, StringComparison.OrdinalIgnoreCase);
             Assert.True(result.Diagnostics.Length < 4096, result.Diagnostics.Length.ToString());
@@ -419,6 +640,12 @@ namespace InventoryKamera.Tests
             stageGroupId: null,
             stageIndex: null,
             stageCount: null);
+
+        private static AchievementTitleOcrAttempt Attempt(string text, float confidence) => new(
+            AchievementTitleOcrVariant.GrayscaleContrast,
+            text,
+            confidence,
+            string.IsNullOrWhiteSpace(text) ? "empty test read" : "test read");
 
         private static AchievementScreenDetection Active(int count) => Detection(
             AchievementScreenState.SearchActive,
@@ -480,8 +707,16 @@ namespace InventoryKamera.Tests
                 float confidence,
                 IAchievementCatalogProvider provider = null)
             {
+                return Create(detection, new[] { Attempt(title, confidence) }, provider);
+            }
+
+            internal static Harness Create(
+                AchievementScreenDetection detection,
+                IEnumerable<AchievementTitleOcrAttempt> attempts,
+                IAchievementCatalogProvider provider = null)
+            {
                 var screenDetector = new RecordingScreenDetector(detection);
-                var titleReader = new RecordingTitleReader(title, confidence);
+                var titleReader = new RecordingTitleReader(attempts);
                 var verifier = new AchievementResultIdentityVerifier(
                     provider ?? new AchievementCatalogProvider(),
                     screenDetector,
@@ -512,16 +747,9 @@ namespace InventoryKamera.Tests
         private sealed class RecordingTitleReader : IAchievementResultTitleReader
         {
             private readonly AchievementResultTitleRead read;
-            internal RecordingTitleReader(string text, float confidence)
+            internal RecordingTitleReader(IEnumerable<AchievementTitleOcrAttempt> attempts)
             {
-                read = new AchievementResultTitleRead(new[]
-                {
-                    new AchievementTitleOcrAttempt(
-                        AchievementTitleOcrVariant.GrayscaleContrast,
-                        text,
-                        confidence,
-                        string.IsNullOrWhiteSpace(text) ? "empty test read" : "test read"),
-                });
+                read = new AchievementResultTitleRead(attempts);
             }
             internal int ReadCount { get; private set; }
             public AchievementResultTitleRead Read(Bitmap screenshot)

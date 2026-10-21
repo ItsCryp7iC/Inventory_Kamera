@@ -1,3 +1,4 @@
+using InventoryKamera.game;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -6,6 +7,92 @@ using System.Threading;
 
 namespace InventoryKamera
 {
+    internal sealed class AchievementTimingSummary
+    {
+        private AchievementTimingSummary(
+            int count,
+            double mean,
+            double median,
+            double p95,
+            TimingBucket fastPath,
+            TimingBucket recovered)
+        {
+            CompletedTargetCount = count;
+            MeanTotalMilliseconds = mean;
+            MedianTotalMilliseconds = median;
+            P95TotalMilliseconds = p95;
+            FastPath = fastPath;
+            Recovered = recovered;
+        }
+
+        internal int CompletedTargetCount { get; }
+        internal double MeanTotalMilliseconds { get; }
+        internal double MedianTotalMilliseconds { get; }
+        internal double P95TotalMilliseconds { get; }
+        internal TimingBucket FastPath { get; }
+        internal TimingBucket Recovered { get; }
+
+        internal sealed class TimingBucket
+        {
+            internal TimingBucket(int count, double mean, double median, double p95)
+            {
+                Count = count;
+                Mean = mean;
+                Median = median;
+                P95 = p95;
+            }
+            internal int Count { get; }
+            internal double Mean { get; }
+            internal double Median { get; }
+            internal double P95 { get; }
+        }
+
+        internal static AchievementTimingSummary Calculate(
+            IEnumerable<AchievementSingleScanResult> results)
+        {
+            AchievementSingleScanResult[] completed = (results ?? Array.Empty<AchievementSingleScanResult>())
+                .Where(result => result?.ReadyForNextAchievement == true && result.Timing != null)
+                .ToArray();
+            TimingBucket all = CalculateBucket(completed.Select(result => result.Timing.TotalMilliseconds));
+            TimingBucket fast = CalculateBucket(completed
+                .Where(result => !result.Timing.RecognitionRecoveryUsed)
+                .Select(result => result.Timing.TotalMilliseconds));
+            TimingBucket recovered = CalculateBucket(completed
+                .Where(result => result.Timing.RecognitionRecoveryUsed)
+                .Select(result => result.Timing.TotalMilliseconds));
+            return new AchievementTimingSummary(
+                all.Count, all.Mean, all.Median, all.P95, fast, recovered);
+        }
+
+        private static TimingBucket CalculateBucket(IEnumerable<long> source)
+        {
+            long[] values = source.OrderBy(value => value).ToArray();
+            if (values.Length == 0) return new TimingBucket(0, 0, 0, 0);
+            double mean = values.Average(value => (double)value);
+            double median = values.Length % 2 == 1
+                ? values[values.Length / 2]
+                : (values[values.Length / 2 - 1] + values[values.Length / 2]) / 2.0;
+            int p95Index = Math.Max(0, (int)Math.Ceiling(values.Length * 0.95) - 1);
+            return new TimingBucket(values.Length, mean, median, values[p95Index]);
+        }
+
+        internal string Diagnostics => string.Format(
+            System.Globalization.CultureInfo.InvariantCulture,
+            "operation=achievement-timing-summary; completedTargets={0}; meanTotalMs={1:0.0}; medianTotalMs={2:0.0}; p95TotalMs={3:0.0}; fastPathCount={4}; fastPathMeanMs={5:0.0}; fastPathMedianMs={6:0.0}; fastPathP95Ms={7:0.0}; recoveredCount={8}; recoveredMeanMs={9:0.0}; recoveredMedianMs={10:0.0}; recoveredP95Ms={11:0.0}",
+            CompletedTargetCount,
+            MeanTotalMilliseconds,
+            MedianTotalMilliseconds,
+            P95TotalMilliseconds,
+            FastPath.Count,
+            FastPath.Mean,
+            FastPath.Median,
+            FastPath.P95,
+            Recovered.Count,
+            Recovered.Mean,
+            Recovered.Median,
+            Recovered.P95);
+    }
+
     internal enum AchievementPendingClaimDecision
     {
         Resume,
@@ -158,6 +245,7 @@ namespace InventoryKamera
             PendingClaimCount = pendingClaimCount;
             FailedCount = failedCount;
             StopReason = stopReason ?? string.Empty;
+            TimingSummary = AchievementTimingSummary.Calculate(Results);
         }
 
         internal AchievementCatalogScanState State { get; }
@@ -182,6 +270,7 @@ namespace InventoryKamera
         internal bool IsPartial => State != AchievementCatalogScanState.Completed ||
             UserSkippedTargets.Count > 0 || UnresolvedCount > 0 || AmbiguousCount > 0;
         internal string StopReason { get; }
+        internal AchievementTimingSummary TimingSummary { get; }
     }
 
     /// <summary>
@@ -191,6 +280,7 @@ namespace InventoryKamera
     /// </summary>
     internal sealed class AchievementInteractiveScanCoordinator
     {
+        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
         private readonly AchievementCatalog catalog;
         private readonly AchievementCatalogScanner catalogScanner;
         private readonly IAchievementPendingClaimDecisionProvider pendingDecisionProvider;
@@ -262,7 +352,9 @@ namespace InventoryKamera
 
             AchievementInteractiveScanResult Finish(
                 AchievementCatalogScanState state,
-                string reason) => new(
+                string reason)
+            {
+                var result = new AchievementInteractiveScanResult(
                     state,
                     catalogScanner.Targets.Count,
                     targets.Count,
@@ -280,6 +372,9 @@ namespace InventoryKamera
                     pending,
                     failed,
                     reason);
+                Logger.Info(result.TimingSummary.Diagnostics);
+                return result;
+            }
 
             bool Report(string title, out string failure)
             {
@@ -315,6 +410,21 @@ namespace InventoryKamera
                     "Achievement scanning was cancelled before the first target.");
             if (!Report(string.Empty, out string progressFailure))
                 return Finish(AchievementCatalogScanState.Failed, progressFailure);
+
+            try
+            {
+                catalogScanner.PrepareForScan(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return Finish(AchievementCatalogScanState.Cancelled,
+                    "Achievement scanning was cancelled while positioning the search pointer.");
+            }
+            catch (Exception ex)
+            {
+                return Finish(AchievementCatalogScanState.Failed,
+                    $"Achievement search pointer preparation failed: {ex.GetType().Name}: {ex.Message}");
+            }
 
             foreach (AchievementScanTarget target in targets)
             {
@@ -383,6 +493,22 @@ namespace InventoryKamera
 
                         if (decision == AchievementPendingClaimDecision.Resume)
                         {
+                            try
+                            {
+                                catalogScanner.ReacquireAfterUserInteraction(cancellationToken);
+                            }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                results.Add(result);
+                                return Finish(AchievementCatalogScanState.Cancelled,
+                                    "Achievement scanning was cancelled while restoring the search pointer.");
+                            }
+                            catch (Exception ex)
+                            {
+                                results.Add(result);
+                                return Finish(AchievementCatalogScanState.Failed,
+                                    $"Achievement search pointer recovery failed: {ex.GetType().Name}: {ex.Message}");
+                            }
                             pending--;
                             resumeCount++;
                             continue;

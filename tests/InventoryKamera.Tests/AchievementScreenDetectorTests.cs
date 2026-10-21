@@ -200,6 +200,53 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void ExplicitNoResults_RequiresRecognizedPagePopulatedSearchAndPhrase()
+        {
+            AchievementScreenDetection result = Classify(
+                heading: true,
+                completed: true,
+                search: AchievementSearchFieldEvidence.ForTest(
+                    activeControlsAccepted: true,
+                    rawText: "No Air Force Clear"),
+                noResultsText: "No achievements related to \"No Air Force\"");
+
+            Assert.Equal(AchievementScreenState.SearchNoResults, result.ScreenState);
+            Assert.Equal(AchievementResultCountState.NoResults, result.ResultCountState);
+            Assert.True(result.NoResultsEvidence.Accepted);
+            Assert.Null(result.MatchCountValue);
+        }
+
+        [Fact]
+        public void BlankActivePanelWithoutNoResultsPhrase_RemainsUnknown()
+        {
+            AchievementScreenDetection result = Classify(
+                heading: true,
+                completed: true,
+                search: AchievementSearchFieldEvidence.ForTest(
+                    activeControlsAccepted: true,
+                    rawText: "No Air Force Clear"));
+
+            Assert.Equal(AchievementScreenState.Unknown, result.ScreenState);
+        }
+
+        [Fact]
+        public void PositiveMatchCountWinsOverAccidentalNoResultsPhrase()
+        {
+            AchievementScreenDetection result = Classify(
+                heading: true,
+                completed: true,
+                search: AchievementSearchFieldEvidence.ForTest(
+                    activeControlsAccepted: true,
+                    rawText: "No Air Force Clear"),
+                matchText: "Match(es): 1",
+                pageText: "1/1",
+                noResultsText: "No achievements related to");
+
+            Assert.Equal(AchievementScreenState.SearchActive, result.ScreenState);
+            Assert.Equal(AchievementResultCountState.SingleResult, result.ResultCountState);
+        }
+
+        [Fact]
         public void HeadingAlone_DoesNotClassifyAchievementScreen()
         {
             AchievementScreenDetection result = Classify(heading: true);
@@ -233,6 +280,7 @@ namespace InventoryKamera.Tests
             Assert.Contains("completedCount:", result.Diagnostics);
             Assert.Contains("matchCount:", result.Diagnostics);
             Assert.Contains("pageCounter:", result.Diagnostics);
+            Assert.Contains("noResultsMessage:", result.Diagnostics);
             Assert.Contains("finalState=SearchActive", result.Diagnostics);
             Assert.True(result.Diagnostics.Length < 4096);
         }
@@ -345,6 +393,29 @@ namespace InventoryKamera.Tests
             Assert.Equal(1, result.ResultPageTotal);
         }
 
+        [Fact]
+        public void ScreenshotPipeline_LazilyRecognizesExplicitNoResultsMessage()
+        {
+            using var screenshot = new Bitmap(1920, 1080);
+            var detector = new AchievementScreenDetector(
+                new SequenceOcrService(
+                    "Achievements",
+                    "No Air Force Clear",
+                    "Achievements completed: 123",
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    "No achievements related to \"No Air Force\""),
+                new ImageProcessor());
+
+            AchievementScreenDetection result = detector.Detect(screenshot);
+
+            Assert.Equal(AchievementScreenState.SearchNoResults, result.ScreenState);
+            Assert.True(result.NoResultsEvidence.Accepted, result.Diagnostics);
+            Assert.Single(result.NoResultsEvidence.Attempts);
+        }
+
         [Theory]
         [InlineData(1920, 1080)]
         [InlineData(1280, 720)]
@@ -360,7 +431,9 @@ namespace InventoryKamera.Tests
             AssertNormalized(regions.CompletedCount, size, 1380.0 / 1919.0, 15.0 / 1079.0, 430.0 / 1919.0, 75.0 / 1079.0);
             AssertNormalized(regions.MatchCount, size, 730.0 / 1919.0, 130.0 / 1079.0, 305.0 / 1919.0, 65.0 / 1079.0);
             AssertNormalized(regions.PageCounter, size, 1670.0 / 1919.0, 140.0 / 1079.0, 115.0 / 1919.0, 55.0 / 1079.0);
+            AssertNormalized(regions.NoResultsMessage, size, 900.0 / 1919.0, 455.0 / 1079.0, 780.0 / 1919.0, 145.0 / 1079.0);
             AssertNormalized(regions.FirstResultTitle, size, 840.0 / 1919.0, 245.0 / 1079.0, 590.0 / 1919.0, 70.0 / 1079.0);
+            AssertNormalized(regions.FirstResultTitleWide, size, 840.0 / 1919.0, 245.0 / 1079.0, 665.0 / 1919.0, 70.0 / 1079.0);
             AssertNormalized(regions.FirstResultCompletionState, size, 1545.0 / 1919.0, 235.0 / 1079.0, 290.0 / 1919.0, 120.0 / 1079.0);
             AssertNormalized(regions.FirstResultCompletionLabel, size, 1670.0 / 1919.0, 280.0 / 1079.0, 150.0 / 1919.0, 50.0 / 1079.0);
             AssertNormalized(regions.FirstResultRewardValue, size, 1585.0 / 1919.0, 319.0 / 1079.0, 65.0 / 1919.0, 35.0 / 1079.0);
@@ -376,7 +449,9 @@ namespace InventoryKamera.Tests
             Assert.Equal(Rectangle.FromLTRB(1380, 15, 1810, 90), regions.CompletedCount);
             Assert.Equal(Rectangle.FromLTRB(730, 130, 1035, 195), regions.MatchCount);
             Assert.Equal(Rectangle.FromLTRB(1670, 140, 1785, 195), regions.PageCounter);
+            Assert.Equal(Rectangle.FromLTRB(900, 455, 1680, 600), regions.NoResultsMessage);
             Assert.Equal(Rectangle.FromLTRB(840, 245, 1430, 315), regions.FirstResultTitle);
+            Assert.Equal(Rectangle.FromLTRB(840, 245, 1505, 315), regions.FirstResultTitleWide);
             Assert.Equal(Rectangle.FromLTRB(1545, 235, 1835, 355), regions.FirstResultCompletionState);
             Assert.Equal(Rectangle.FromLTRB(1670, 280, 1820, 330), regions.FirstResultCompletionLabel);
             Assert.Equal(Rectangle.FromLTRB(1585, 319, 1650, 354), regions.FirstResultRewardValue);
@@ -482,14 +557,18 @@ namespace InventoryKamera.Tests
             bool completed = false,
             AchievementSearchFieldEvidence search = null,
             string matchText = "",
-            string pageText = "") =>
+            string pageText = "",
+            string noResultsText = "") =>
             AchievementScreenDetector.Classify(
                 FullHd,
                 AchievementTextEvidence.ForTest("Achievements", heading),
                 search ?? AchievementSearchFieldEvidence.ForTest(),
                 AchievementTextEvidence.ForTest("Achievements completed: 123", completed),
                 AchievementMatchCountParser.Parse(matchText),
-                AchievementPageCounterParser.Parse(pageText));
+                AchievementPageCounterParser.Parse(pageText),
+                noResultsEvidence: AchievementTextEvidence.ForTest(
+                    noResultsText,
+                    !string.IsNullOrWhiteSpace(noResultsText)));
 
         private static void AssertNormalized(
             Rectangle actual,

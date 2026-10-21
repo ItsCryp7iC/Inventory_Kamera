@@ -1,11 +1,96 @@
 using System.Linq;
 using System.Collections.Generic;
 using Xunit;
+using System.Windows.Forms;
 
 namespace InventoryKamera.Tests
 {
     public sealed class AchievementScanUiPolicyTests
     {
+        [Fact]
+        public void CancellationHotkeys_KeepLegacyEnterAndReserveF8ForAchievements()
+        {
+            Assert.Equal(Keys.Enter, ScanCancellationHotkeyPolicy.KeyFor(
+                ScanCancellationHotkeyMode.LegacyInventory));
+            Assert.Equal(Keys.F8, ScanCancellationHotkeyPolicy.KeyFor(
+                ScanCancellationHotkeyMode.Achievement));
+            Assert.NotEqual(
+                Keys.Enter,
+                ScanCancellationHotkeyPolicy.KeyFor(ScanCancellationHotkeyMode.Achievement));
+            Assert.True(ScanCancellationHotkeyPolicy.IsCancellationKey(
+                ScanCancellationHotkeyMode.LegacyInventory, Keys.Enter));
+            Assert.False(ScanCancellationHotkeyPolicy.IsCancellationKey(
+                ScanCancellationHotkeyMode.Achievement, Keys.Enter));
+            Assert.True(ScanCancellationHotkeyPolicy.IsCancellationKey(
+                ScanCancellationHotkeyMode.Achievement, Keys.F8));
+            Assert.Equal("Stop", ScanCancellationHotkeyPolicy.RegistrationName);
+        }
+
+        [Fact]
+        public void SelectingAchievementsClearsEveryLegacyCategory()
+        {
+            AchievementScanSelection selection =
+                AchievementScanSelectionPolicy.SelectAchievements(true);
+
+            Assert.True(selection.Achievements);
+            Assert.False(selection.HasLegacySelection);
+            Assert.False(selection.LegacyChoicesEnabled);
+            Assert.True(selection.AchievementChoiceEnabled);
+            Assert.True(selection.AchievementImportEnabled);
+            Assert.True(AchievementScanSelectionPolicy.IsValid(selection));
+        }
+
+        [Fact]
+        public void SelectingLegacyCategoriesClearsAchievementsAndPreservesLegacyCombination()
+        {
+            AchievementScanSelection selection = AchievementScanSelectionPolicy.SelectLegacy(
+                weapons: true,
+                artifacts: true,
+                characters: false,
+                characterDevelopmentItems: true,
+                materials: false);
+
+            Assert.False(selection.Achievements);
+            Assert.True(selection.Weapons);
+            Assert.True(selection.Artifacts);
+            Assert.True(selection.CharacterDevelopmentItems);
+            Assert.True(selection.LegacyChoicesEnabled);
+            Assert.False(selection.AchievementChoiceEnabled);
+            Assert.False(selection.AchievementImportEnabled);
+            Assert.True(AchievementScanSelectionPolicy.IsValid(selection));
+        }
+
+        [Fact]
+        public void ClearingLastLegacyCategoryRestoresBothFamilies()
+        {
+            AchievementScanSelection selection = AchievementScanSelectionPolicy.SelectLegacy(
+                weapons: false,
+                artifacts: false,
+                characters: false,
+                characterDevelopmentItems: false,
+                materials: false);
+
+            Assert.False(selection.Achievements);
+            Assert.False(selection.HasLegacySelection);
+            Assert.True(selection.LegacyChoicesEnabled);
+            Assert.True(selection.AchievementChoiceEnabled);
+            Assert.False(selection.AchievementImportEnabled);
+        }
+
+        [Fact]
+        public void MixedAchievementAndLegacySelectionIsRejectedByPurePolicy()
+        {
+            var mixed = new AchievementScanSelection(
+                achievements: true,
+                weapons: true,
+                artifacts: false,
+                characters: false,
+                characterDevelopmentItems: false,
+                materials: false);
+
+            Assert.False(AchievementScanSelectionPolicy.IsValid(mixed));
+        }
+
         [Fact]
         public void Warning_IsShownOnlyWhenAchievementsAreSelected()
         {

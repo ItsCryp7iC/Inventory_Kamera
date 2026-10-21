@@ -17,6 +17,14 @@ namespace InventoryKamera
             Bitmap screenshot);
     }
 
+    internal interface IAchievementSharedScreenCompletionClassifier
+    {
+        AchievementCompletionResult Classify(
+            AchievementIdentityResult identity,
+            Bitmap screenshot,
+            AchievementScreenDetection screenDetection);
+    }
+
     internal enum AchievementCompletionState
     {
         CompletedUnclaimed,
@@ -87,7 +95,9 @@ namespace InventoryKamera
     /// SearchActive screen evidence, then classifies only explicit row-level semantic evidence.
     /// It never infers completion from absence and never selects a staged canonical ID.
     /// </summary>
-    internal sealed class AchievementCompletionClassifier : IAchievementCompletionClassifier
+    internal sealed class AchievementCompletionClassifier :
+        IAchievementCompletionClassifier,
+        IAchievementSharedScreenCompletionClassifier
     {
         // This is the established semantic OCR floor used by the Phase 6A screen detector and
         // Phase 6D title verifier. Exact whole-token/fraction parsing remains mandatory above it.
@@ -107,7 +117,12 @@ namespace InventoryKamera
 
         public AchievementCompletionResult Classify(
             AchievementIdentityResult identity,
-            Bitmap screenshot)
+            Bitmap screenshot) => Classify(identity, screenshot, null);
+
+        public AchievementCompletionResult Classify(
+            AchievementIdentityResult identity,
+            Bitmap screenshot,
+            AchievementScreenDetection screenDetection)
         {
             if (identity == null)
                 return Finish(
@@ -136,22 +151,31 @@ namespace InventoryKamera
                     Array.Empty<AchievementCompletionOcrAttempt>(),
                     "The current full capture was not supplied.");
 
-            AchievementScreenDetection screen;
-            try
+            AchievementScreenDetection screen = screenDetection;
+            if (screen == null)
             {
-                screen = screenDetector.Detect(screenshot);
-            }
-            catch (Exception ex)
-            {
-                return Finish(
-                    AchievementCompletionState.Unresolved,
-                    identity,
-                    null,
-                    Array.Empty<AchievementCompletionOcrAttempt>(),
-                    $"Current-screen detection failed: {ex.GetType().Name}: {ex.Message}");
+                try
+                {
+                    screen = screenDetector.Detect(screenshot);
+                }
+                catch (Exception ex)
+                {
+                    return Finish(
+                        AchievementCompletionState.Unresolved,
+                        identity,
+                        null,
+                        Array.Empty<AchievementCompletionOcrAttempt>(),
+                        $"Current-screen detection failed: {ex.GetType().Name}: {ex.Message}");
+                }
             }
 
-            if (screen.ScreenState != AchievementScreenState.SearchActive)
+            bool corroboratedUnknownSearchResult =
+                screen.ScreenState == AchievementScreenState.Unknown &&
+                identity.UsedCorroboratedSearchResult &&
+                HasSingleResultPageMarkers(screen) &&
+                HasSingleResultPageMarkers(identity.ScreenDetection);
+            if (screen.ScreenState != AchievementScreenState.SearchActive &&
+                !corroboratedUnknownSearchResult)
                 return Finish(
                     AchievementCompletionState.Unresolved,
                     identity,
@@ -170,7 +194,9 @@ namespace InventoryKamera
             AchievementCompletionRead read;
             try
             {
-                read = completionReader.Read(screenshot);
+                read = completionReader is IAchievementLazyCompletionReader lazyReader
+                    ? lazyReader.Read(screenshot, CanStopAfterVariant)
+                    : completionReader.Read(screenshot);
             }
             catch (Exception ex)
             {
@@ -195,21 +221,33 @@ namespace InventoryKamera
                     "Completion-state OCR returned no usable text.");
             }
 
-            bool claimObserved = attempts.Any(attempt => attempt.ClaimTokenDetected);
-            bool completedObserved = attempts.Any(attempt => attempt.CompletedTokenDetected);
-            bool claimAccepted = attempts.Any(attempt =>
+            AchievementCompletionOcrAttempt[] labelAttempts = attempts
+                .Where(attempt => attempt.Scope == AchievementCompletionOcrScope.StateLabel)
+                .ToArray();
+            bool labelHasSemanticToken = labelAttempts.Any(attempt =>
+                attempt.ClaimTokenDetected || attempt.CompletedTokenDetected);
+            AchievementCompletionOcrAttempt[] semanticAttempts = labelHasSemanticToken
+                ? labelAttempts
+                : attempts;
+
+            bool claimObserved = semanticAttempts.Any(attempt => attempt.ClaimTokenDetected);
+            bool completedObserved = semanticAttempts.Any(attempt => attempt.CompletedTokenDetected);
+            bool claimAccepted = semanticAttempts.Any(attempt =>
                 attempt.ClaimTokenDetected && attempt.Confidence >= MinimumEvidenceConfidence);
-            bool completedAccepted = attempts.Any(attempt =>
+            bool completedAccepted = semanticAttempts.Any(attempt =>
                 attempt.CompletedTokenDetected && attempt.Confidence >= MinimumEvidenceConfidence);
 
-            AchievementCompletionOcrAttempt[] parsedProgress = attempts
+            // Fractions from the broad completion crop are not progress evidence. Live logs show
+            // that completion dates and reward decoration in that crop are routinely OCR'd as
+            // contradictory fractions. Progress is accepted only from the dedicated label band.
+            AchievementCompletionOcrAttempt[] parsedProgress = labelAttempts
                 .Where(attempt => attempt.Progress.Accepted)
                 .ToArray();
             var distinctProgress = parsedProgress
                 .Select(attempt => (attempt.Progress.Current.Value, attempt.Progress.Target.Value))
                 .Distinct()
                 .ToArray();
-            bool progressConflict = attempts.Any(attempt => attempt.Progress.MultipleFractions) ||
+            bool progressConflict = labelAttempts.Any(attempt => attempt.Progress.MultipleFractions) ||
                 distinctProgress.Length > 1;
             bool incompleteObserved = parsedProgress.Any(attempt =>
                 attempt.Progress.Current < attempt.Progress.Target);
@@ -292,6 +330,40 @@ namespace InventoryKamera
                 "No positive row-level completion-state evidence was recognized.");
         }
 
+        private static bool CanStopAfterVariant(
+            IReadOnlyList<AchievementCompletionOcrAttempt> attempts)
+        {
+            AchievementCompletionOcrAttempt[] labelAttempts = attempts
+                .Where(attempt => attempt.Scope == AchievementCompletionOcrScope.StateLabel)
+                .ToArray();
+            bool claimObserved = labelAttempts.Any(attempt => attempt.ClaimTokenDetected);
+            bool completedObserved = labelAttempts.Any(attempt => attempt.CompletedTokenDetected);
+            var progress = labelAttempts
+                .Where(attempt => attempt.Progress.Accepted)
+                .Select(attempt => (attempt.Progress.Current.Value, attempt.Progress.Target.Value))
+                .Distinct()
+                .ToArray();
+            bool incompleteObserved = labelAttempts.Any(attempt =>
+                attempt.Progress.Accepted && attempt.Progress.Current < attempt.Progress.Target);
+            bool conflict = labelAttempts.Any(attempt => attempt.Progress.MultipleFractions) ||
+                progress.Length > 1 ||
+                (claimObserved && completedObserved) ||
+                (incompleteObserved && (claimObserved || completedObserved));
+            if (conflict) return false;
+
+            return labelAttempts.Any(attempt => attempt.Confidence >= MinimumEvidenceConfidence &&
+                (attempt.ClaimTokenDetected ||
+                 attempt.CompletedTokenDetected ||
+                 (attempt.Progress.Accepted && attempt.Progress.Current < attempt.Progress.Target)));
+        }
+
+        private static bool HasSingleResultPageMarkers(AchievementScreenDetection screen) =>
+            screen?.MatchCountAccepted == true &&
+            screen.MatchCountValue == 1 &&
+            screen.ResultPageAccepted &&
+            screen.ResultPageCurrent == 1 &&
+            screen.ResultPageTotal == 1;
+
         private static AchievementCompletionResult Finish(
             AchievementCompletionState state,
             AchievementIdentityResult identity,
@@ -301,9 +373,21 @@ namespace InventoryKamera
         {
             AchievementCompletionOcrAttempt[] attemptArray =
                 (attempts ?? Array.Empty<AchievementCompletionOcrAttempt>()).ToArray();
-            AchievementCompletionOcrAttempt claim = Select(attemptArray, attempt => attempt.ClaimTokenDetected);
-            AchievementCompletionOcrAttempt completed = Select(attemptArray, attempt => attempt.CompletedTokenDetected);
-            AchievementCompletionOcrAttempt progress = Select(attemptArray, attempt => attempt.Progress.Accepted);
+            bool labelHasSemanticToken = attemptArray.Any(attempt =>
+                attempt.Scope == AchievementCompletionOcrScope.StateLabel &&
+                (attempt.ClaimTokenDetected || attempt.CompletedTokenDetected));
+            AchievementCompletionOcrAttempt[] semanticAttempts = labelHasSemanticToken
+                ? attemptArray.Where(attempt =>
+                    attempt.Scope == AchievementCompletionOcrScope.StateLabel).ToArray()
+                : attemptArray;
+            AchievementCompletionOcrAttempt claim = Select(
+                semanticAttempts, attempt => attempt.ClaimTokenDetected);
+            AchievementCompletionOcrAttempt completed = Select(
+                semanticAttempts, attempt => attempt.CompletedTokenDetected);
+            AchievementCompletionOcrAttempt progress = Select(
+                attemptArray,
+                attempt => attempt.Scope == AchievementCompletionOcrScope.StateLabel &&
+                    attempt.Progress.Accepted);
             AchievementCompletionOcrAttempt date = Select(attemptArray, attempt => attempt.DateRaw.Length > 0);
             AchievementCompletionOcrAttempt selected = state switch
             {

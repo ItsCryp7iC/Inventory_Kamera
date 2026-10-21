@@ -17,6 +17,7 @@ namespace InventoryKamera
         NotAchievementScreen,
         Idle,
         SearchActive,
+        SearchNoResults,
         Unknown,
     }
 
@@ -140,7 +141,8 @@ namespace InventoryKamera
             AchievementTextEvidence resultPageEvidence,
             AchievementPageCounterParseResult resultPage,
             AchievementScreenRegions regions,
-            string reason)
+            string reason,
+            AchievementTextEvidence noResultsEvidence = null)
         {
             ScreenState = screenState;
             AchievementHeading = achievementHeading ?? throw new ArgumentNullException(nameof(achievementHeading));
@@ -150,6 +152,10 @@ namespace InventoryKamera
             MatchCount = matchCount;
             ResultPageEvidence = resultPageEvidence ?? throw new ArgumentNullException(nameof(resultPageEvidence));
             ResultPage = resultPage;
+            NoResultsEvidence = noResultsEvidence ?? AchievementTextEvidence.ForTest(
+                string.Empty,
+                accepted: false,
+                reason: "The explicit no-results phrase was not read for this state.");
             Regions = regions ?? throw new ArgumentNullException(nameof(regions));
             Reason = reason ?? string.Empty;
             Diagnostics = BuildDiagnostics();
@@ -163,17 +169,22 @@ namespace InventoryKamera
         internal AchievementMatchCountParseResult MatchCount { get; }
         internal AchievementTextEvidence ResultPageEvidence { get; }
         internal AchievementPageCounterParseResult ResultPage { get; }
+        internal AchievementTextEvidence NoResultsEvidence { get; }
         internal AchievementScreenRegions Regions { get; }
         internal string Reason { get; }
         internal string Diagnostics { get; }
 
         internal bool AchievementHeadingAccepted => AchievementHeading.Accepted;
         internal bool SearchFieldAccepted => SearchField.Accepted;
+        internal bool IsKeyboardMouseIdle =>
+            ScreenState == AchievementScreenState.Idle && SearchField.IdlePlaceholderAccepted;
         internal bool CompletedCountAccepted => CompletedCount.Accepted;
         internal string MatchCountRaw => MatchCount.RawText;
         internal int? MatchCountValue => MatchCount.Value;
         internal bool MatchCountAccepted => MatchCount.Accepted;
-        internal AchievementResultCountState ResultCountState => !MatchCount.Value.HasValue
+        internal AchievementResultCountState ResultCountState => ScreenState == AchievementScreenState.SearchNoResults
+            ? AchievementResultCountState.NoResults
+            : !MatchCount.Value.HasValue
             ? AchievementResultCountState.NoValidCount
             : MatchCount.Value.Value == 0
                 ? AchievementResultCountState.NoResults
@@ -211,6 +222,7 @@ namespace InventoryKamera
             builder.AppendLine($"  total={Format(ResultPage.Total)}");
             builder.AppendLine($"  accepted={ResultPage.Accepted}");
             builder.AppendLine($"  reason={Bound(ResultPage.Reason)}");
+            AppendText(builder, "noResultsMessage", NoResultsEvidence);
             builder.AppendLine($"finalState={ScreenState}");
             builder.Append($"reason={Bound(Reason)}");
             return builder.ToString();
@@ -296,6 +308,23 @@ namespace InventoryKamera
                 (raw, _) => ParseEvaluation(AchievementPageCounterParser.Parse(raw)));
             AchievementPageCounterParseResult page = AchievementPageCounterParser.Parse(pageText.RawText);
 
+            AchievementTextEvidence noResults = AchievementTextEvidence.ForTest(
+                string.Empty,
+                accepted: false,
+                reason: "No-results OCR was not needed for this screen state.");
+            int achievementSignals =
+                (heading.Accepted ? 1 : 0) +
+                (search.Accepted ? 1 : 0) +
+                (completed.Accepted ? 1 : 0);
+            if (achievementSignals >= 2 && search.ActiveControlsAccepted && !match.Accepted)
+            {
+                noResults = ReadSemanticRegion(
+                    screenshot,
+                    regions.NoResultsMessage,
+                    PageSegMode.SingleLine,
+                    EvaluateNoResultsMessage);
+            }
+
             AchievementScreenDetection detection = Classify(
                 screenshot.Size,
                 heading,
@@ -305,7 +334,8 @@ namespace InventoryKamera
                 page,
                 regions,
                 matchText,
-                pageText);
+                pageText,
+                noResults);
             Logger.Debug(detection.Diagnostics);
             return detection;
         }
@@ -319,7 +349,8 @@ namespace InventoryKamera
             AchievementPageCounterParseResult pageCounter,
             AchievementScreenRegions regions = null,
             AchievementTextEvidence matchCountEvidence = null,
-            AchievementTextEvidence pageCounterEvidence = null)
+            AchievementTextEvidence pageCounterEvidence = null,
+            AchievementTextEvidence noResultsEvidence = null)
         {
             if (heading == null) throw new ArgumentNullException(nameof(heading));
             if (search == null) throw new ArgumentNullException(nameof(search));
@@ -338,6 +369,10 @@ namespace InventoryKamera
                 1.0f,
                 pageCounter.Accepted,
                 pageCounter.Reason);
+            noResultsEvidence ??= AchievementTextEvidence.ForTest(
+                string.Empty,
+                accepted: false,
+                reason: "No explicit no-results phrase was supplied.");
             int achievementSignals =
                 (heading.Accepted ? 1 : 0) +
                 (search.Accepted ? 1 : 0) +
@@ -346,13 +381,23 @@ namespace InventoryKamera
             bool strongIdle = search.IdlePlaceholderAccepted;
             bool anyIdle = search.IdleAccepted;
             bool strongActive = matchCount.Accepted;
+            bool contradictoryPositiveMatch =
+                matchCount.Accepted && matchCount.Value.GetValueOrDefault() > 0;
+            bool strongNoResults = search.ActiveControlsAccepted &&
+                noResultsEvidence.Accepted &&
+                !contradictoryPositiveMatch;
 
             AchievementScreenState state;
             string reason;
-            if (strongAchievementScreen && strongIdle && strongActive)
+            if (strongAchievementScreen && strongIdle && (strongActive || strongNoResults))
             {
                 state = AchievementScreenState.Unknown;
-                reason = "Strong idle placeholder and active Match(es) evidence conflict.";
+                reason = "Strong idle placeholder and active-search evidence conflict.";
+            }
+            else if (strongAchievementScreen && strongNoResults)
+            {
+                state = AchievementScreenState.SearchNoResults;
+                reason = "Achievement screen, populated search controls, and the explicit no-results phrase were positively recognized.";
             }
             else if (strongAchievementScreen && strongActive)
             {
@@ -366,7 +411,8 @@ namespace InventoryKamera
                     ? "Achievement screen has multiple positive signals and the idle placeholder."
                     : "Achievement screen has multiple positive signals and the controller Search prompt.";
             }
-            else if (achievementSignals == 0 && !matchCount.Accepted && !pageCounter.Accepted)
+            else if (achievementSignals == 0 && !matchCount.Accepted && !pageCounter.Accepted &&
+                !noResultsEvidence.Accepted)
             {
                 state = AchievementScreenState.NotAchievementScreen;
                 reason = "No positive Achievement-screen or search-result evidence was found.";
@@ -389,7 +435,8 @@ namespace InventoryKamera
                 pageCounterEvidence,
                 pageCounter,
                 regions,
-                reason);
+                reason,
+                noResultsEvidence);
         }
 
         private AchievementTextEvidence ReadSemanticRegion(
@@ -478,6 +525,27 @@ namespace InventoryKamera
             return analysis.Accepted
                 ? SignalEvaluation.Accept(analysis.Reason)
                 : SignalEvaluation.Reject(analysis.Reason);
+        }
+
+        private static SignalEvaluation EvaluateNoResultsMessage(string raw, float confidence)
+        {
+            const string expected = "noachievementsrelatedto";
+            string normalized = Normalize(raw);
+            if (normalized.Contains("no achievements related to", StringComparison.Ordinal))
+                return SignalEvaluation.Accept("The explicit no-results phrase was found.");
+
+            string letters = LettersOnly(normalized);
+            if (confidence >= FuzzyMinimumConfidence && letters.Length >= expected.Length)
+            {
+                for (int start = 0; start <= letters.Length - expected.Length; start++)
+                {
+                    if (Similarity(letters.Substring(start, expected.Length), expected) >= 88.0)
+                        return SignalEvaluation.Accept(
+                            "The explicit no-results phrase passed the local OCR-tolerant comparison.");
+                }
+            }
+
+            return SignalEvaluation.Reject("The explicit no-results phrase was not recognized.");
         }
 
         private static AchievementSearchFieldEvidence AnalyzeSearchField(AchievementTextEvidence text)

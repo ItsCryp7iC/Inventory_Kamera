@@ -17,7 +17,7 @@ Add a reliable, external, screen-based Genshin Impact Achievement Scanner to Inv
 The scanner must:
 
 - operate only through screenshots, OCR/computer vision, and normal input;
-- reuse Inventory Kamera's existing hardened scan, controller, recovery, diagnostics, cancellation, and export infrastructure;
+- reuse Inventory Kamera's hardened capture, diagnostics, cancellation, and export infrastructure while keeping Achievement input independent of the legacy controller lifecycle;
 - identify completed achievements using positive evidence only;
 - map results to canonical achievement IDs compatible with Traveler's Toolkit;
 - fail closed when search results, achievement identity, or completion state are ambiguous;
@@ -46,7 +46,7 @@ Inventory Kamera must **not** copy AkashaScanner blindly.
 Important differences in the current Genshin UI and this project:
 
 - current search results expose explicit positive completion signals such as `Claim`, `Completed`, completion dates, and progress counters;
-- Inventory Kamera already has a controller abstraction, recovery workflow, capture guard, failure diagnostics, and scan session lifecycle;
+- Inventory Kamera already has a capture guard, failure diagnostics, and scan session lifecycle; its controller abstraction and recovery workflow remain specific to legacy inventory scans;
 - Traveler's Toolkit already has a canonical achievement catalog and import/export logic;
 - ambiguous results must be handled with stronger verification than the historical scanner used.
 
@@ -84,17 +84,20 @@ Observed positive states include:
 - pale `Completed` stamp + visible completion date: achievement is completed and reward is already claimed;
 - progress fraction such as `0/1` or `3/20`: achievement is not yet completed.
 
-### Controller mode
+### Input mode boundary (Phase 6K.3)
 
-Controller mode remains usable for menu navigation.
+The Achievement Scanner is a standalone **Keyboard/Mouse-mode** feature. The user places Genshin
+Impact in Keyboard/Mouse mode and opens the Achievements screen when prompted by the companion
+overlay. The readiness loop is passive and does not send input.
 
-Text entry into the achievement search field still requires normal keyboard text input.
+Achievement-only scans must not create a ViGEm backend, enter a `GameInputSession`, borrow
+`GameNavigator`, switch the game to Controller mode, or perform controller restoration. Search
+text and semantic mouse clicks remain isolated behind achievement-specific keyboard/mouse
+abstractions rather than being mixed directly into OCR or classification logic.
 
-Therefore:
-
-- controller navigation and keyboard text entry may coexist;
-- the scanner does not need to switch the whole game back to Keyboard/Mouse just to enter search text;
-- text injection must still be isolated behind an abstraction and must not be mixed directly into scanner logic.
+The legacy weapon, artifact, character, development-item, and material scanners remain
+controller-assisted and keep their existing input lifecycle. The two scan families are mutually
+exclusive in the MainForm selection UI.
 
 ---
 
@@ -166,7 +169,7 @@ Achievement scanning must preserve:
 
 - cancellation semantics;
 - capture-overlay hiding;
-- controller recovery lifecycle;
+- controller recovery lifecycle for legacy inventory scans;
 - result staging/publication rules;
 - bounded retry behavior;
 - no forced export after cancellation unless existing policy explicitly permits manual export;
@@ -178,11 +181,8 @@ Achievement scanning must preserve:
 
 Achievement scanning should reuse existing abstractions where practical.
 
-Preferred existing components include:
+Preferred shared components include:
 
-- `GameInputSession`
-- `GameNavigator`
-- `IGameInput`
 - `CaptureOverlayGuard`
 - `ScanCompanionOverlay`
 - `FailureDiagnosticStore`
@@ -194,7 +194,9 @@ Preferred existing components include:
 - existing cancellation token / cancellation checks
 - current result publication patterns
 
-Do not create a parallel controller lifecycle, second recovery system, or achievement-specific global mutable input state.
+Achievement-only scanning uses `AchievementKeyboardMouseNavigator`, `GameTextInput`, and a small
+normal-Windows-pointer abstraction. It must not create a parallel controller lifecycle, second
+recovery system, or achievement-specific global mutable input state.
 
 If achievement scanning needs text entry, introduce or reuse a small text-input abstraction rather than directly depending on InputSimulator from the scraper.
 
@@ -262,21 +264,27 @@ The scanner should be able to positively classify at least:
 - multi-result state;
 - single-result state.
 
-The navigation sequence must use bounded attempts and fresh captures.
+The navigation sequence must use bounded attempts and fresh captures. On the healthy Phase 6K.3
+path, one fresh post-submit capture is shared across screen, identity, completion, and conditional
+reward classification.
 
 ### Text entry
 
-Keyboard text input is allowed while Genshin is in controller mode.
+Achievement scanning requires Genshin to be in Keyboard/Mouse mode.
 
 Requirements:
 
-- text injection must occur only when search-field focus is positively established;
-- existing search text must be cleared explicitly;
+- the known idle Keyboard/Mouse layout must be established before the scanner starts;
+- focus is obtained by a normalized semantic click at the fixed Search/Clear toggle point; exact
+  typing is used when Idle/Clear proof establishes an empty field, while Ctrl+A/Delete replacement
+  is reserved for bounded stale-text recovery;
 - the scanner must not type blindly into an unknown screen;
-- after typing, search submission must use a verified semantic action;
-- after classification, search must be cleared/closed through a verified action.
+- after typing, search submission uses Enter and the result screen is the authoritative proof;
+- after classification, search is cleared through the visible Clear control and Idle is verified.
 
-If search focus or screen state cannot be proven, enter safe recovery or fail the achievement observation.
+If the result screen or identity cannot be proven, use only bounded fallback evidence and fail the
+achievement observation closed if uncertainty remains. Do not add an expensive focus-OCR loop to
+every healthy target.
 
 ---
 
@@ -636,7 +644,7 @@ Exit criteria:
 
 Goal:
 
-Safely automate one search in controller mode.
+Historical goal (superseded by Phase 6K.3): safely automate one search in controller mode.
 
 Deliverables:
 
@@ -867,6 +875,9 @@ patterns, unreadable rewards, and unmapped rewards add no stage IDs.
 
 #### Phase 6K.2 — application UI and lifecycle integration
 
+This section records the Phase 6K.2 integration design. Its shared-controller architecture is
+superseded by Phase 6K.3 below.
+
 The MainForm exposes an `Achievements` selection that defaults off. Achievement scanning runs as a
 self-contained final stage inside the existing `ScanRun`/`ScanSession` and its single
 `GameInputSession`; it does not create a second controller or perform independent restoration.
@@ -884,6 +895,92 @@ unknown IDs fail closed. Trusted results can be explicitly exported as a separat
 GOOD-like achievement file after complete, partial, or cancelled scans. Existing inventory GOOD
 export behavior remains separate and unchanged. No reward is claimed automatically, and the
 feature remains behind the release gate until Phase 6K.3 live validation is complete.
+
+#### Phase 6K.3 — standalone keyboard/mouse fast path
+
+Phase 6K.3 supersedes the Phase 6K.2 shared-controller staging architecture for Achievement scans.
+Achievements are a separate, mutually exclusive scan mode. Selecting Achievements clears and
+disables legacy categories; selecting any legacy category clears and disables Achievements until
+the last legacy selection is removed. Achievement progress import controls are shown only in
+Achievement mode.
+
+The dedicated start path performs only shared window, aspect-ratio, capture, foreground, OCR,
+preprocessing, cancellation, and overlay setup. It does not construct `GameScanner`, ViGEm,
+`GameInputSession`, or `GameNavigator`. After the existing accuracy warning, the companion overlay
+asks the user to switch Genshin Impact to Keyboard/Mouse mode and open the idle Achievements screen.
+A cancellable passive readiness waiter captures until a positively supported idle layout appears;
+it issues no keyboard or mouse input and replaces the former start handoff modal.
+
+At scan start, `AchievementKeyboardMouseNavigator` foregrounds the game and moves the cursor once
+to a normalized Search/Clear toggle point. That point is inside the empty search field and remains
+under the Clear control while a query is active. Each healthy target then clicks without moving,
+types the exact canonical title without routine Ctrl+A/Delete cleanup, waits about 100 ms, submits
+with Enter, waits about 300 ms, and captures one fresh result bitmap. The healthy path performs one
+screen detection and reuses that bitmap for identity, completion, and staged reward reading. Result
+verification remains authoritative; malformed, unknown, multi-match, and ambiguous evidence fails
+closed. A stationary click activates Clear, followed by a 250 ms settle and idle verification; a
+bounded second click and exact text replacement remain recovery-only behavior. The verified Clear
+state is reused as the next target's start-state proof, avoiding a routine third capture.
+
+Achievement-only scanning registers `F8` as its explicit cancellation hotkey because Enter is part
+of the search-submit input sequence. Legacy scans retain their existing Enter cancellation hotkey.
+The companion overlay displays the hotkey for the active scan mode. After a pending-Claim pause,
+the scanner restores the fixed pointer once and positively reacquires a supported Achievement state
+before rescanning the same target. External pointer movement is likewise corrected only as a
+bounded fallback, rather than causing per-target cursor movement.
+
+Title OCR tries the threshold variant first and evaluates additional contrast/inverted variants
+only when independent identity evidence is not yet acceptable. Completion OCR likewise proceeds
+variant-by-variant and stops only after strong, non-conflicting evidence; fallbacks and conflict
+safety remain. Reward OCR runs only for an identified stage group that is not pending Claim and
+whose completion state requires stage resolution. Comparison-only apostrophe, dash, and diacritic
+folding, noise-aware canonical spans, collision rules, pending-Claim behavior, and trusted-export
+boundaries remain unchanged.
+
+Live Defect #5 recovery remains conditional. The primary title crop is unchanged for healthy
+targets; an expanded title-band crop ending before the completion column is OCR'd only when primary
+title evidence is insufficient. A left-anchored canonical prefix of at least 20 comparison-normalized
+characters may identify a unique or staged title only when the scanner's exact canonical query has
+fresh `Match(es): 1` and `1/1` evidence, OCR confidence remains above the established floor, and no
+other catalog title has a safely equivalent prefix. Unrelated collisions and multiple matches remain
+ambiguous.
+
+Completion semantics prioritize the dedicated state-label/progress band. Fractions found only in the
+broad completion crop are not progress evidence because that crop also contains dates and reward
+decoration; Claim/Completed tokens in the broad crop remain bounded fallback evidence when the label
+band contains no semantic token. Progress still requires exactly one strict `current/target` value
+from the label band with `current < target`; equal progress and conflicts fail closed.
+
+When a valid single-result frame leaves identity or completion unresolved, the single scanner waits
+150 ms and captures at most one fresh result frame without re-entering or resubmitting the query.
+Identity recovery reruns identity only, then runs completion for the first time if identity becomes
+positive. Completion recovery reruns completion only. Logs record `identityRecoveryUsed`,
+`completionRecoveryUsed`, `extraCaptureCount`, `recoveryDelayMs`, and the recovery result; aggregate
+timing reports separate healthy fast-path and recovered-target buckets.
+
+An explicit keyboard/mouse no-results screen is a separate positive state, not a blank-panel
+inference. When normal Match(es) evidence is absent, the detector lazily OCRs a bounded central
+message band and requires the semantic phrase `No achievements related to`, active populated-search
+controls, and multiple Achievement-page signals, with no contradictory positive match count. The
+navigator accepts that state as a successful submission only when the exact normalized canonical
+query is also visible in the search field or quoted no-results message.
+
+For a unique hidden canonical title, positively verified exact-title no-results evidence means the
+achievement is Incomplete and contributes no trusted completed ID. The same conclusion is safe for
+an all-hidden canonical stage family: stage 1 is incomplete and zero stages are complete. A
+non-hidden title, unrelated collision, or mixed hidden/non-hidden title group remains Unresolved as
+a catalog/search mismatch. Every zero-result outcome still uses the normal stationary Clear action
+and must positively return to keyboard/mouse Idle before the catalog can continue. Ordinary result
+rows retain the existing identity, completion, and Defect #5 recovery requirements.
+
+Per-target logs record focus/type/submit, result wait, capture, screen detection, identity OCR,
+completion OCR, reward OCR, clear, and total durations. Completed targets also report aggregate
+mean, median, and p95 total time. These diagnostics support tuning; they are not a wall-clock CI
+contract or an overlay detail.
+
+Phase 6K.3 remains behind its live validation gate. Automated coverage cannot establish production
+readiness, and no production-ready claim should be made until the prescribed live Keyboard/Mouse
+scan, recovery, cancellation, pending-Claim, and supported-resolution checks have passed.
 
 ---
 
@@ -955,7 +1052,8 @@ On cancellation:
 
 - stop issuing new searches;
 - cancel pending waits/retries;
-- release or restore input state using the existing session lifecycle;
+- release or restore input state using the existing session lifecycle only when a legacy scan owns it;
+- perform no controller restoration for an Achievement-only run because it never creates a controller;
 - do not fabricate completion for the current partial observation;
 - preserve results only according to existing cancellation/export policy.
 
@@ -1080,7 +1178,7 @@ Achievement Scanner must not be advertised as production-ready until all of the 
 
 ## 27. Immediate next task
 
-The next task after the automated Phase 6K.2 integration gate is **Phase 6K.3 live validation**.
-It must be performed manually by the user under a separately approved brief. Phase 6K.2 must not
-launch Genshin, run a live harness, or control ViGEm outside the normal application lifecycle.
+The next task after the automated Phase 6K.3 implementation gate is **Phase 6K.3 live validation**.
+It must be performed manually by the user under a separately approved brief. Automated implementation
+work must not launch Genshin, run a live harness, or create/control ViGEm for Achievement scanning.
 

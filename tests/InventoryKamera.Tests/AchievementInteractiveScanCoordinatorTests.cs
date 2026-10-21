@@ -2,12 +2,53 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using InventoryKamera.game;
 using Xunit;
 
 namespace InventoryKamera.Tests
 {
     public sealed class AchievementInteractiveScanCoordinatorTests
     {
+        [Fact]
+        public void TimingSummary_UsesOnlyCompletedTargetsAndCalculatesMeanMedianAndP95()
+        {
+            AchievementCatalog catalog = Catalog("Alpha", "Beta", "Gamma", "Not Ready");
+            AchievementTimingSummary summary = AchievementTimingSummary.Calculate(new[]
+            {
+                Result(catalog, 1, AchievementSingleScanState.Completed, totalMilliseconds: 100),
+                Result(catalog, 2, AchievementSingleScanState.Incomplete, totalMilliseconds: 200),
+                Result(catalog, 3, AchievementSingleScanState.Completed, totalMilliseconds: 1_000),
+                Result(catalog, 4, AchievementSingleScanState.Completed, ready: false, totalMilliseconds: 9_000),
+            });
+
+            Assert.Equal(3, summary.CompletedTargetCount);
+            Assert.Equal(433.3, summary.MeanTotalMilliseconds, precision: 1);
+            Assert.Equal(200, summary.MedianTotalMilliseconds);
+            Assert.Equal(1_000, summary.P95TotalMilliseconds);
+            Assert.Equal(3, summary.FastPath.Count);
+            Assert.Equal(0, summary.Recovered.Count);
+        }
+
+        [Fact]
+        public void TimingSummary_SeparatesFastPathAndRecoveredTargets()
+        {
+            AchievementCatalog catalog = Catalog("Fast A", "Recovered", "Fast B");
+            AchievementTimingSummary summary = AchievementTimingSummary.Calculate(new[]
+            {
+                Result(catalog, 1, AchievementSingleScanState.Completed, totalMilliseconds: 100),
+                Result(catalog, 2, AchievementSingleScanState.Completed, totalMilliseconds: 400,
+                    recognitionRecoveryUsed: true),
+                Result(catalog, 3, AchievementSingleScanState.Completed, totalMilliseconds: 200),
+            });
+
+            Assert.Equal(2, summary.FastPath.Count);
+            Assert.Equal(150, summary.FastPath.Mean);
+            Assert.Equal(1, summary.Recovered.Count);
+            Assert.Equal(400, summary.Recovered.Mean);
+            Assert.Contains("fastPathCount=2", summary.Diagnostics);
+            Assert.Contains("recoveredCount=1", summary.Diagnostics);
+        }
+
         [Fact]
         public void PendingClaimResume_RescansSameTargetBeforeNextTarget()
         {
@@ -30,6 +71,8 @@ namespace InventoryKamera.Tests
             Assert.Equal(2, result.ProcessedScanTargets);
             Assert.Equal(3, result.ScanAttemptCount);
             Assert.Equal(new[] { 1 }, result.TrustedCompletedIds);
+            Assert.Equal(1, single.PrepareCount);
+            Assert.Equal(1, single.ReacquireCount);
         }
 
         [Fact]
@@ -119,6 +162,28 @@ namespace InventoryKamera.Tests
             Assert.Equal(AchievementCatalogScanState.Cancelled, result.State);
             Assert.Equal(new[] { 1 }, single.RequestedIds);
             Assert.Single(decisions.Requests);
+        }
+
+        [Fact]
+        public void CancellationBetweenTargets_DoesNotStartNextTarget()
+        {
+            AchievementCatalog catalog = Catalog("Alpha", "Beta");
+            using var cancellation = new CancellationTokenSource();
+            var single = new SequenceSingleScanner(
+                Result(catalog, 1, AchievementSingleScanState.Completed),
+                Result(catalog, 2, AchievementSingleScanState.Completed))
+            {
+                AfterScan = _ => cancellation.Cancel(),
+            };
+
+            AchievementInteractiveScanResult result = Coordinator(
+                catalog,
+                single,
+                new SequenceDecisions(),
+                cancellation.Cancel).Scan(null, cancellation.Token);
+
+            Assert.Equal(AchievementCatalogScanState.Cancelled, result.State);
+            Assert.Equal(new[] { 1 }, single.RequestedIds);
         }
 
         [Fact]
@@ -338,16 +403,28 @@ namespace InventoryKamera.Tests
             int requestedId,
             AchievementSingleScanState state,
             bool ready = true,
-            AchievementStageProgressResult stageProgressResult = null)
+            AchievementStageProgressResult stageProgressResult = null,
+            long? totalMilliseconds = null,
+            bool recognitionRecoveryUsed = false)
         {
             AchievementCatalogEntry entry = catalog.GetById(requestedId);
+            AchievementSearchNavigationResult searchResult = null;
+            if (totalMilliseconds.HasValue)
+            {
+                var timing = new AchievementTargetTiming { TotalMilliseconds = totalMilliseconds.Value };
+                timing.IdentityRecoveryUsed = recognitionRecoveryUsed;
+                searchResult = new AchievementSearchNavigationResult(
+                    "Search", true, false, string.Empty,
+                    null, null, null, null, null, 1, string.Empty,
+                    timing: timing);
+            }
             return new AchievementSingleScanResult(
                 state,
                 requestedId,
                 entry.Name,
                 catalog.GetTitleGroupForId(requestedId),
                 null,
-                null,
+                searchResult,
                 null,
                 null,
                 null,
@@ -372,11 +449,28 @@ namespace InventoryKamera.Tests
             internal SequenceSingleScanner(params AchievementSingleScanResult[] results) =>
                 this.results = new Queue<AchievementSingleScanResult>(results);
             internal List<int> RequestedIds { get; } = new();
+            internal int PrepareCount { get; private set; }
+            internal int ReacquireCount { get; private set; }
+            internal Action<int> AfterScan { get; set; }
+
+            public void PrepareForScan(CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                PrepareCount++;
+            }
+
+            public void ReacquireAfterUserInteraction(CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ReacquireCount++;
+            }
 
             public AchievementSingleScanResult Scan(int canonicalAchievementId, CancellationToken cancellationToken)
             {
                 RequestedIds.Add(canonicalAchievementId);
-                return results.Dequeue();
+                AchievementSingleScanResult result = results.Dequeue();
+                AfterScan?.Invoke(canonicalAchievementId);
+                return result;
             }
         }
 

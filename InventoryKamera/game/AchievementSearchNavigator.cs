@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.Text;
@@ -9,75 +10,112 @@ namespace InventoryKamera.game
 {
     internal interface IAchievementSearchNavigator
     {
+        void PreparePointer(CancellationToken cancellationToken, bool forceReposition = false) { }
         AchievementSearchNavigationResult Search(string query, CancellationToken cancellationToken);
-        AchievementSearchNavigationResult ExitSearch(CancellationToken cancellationToken);
+        AchievementSearchNavigationResult ClearSearch(CancellationToken cancellationToken) =>
+            throw new NotSupportedException("This navigator cannot clear Achievement search results.");
+    }
+
+    internal interface IAchievementPointerInput
+    {
+        void MoveNormalized(double x, double y, CancellationToken cancellationToken);
+        bool IsAtNormalized(double x, double y);
+        void Click(CancellationToken cancellationToken);
     }
 
     internal sealed class AchievementSearchNavigationTiming
     {
         internal static AchievementSearchNavigationTiming Default { get; } = new(
-            searchHoldMs: 90,
-            backHoldMs: 150,
-            foregroundSettleMs: 300,
-            openSettleMs: 500,
-            afterTypingSettleMs: 200,
-            submitSettleMs: 700,
-            exitSettleMs: 500,
-            retrySettleMs: 250,
-            focusAttempts: 3,
-            postTextFocusAttempts: 3,
-            resultAttempts: 3,
-            exitAttempts: 3);
+            focusSettleMs: 100,
+            afterTypingSettleMs: 100,
+            resultSettleMs: 300,
+            clearSettleMs: 250,
+            foregroundSettleMs: 150,
+            pointerSettleMs: 40,
+            searchAttempts: 2,
+            clearAttempts: 2);
 
         internal AchievementSearchNavigationTiming(
-            int searchHoldMs,
-            int backHoldMs,
-            int foregroundSettleMs,
-            int openSettleMs,
+            int focusSettleMs,
             int afterTypingSettleMs,
-            int submitSettleMs,
-            int exitSettleMs,
-            int retrySettleMs,
-            int focusAttempts,
-            int postTextFocusAttempts,
-            int resultAttempts,
-            int exitAttempts)
+            int resultSettleMs,
+            int clearSettleMs,
+            int foregroundSettleMs,
+            int pointerSettleMs,
+            int searchAttempts,
+            int clearAttempts)
         {
-            SearchHoldMs = NonNegative(searchHoldMs, nameof(searchHoldMs));
-            BackHoldMs = NonNegative(backHoldMs, nameof(backHoldMs));
-            ForegroundSettleMs = NonNegative(foregroundSettleMs, nameof(foregroundSettleMs));
-            OpenSettleMs = NonNegative(openSettleMs, nameof(openSettleMs));
+            FocusSettleMs = NonNegative(focusSettleMs, nameof(focusSettleMs));
             AfterTypingSettleMs = NonNegative(afterTypingSettleMs, nameof(afterTypingSettleMs));
-            SubmitSettleMs = NonNegative(submitSettleMs, nameof(submitSettleMs));
-            ExitSettleMs = NonNegative(exitSettleMs, nameof(exitSettleMs));
-            RetrySettleMs = NonNegative(retrySettleMs, nameof(retrySettleMs));
-            FocusAttempts = Positive(focusAttempts, nameof(focusAttempts));
-            PostTextFocusAttempts = Positive(postTextFocusAttempts, nameof(postTextFocusAttempts));
-            ResultAttempts = Positive(resultAttempts, nameof(resultAttempts));
-            ExitAttempts = Positive(exitAttempts, nameof(exitAttempts));
+            ResultSettleMs = NonNegative(resultSettleMs, nameof(resultSettleMs));
+            ClearSettleMs = NonNegative(clearSettleMs, nameof(clearSettleMs));
+            ForegroundSettleMs = NonNegative(foregroundSettleMs, nameof(foregroundSettleMs));
+            PointerSettleMs = NonNegative(pointerSettleMs, nameof(pointerSettleMs));
+            SearchAttempts = searchAttempts is >= 1 and <= 2
+                ? searchAttempts
+                : throw new ArgumentOutOfRangeException(nameof(searchAttempts));
+            ClearAttempts = clearAttempts is >= 1 and <= 2
+                ? clearAttempts
+                : throw new ArgumentOutOfRangeException(nameof(clearAttempts));
         }
 
-        internal int SearchHoldMs { get; }
-        internal int BackHoldMs { get; }
-        internal int ForegroundSettleMs { get; }
-        internal int OpenSettleMs { get; }
+        internal int FocusSettleMs { get; }
         internal int AfterTypingSettleMs { get; }
-        internal int SubmitSettleMs { get; }
-        internal int ExitSettleMs { get; }
-        internal int RetrySettleMs { get; }
-        internal int FocusAttempts { get; }
-        internal int PostTextFocusAttempts { get; }
-        internal int ResultAttempts { get; }
-        internal int ExitAttempts { get; }
+        internal int ResultSettleMs { get; }
+        internal int ClearSettleMs { get; }
+        internal int ForegroundSettleMs { get; }
+        internal int PointerSettleMs { get; }
+        internal int SearchAttempts { get; }
+        internal int ClearAttempts { get; }
 
         private static int NonNegative(int value, string name) =>
             value >= 0 ? value : throw new ArgumentOutOfRangeException(name);
-
-        private static int Positive(int value, string name) =>
-            value > 0 ? value : throw new ArgumentOutOfRangeException(name);
     }
 
-    internal sealed class AchievementSearchNavigationResult
+    internal sealed class AchievementTargetTiming
+    {
+        internal long FocusMilliseconds { get; set; }
+        internal long TypeMilliseconds { get; set; }
+        internal long SubmitMilliseconds { get; set; }
+        internal long ResultWaitMilliseconds { get; set; }
+        internal long CaptureMilliseconds { get; set; }
+        internal long ScreenDetectionMilliseconds { get; set; }
+        internal long IdentityOcrMilliseconds { get; set; }
+        internal long CompletionOcrMilliseconds { get; set; }
+        internal long RewardOcrMilliseconds { get; set; }
+        internal long ClearMilliseconds { get; set; }
+        internal long TotalMilliseconds { get; set; }
+        internal bool IdentityRecoveryUsed { get; set; }
+        internal bool CompletionRecoveryUsed { get; set; }
+        internal int ExtraCaptureCount { get; set; }
+        internal int RecoveryDelayMilliseconds { get; set; }
+        internal string RecoveryResult { get; set; } = string.Empty;
+        internal bool RecognitionRecoveryUsed => IdentityRecoveryUsed || CompletionRecoveryUsed;
+
+        internal string ToDiagnostics()
+        {
+            var builder = new StringBuilder(320);
+            builder.AppendLine($"timing.focusMs={FocusMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"timing.typeMs={TypeMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"timing.submitMs={SubmitMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"timing.resultWaitMs={ResultWaitMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"timing.captureMs={CaptureMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"timing.screenDetectMs={ScreenDetectionMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"timing.identityOcrMs={IdentityOcrMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"timing.completionOcrMs={CompletionOcrMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"timing.rewardOcrMs={RewardOcrMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"timing.clearMs={ClearMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"identityRecoveryUsed={IdentityRecoveryUsed}");
+            builder.AppendLine($"completionRecoveryUsed={CompletionRecoveryUsed}");
+            builder.AppendLine($"extraCaptureCount={ExtraCaptureCount.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"recoveryDelayMs={RecoveryDelayMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"recoveryResult={RecoveryResult}");
+            builder.Append($"timing.totalMs={TotalMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            return builder.ToString();
+        }
+    }
+
+    internal sealed class AchievementSearchNavigationResult : IDisposable
     {
         internal AchievementSearchNavigationResult(
             string operation,
@@ -90,7 +128,9 @@ namespace InventoryKamera.game
             AchievementSearchEditorDetection afterTypingFocusDetection,
             AchievementScreenDetection afterDetection,
             int attempts,
-            string diagnostics)
+            string diagnostics,
+            Bitmap resultScreenshot = null,
+            AchievementTargetTiming timing = null)
         {
             Operation = operation ?? string.Empty;
             Succeeded = succeeded;
@@ -103,6 +143,8 @@ namespace InventoryKamera.game
             AfterDetection = afterDetection;
             Attempts = attempts;
             Diagnostics = diagnostics ?? string.Empty;
+            ResultScreenshot = resultScreenshot;
+            Timing = timing ?? new AchievementTargetTiming();
         }
 
         internal string Operation { get; }
@@ -116,324 +158,307 @@ namespace InventoryKamera.game
         internal AchievementScreenDetection AfterDetection { get; }
         internal int Attempts { get; }
         internal string Diagnostics { get; }
+        internal Bitmap ResultScreenshot { get; }
+        internal AchievementTargetTiming Timing { get; }
+
+        public void Dispose() => ResultScreenshot?.Dispose();
     }
 
     /// <summary>
-    /// Performs only the Phase 6C search-control transitions. It proves screen state before each
-    /// semantic action and never interprets result identity or completion state. The current live
-    /// zero-results layout remains Unknown, so it produces a bounded unverified-result failure;
-    /// a future detector can enable that layout without changing this navigator.
+    /// Achievement-only keyboard/mouse navigation. It does not own or reference the legacy
+    /// controller stack. The healthy path performs no focus OCR.
     /// </summary>
-    internal sealed class AchievementSearchNavigator : IAchievementSearchNavigator
+    internal sealed class AchievementKeyboardMouseNavigator : IAchievementSearchNavigator
     {
-        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+        // Akasha's historical 300x90 point on a 1280x720 reference maps into the measured current
+        // SearchField region. In Keyboard/Mouse Idle it lies inside the empty text field; with a
+        // query active the Clear control occupies the same semantic point.
+        internal const double SearchToggleX = 300.0 / 1280.0;
+        internal const double SearchToggleY = 90.0 / 720.0;
 
-        private readonly GameNavigator navigator;
+        private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+        private readonly IAchievementPointerInput pointerInput;
         private readonly IGameTextInput textInput;
         private readonly IAchievementScreenDetector screenDetector;
-        private readonly IAchievementSearchEditorDetector editorDetector;
         private readonly IGameScreenCapture screenCapture;
         private readonly IGameForegroundActivator foregroundActivator;
         private readonly AchievementSearchNavigationTiming timing;
         private readonly Action<int, CancellationToken> wait;
+        private bool pointerPrepared;
+        private bool fieldKnownEmpty;
 
-        internal AchievementSearchNavigator(
-            GameNavigator navigator,
+        internal AchievementKeyboardMouseNavigator(
+            IAchievementPointerInput pointerInput,
             IGameTextInput textInput,
             IAchievementScreenDetector screenDetector,
-            IAchievementSearchEditorDetector editorDetector,
             IGameScreenCapture screenCapture,
             IGameForegroundActivator foregroundActivator,
             AchievementSearchNavigationTiming timing = null,
             Action<int, CancellationToken> wait = null)
         {
-            this.navigator = navigator ?? throw new ArgumentNullException(nameof(navigator));
+            this.pointerInput = pointerInput ?? throw new ArgumentNullException(nameof(pointerInput));
             this.textInput = textInput ?? throw new ArgumentNullException(nameof(textInput));
             this.screenDetector = screenDetector ?? throw new ArgumentNullException(nameof(screenDetector));
-            this.editorDetector = editorDetector ?? throw new ArgumentNullException(nameof(editorDetector));
             this.screenCapture = screenCapture ?? throw new ArgumentNullException(nameof(screenCapture));
             this.foregroundActivator = foregroundActivator ?? throw new ArgumentNullException(nameof(foregroundActivator));
             this.timing = timing ?? AchievementSearchNavigationTiming.Default;
             this.wait = wait ?? WaitWithCancellation;
         }
 
-        public AchievementSearchNavigationResult Search(
-            string query,
-            CancellationToken cancellationToken)
+        public void PreparePointer(
+            CancellationToken cancellationToken,
+            bool forceReposition = false)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!TryEnsureForeground(cancellationToken, out string failure))
+                throw new InvalidOperationException(failure);
+
+            bool atTogglePoint = pointerInput.IsAtNormalized(SearchToggleX, SearchToggleY);
+            if (forceReposition || !pointerPrepared || !atTogglePoint)
+            {
+                pointerInput.MoveNormalized(SearchToggleX, SearchToggleY, cancellationToken);
+                Wait(timing.PointerSettleMs, cancellationToken);
+            }
+            pointerPrepared = true;
+            fieldKnownEmpty = true;
+        }
+
+        public AchievementSearchNavigationResult Search(string query, CancellationToken cancellationToken)
         {
             if (query == null) throw new ArgumentNullException(nameof(query));
             if (string.IsNullOrWhiteSpace(query))
                 throw new ArgumentException("Achievement search text cannot be empty or whitespace-only.", nameof(query));
 
-            const string operation = "search";
+            var targetTiming = new AchievementTargetTiming();
             var trace = new List<string>();
-            AchievementScreenDetection before = null;
-            AchievementScreenDetection afterOpenScreen = null;
-            AchievementSearchEditorDetection afterOpenFocus = null;
-            AchievementSearchEditorDetection afterTypingFocus = null;
-            AchievementScreenDetection after = null;
-            int attempts = 0;
-            int postTextFocusAttempts = 0;
-
+            Bitmap resultScreenshot = null;
+            AchievementScreenDetection resultDetection = null;
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                before = CaptureDetection(cancellationToken);
-                if (before.ScreenState != AchievementScreenState.Idle)
+                if (!TryEnsureForeground(cancellationToken, out string failure))
+                    return Finish("search", false, false, failure, null, 0, trace, null, targetTiming);
+                EnsurePointerAtTogglePoint(cancellationToken, trace);
+
+                for (int attempt = 1; attempt <= timing.SearchAttempts; attempt++)
                 {
-                    return Finish(
-                        operation, query.Length, false, false,
-                        $"Achievement search requires a positively verified Idle start; observed {before.ScreenState}.",
-                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
-                }
-
-                if (!TryEnsureForeground(cancellationToken, out string foregroundFailure))
-                {
-                    return Finish(
-                        operation, query.Length, false, false, foregroundFailure,
-                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
-                navigator.TapSearch(timing.SearchHoldMs);
-                Wait(timing.OpenSettleMs, cancellationToken);
-
-                for (int attempt = 1; attempt <= timing.FocusAttempts; attempt++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (!TryEnsureForeground(cancellationToken, out foregroundFailure))
-                    {
-                        return Finish(
-                            operation, query.Length, false, false, foregroundFailure,
-                            before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
-                    }
-                    attempts++;
-                    using Bitmap screenshot = screenCapture.CaptureWindow();
-                    cancellationToken.ThrowIfCancellationRequested();
-                    afterOpenScreen = screenDetector.Detect(screenshot);
-                    afterOpenFocus = editorDetector.Detect(screenshot, afterOpenScreen);
-                    trace.Add(DescribeAttempt("open", attempt, afterOpenScreen, afterOpenFocus));
-                    if (afterOpenFocus.State == AchievementSearchEditorState.Focused) break;
-                    if (attempt < timing.FocusAttempts) Wait(timing.RetrySettleMs, cancellationToken);
-                }
-
-                if (afterOpenFocus?.State != AchievementSearchEditorState.Focused)
-                {
-                    return Finish(
-                        operation, query.Length, false, false,
-                        "Achievement search editor focus could not be positively verified; no text was entered.",
-                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
-                }
-
-                if (!foregroundActivator.IsForeground)
-                {
-                    return Finish(
-                        operation, query.Length, false, false,
-                        "Genshin lost foreground after editor-focus verification; no text was entered.",
-                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after, attempts, trace);
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
-                textInput.ReplaceAll(query, cancellationToken);
-                Wait(timing.AfterTypingSettleMs, cancellationToken);
-
-                for (int attempt = 1; attempt <= timing.PostTextFocusAttempts; attempt++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (!TryEnsureForeground(cancellationToken, out foregroundFailure))
-                    {
-                        return Finish(
-                            operation, query.Length, false, false, foregroundFailure,
-                            before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
-                            attempts, postTextFocusAttempts, trace);
-                    }
-
-                    cancellationToken.ThrowIfCancellationRequested();
-                    attempts++;
-                    postTextFocusAttempts++;
-                    using (Bitmap screenshot = screenCapture.CaptureWindow())
+                    targetTiming.FocusMilliseconds += Measure(() =>
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        AchievementScreenDetection typedScreen = screenDetector.Detect(screenshot);
-                        afterTypingFocus = editorDetector.Detect(screenshot, typedScreen);
-                        trace.Add(DescribeAttempt("typed", attempt, typedScreen, afterTypingFocus));
-                        afterOpenScreen = typedScreen;
-                        cancellationToken.ThrowIfCancellationRequested();
-                    }
-
-                    if (afterTypingFocus.State == AchievementSearchEditorState.Focused) break;
-                    if (attempt < timing.PostTextFocusAttempts)
-                        Wait(timing.RetrySettleMs, cancellationToken);
-                }
-
-                if (afterTypingFocus.State != AchievementSearchEditorState.Focused)
-                {
-                    return Finish(
-                        operation, query.Length, false, false,
-                        $"The editor was not positively focused after text entry across " +
-                        $"{postTextFocusAttempts.ToString(CultureInfo.InvariantCulture)} bounded capture attempts; " +
-                        "search was not submitted.",
-                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
-                        attempts, postTextFocusAttempts, trace);
-                }
-
-                if (!foregroundActivator.IsForeground)
-                {
-                    return Finish(
-                        operation, query.Length, false, false,
-                        "Genshin lost foreground after typed-editor verification; search was not submitted.",
-                        before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
-                        attempts, postTextFocusAttempts, trace);
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
-                navigator.TapSearch(timing.SearchHoldMs);
-                Wait(timing.SubmitSettleMs, cancellationToken);
-
-                for (int attempt = 1; attempt <= timing.ResultAttempts; attempt++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    attempts++;
-                    after = CaptureDetection(cancellationToken);
-                    trace.Add(DescribeAttempt("submit", attempt, after, null));
-                    if (after.ScreenState == AchievementScreenState.SearchActive)
+                        if (attempt > 1)
+                        {
+                            // Bounded recovery: the same stationary point clears an active query,
+                            // then focuses the now-empty editor. No cursor movement is needed.
+                            pointerInput.Click(cancellationToken);
+                            Wait(timing.ClearSettleMs, cancellationToken);
+                        }
+                        pointerInput.Click(cancellationToken);
+                        Wait(timing.FocusSettleMs, cancellationToken);
+                    });
+                    targetTiming.TypeMilliseconds += Measure(() =>
                     {
-                        return Finish(
-                            operation, query.Length, true, false, null,
-                            before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
-                            attempts, postTextFocusAttempts, trace);
-                    }
-                    if (attempt < timing.ResultAttempts) Wait(timing.RetrySettleMs, cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (fieldKnownEmpty && attempt == 1)
+                            textInput.TypeExact(query, cancellationToken);
+                        else
+                            textInput.ReplaceAll(query, cancellationToken);
+                        fieldKnownEmpty = false;
+                        Wait(timing.AfterTypingSettleMs, cancellationToken);
+                    });
+                    targetTiming.SubmitMilliseconds += Measure(() =>
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        textInput.PressEnter(cancellationToken);
+                    });
+                    targetTiming.ResultWaitMilliseconds += Measure(() => Wait(timing.ResultSettleMs, cancellationToken));
+                    targetTiming.CaptureMilliseconds += Measure(() => resultScreenshot = screenCapture.CaptureWindow());
+                    cancellationToken.ThrowIfCancellationRequested();
+                    targetTiming.ScreenDetectionMilliseconds += Measure(() =>
+                        resultDetection = screenDetector.Detect(resultScreenshot));
+                    bool verifiedNoResults = HasVerifiedNoResultsForQuery(resultDetection, query);
+                    trace.Add(
+                        $"searchAttempt={attempt}; result={resultDetection?.ScreenState}; " +
+                        $"match={resultDetection?.MatchCountValue?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}; " +
+                        $"noResultsForQuery={verifiedNoResults}");
+
+                    bool accepted = resultDetection?.ScreenState == AchievementScreenState.SearchActive ||
+                        HasCorroboratedSingleResultMarkers(resultDetection) ||
+                        verifiedNoResults;
+                    if (accepted)
+                        return Finish("search", true, false, null, resultDetection, attempt, trace,
+                            resultScreenshot, targetTiming);
+
+                    resultScreenshot.Dispose();
+                    resultScreenshot = null;
                 }
 
-                return Finish(
-                    operation, query.Length, false, false,
-                    $"Submitted Achievement results could not be positively verified after " +
-                    $"{timing.ResultAttempts.ToString(CultureInfo.InvariantCulture)} bounded capture attempts; " +
-                    $"observed {after?.ScreenState.ToString() ?? "no state"}.",
-                    before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
-                    attempts, postTextFocusAttempts, trace);
+                string reason = $"Submitted Achievement result was not safely recognized after {timing.SearchAttempts} bounded attempts; observed {resultDetection?.ScreenState.ToString() ?? "no state"}.";
+                return Finish("search", false, false, reason, resultDetection,
+                    timing.SearchAttempts, trace, null, targetTiming);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return Finish(
-                    operation, query.Length, false, true, "Achievement search navigation was cancelled.",
-                    before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
-                    attempts, postTextFocusAttempts, trace);
+                resultScreenshot?.Dispose();
+                return Finish("search", false, true, "Achievement search navigation was cancelled.",
+                    resultDetection, resultDetection == null ? 0 : 1, trace, null, targetTiming);
             }
             catch (Exception ex)
             {
-                return Finish(
-                    operation, query.Length, false, false,
+                resultScreenshot?.Dispose();
+                return Finish("search", false, false,
                     $"Achievement search navigation failed: {ex.GetType().Name}: {ex.Message}",
-                    before, afterOpenScreen, afterOpenFocus, afterTypingFocus, after,
-                    attempts, postTextFocusAttempts, trace);
+                    resultDetection, resultDetection == null ? 0 : 1, trace, null, targetTiming);
             }
         }
 
-        public AchievementSearchNavigationResult ExitSearch(CancellationToken cancellationToken)
+        public AchievementSearchNavigationResult ClearSearch(CancellationToken cancellationToken)
         {
-            const string operation = "exit";
+            var targetTiming = new AchievementTargetTiming();
             var trace = new List<string>();
-            AchievementScreenDetection before = null;
             AchievementScreenDetection after = null;
-            int attempts = 0;
-
+            Stopwatch total = Stopwatch.StartNew();
             try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                before = CaptureDetection(cancellationToken);
-                if (before.ScreenState != AchievementScreenState.SearchActive)
-                {
-                    return Finish(
-                        operation, 0, false, false,
-                        $"Exit Search requires a positively verified SearchActive start; observed {before.ScreenState}.",
-                        before, null, null, null, after, attempts, trace);
-                }
+                if (!TryEnsureForeground(cancellationToken, out string failure))
+                    return Finish("clear", false, false, failure, null, 0, trace, null, targetTiming);
+                EnsurePointerAtTogglePoint(cancellationToken, trace);
 
-                if (!TryEnsureForeground(cancellationToken, out string foregroundFailure))
-                {
-                    return Finish(
-                        operation, 0, false, false, foregroundFailure,
-                        before, null, null, null, after, attempts, trace);
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
-                navigator.TapBack(timing.BackHoldMs);
-                Wait(timing.ExitSettleMs, cancellationToken);
-
-                for (int attempt = 1; attempt <= timing.ExitAttempts; attempt++)
+                for (int attempt = 1; attempt <= timing.ClearAttempts; attempt++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    attempts++;
-                    after = CaptureDetection(cancellationToken);
-                    trace.Add(DescribeAttempt("exit", attempt, after, null));
-                    if (after.ScreenState == AchievementScreenState.Idle)
+                    pointerInput.Click(cancellationToken);
+                    Wait(timing.ClearSettleMs, cancellationToken);
+                    using Bitmap screenshot = screenCapture.CaptureWindow();
+                    after = screenDetector.Detect(screenshot);
+                    trace.Add($"clearAttempt={attempt}; state={after.ScreenState}");
+                    if (after.IsKeyboardMouseIdle)
                     {
-                        return Finish(
-                            operation, 0, true, false, null,
-                            before, null, null, null, after, attempts, trace);
+                        fieldKnownEmpty = true;
+                        total.Stop();
+                        targetTiming.ClearMilliseconds = total.ElapsedMilliseconds;
+                        return Finish("clear", true, false, null, after, attempt, trace, null, targetTiming);
                     }
-                    if (attempt < timing.ExitAttempts) Wait(timing.RetrySettleMs, cancellationToken);
                 }
 
-                return Finish(
-                    operation, 0, false, false,
-                    $"Exit Search did not return to verified Idle within {timing.ExitAttempts} capture attempts.",
-                    before, null, null, null, after, attempts, trace);
+                total.Stop();
+                targetTiming.ClearMilliseconds = total.ElapsedMilliseconds;
+                return Finish("clear", false, false,
+                    "The visible Clear control did not return the Achievement screen to verified Idle after two bounded clicks.",
+                    after, timing.ClearAttempts, trace, null, targetTiming);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return Finish(
-                    operation, 0, false, true, "Achievement search exit was cancelled.",
-                    before, null, null, null, after, attempts, trace);
+                total.Stop();
+                targetTiming.ClearMilliseconds = total.ElapsedMilliseconds;
+                return Finish("clear", false, true, "Achievement search clearing was cancelled.",
+                    after, trace.Count, trace, null, targetTiming);
             }
             catch (Exception ex)
             {
-                return Finish(
-                    operation, 0, false, false,
-                    $"Achievement search exit failed: {ex.GetType().Name}: {ex.Message}",
-                    before, null, null, null, after, attempts, trace);
+                total.Stop();
+                targetTiming.ClearMilliseconds = total.ElapsedMilliseconds;
+                return Finish("clear", false, false,
+                    $"Achievement search clearing failed: {ex.GetType().Name}: {ex.Message}",
+                    after, trace.Count, trace, null, targetTiming);
             }
-        }
-
-        private AchievementScreenDetection CaptureDetection(CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            using Bitmap screenshot = screenCapture.CaptureWindow();
-            cancellationToken.ThrowIfCancellationRequested();
-            return screenDetector.Detect(screenshot);
         }
 
         private bool TryEnsureForeground(CancellationToken cancellationToken, out string failureReason)
         {
-            try
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!foregroundActivator.IsForeground)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!foregroundActivator.IsForeground)
-                {
-                    foregroundActivator.Activate();
-                    Wait(timing.ForegroundSettleMs, cancellationToken);
-                }
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!foregroundActivator.IsForeground)
-                {
-                    failureReason = "Genshin foreground could not be positively established; no input was sent.";
-                    return false;
-                }
-
-                failureReason = null;
-                return true;
+                foregroundActivator.Activate();
+                Wait(timing.ForegroundSettleMs, cancellationToken);
             }
-            catch (OperationCanceledException)
+            if (!foregroundActivator.IsForeground)
             {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                failureReason = $"Genshin foreground could not be established: {ex.Message}; no input was sent.";
+                failureReason = "Genshin foreground could not be positively established; no input was sent.";
                 return false;
             }
+            failureReason = null;
+            return true;
+        }
+
+        private void EnsurePointerAtTogglePoint(
+            CancellationToken cancellationToken,
+            ICollection<string> trace)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (pointerPrepared && pointerInput.IsAtNormalized(SearchToggleX, SearchToggleY)) return;
+
+            bool firstPreparation = !pointerPrepared;
+            pointerInput.MoveNormalized(SearchToggleX, SearchToggleY, cancellationToken);
+            Wait(timing.PointerSettleMs, cancellationToken);
+            pointerPrepared = true;
+            if (firstPreparation) fieldKnownEmpty = true;
+            trace?.Add("pointer=repositioned-to-search-toggle");
+        }
+
+        private static bool HasCorroboratedSingleResultMarkers(AchievementScreenDetection detection) =>
+            detection?.ScreenState == AchievementScreenState.Unknown &&
+            detection.MatchCountAccepted && detection.MatchCountValue == 1 &&
+            detection.ResultPageAccepted && detection.ResultPageCurrent == 1 && detection.ResultPageTotal == 1;
+
+        private static bool HasVerifiedNoResultsForQuery(
+            AchievementScreenDetection detection,
+            string query)
+        {
+            if (detection?.ScreenState != AchievementScreenState.SearchNoResults ||
+                !detection.SearchField.ActiveControlsAccepted ||
+                !detection.NoResultsEvidence.Accepted ||
+                (detection.MatchCountAccepted && detection.MatchCountValue.GetValueOrDefault() > 0))
+                return false;
+
+            string normalizedQuery = AchievementScreenDetector.Normalize(query);
+            if (normalizedQuery.Length == 0) return false;
+
+            return ContainsNormalizedPhrase(
+                    detection.SearchField.Text.NormalizedText,
+                    normalizedQuery) ||
+                ContainsNormalizedPhrase(
+                    detection.NoResultsEvidence.NormalizedText,
+                    normalizedQuery);
+        }
+
+        private static bool ContainsNormalizedPhrase(string text, string phrase) =>
+            (" " + (text ?? string.Empty) + " ").Contains(
+                " " + phrase + " ",
+                StringComparison.Ordinal);
+
+        private AchievementSearchNavigationResult Finish(
+            string operation,
+            bool succeeded,
+            bool cancelled,
+            string reason,
+            AchievementScreenDetection after,
+            int attempts,
+            IReadOnlyList<string> trace,
+            Bitmap screenshot,
+            AchievementTargetTiming targetTiming)
+        {
+            var diagnostics = new StringBuilder(640);
+            diagnostics.AppendLine($"operation={operation}");
+            diagnostics.AppendLine("inputBackend=keyboard-mouse-sendinput");
+            diagnostics.AppendLine($"attempt={attempts.ToString(CultureInfo.InvariantCulture)}");
+            diagnostics.AppendLine($"afterState={after?.ScreenState.ToString() ?? "(none)"}");
+            diagnostics.AppendLine($"cancelled={cancelled}");
+            diagnostics.AppendLine($"reason={reason ?? "success"}");
+            for (int i = 0; i < trace.Count; i++) diagnostics.AppendLine($"trace[{i}]={trace[i]}");
+            diagnostics.Append(targetTiming.ToDiagnostics());
+            string value = diagnostics.ToString().TrimEnd();
+            if (succeeded) Logger.Info(value); else Logger.Warn(value);
+            return new AchievementSearchNavigationResult(
+                operation, succeeded, cancelled, reason,
+                null, null, null, null, after, attempts, value, screenshot, targetTiming);
+        }
+
+        private static long Measure(Action action)
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            action();
+            stopwatch.Stop();
+            return stopwatch.ElapsedMilliseconds;
         }
 
         private void Wait(int milliseconds, CancellationToken cancellationToken)
@@ -450,131 +475,8 @@ namespace InventoryKamera.game
                 cancellationToken.ThrowIfCancellationRequested();
                 return;
             }
-
             if (cancellationToken.WaitHandle.WaitOne(milliseconds))
                 cancellationToken.ThrowIfCancellationRequested();
-        }
-
-        private AchievementSearchNavigationResult Finish(
-            string operation,
-            int queryLength,
-            bool succeeded,
-            bool cancelled,
-            string failureReason,
-            AchievementScreenDetection before,
-            AchievementScreenDetection afterOpenScreen,
-            AchievementSearchEditorDetection afterOpenFocus,
-            AchievementSearchEditorDetection afterTypingFocus,
-            AchievementScreenDetection after,
-            int attempts,
-            IReadOnlyList<string> trace) => Finish(
-                operation,
-                queryLength,
-                succeeded,
-                cancelled,
-                failureReason,
-                before,
-                afterOpenScreen,
-                afterOpenFocus,
-                afterTypingFocus,
-                after,
-                attempts,
-                0,
-                trace);
-
-        private AchievementSearchNavigationResult Finish(
-            string operation,
-            int queryLength,
-            bool succeeded,
-            bool cancelled,
-            string failureReason,
-            AchievementScreenDetection before,
-            AchievementScreenDetection afterOpenScreen,
-            AchievementSearchEditorDetection afterOpenFocus,
-            AchievementSearchEditorDetection afterTypingFocus,
-            AchievementScreenDetection after,
-            int attempts,
-            int postTextFocusAttempts,
-            IReadOnlyList<string> trace)
-        {
-            string diagnostics = BuildDiagnostics(
-                operation,
-                queryLength,
-                attempts,
-                postTextFocusAttempts,
-                before,
-                after,
-                afterTypingFocus ?? afterOpenFocus,
-                cancelled,
-                failureReason ?? "success",
-                trace);
-            if (succeeded) Logger.Info(diagnostics); else Logger.Warn(diagnostics);
-            return new AchievementSearchNavigationResult(
-                operation,
-                succeeded,
-                cancelled,
-                failureReason,
-                before,
-                afterOpenScreen,
-                afterOpenFocus,
-                afterTypingFocus,
-                after,
-                attempts,
-                diagnostics);
-        }
-
-        private static string BuildDiagnostics(
-            string operation,
-            int queryLength,
-            int attempts,
-            int postTextFocusAttempts,
-            AchievementScreenDetection before,
-            AchievementScreenDetection after,
-            AchievementSearchEditorDetection focus,
-            bool cancelled,
-            string reason,
-            IReadOnlyList<string> trace)
-        {
-            var builder = new StringBuilder(1024);
-            builder.AppendLine($"operation={operation}");
-            builder.AppendLine($"queryLength={queryLength.ToString(CultureInfo.InvariantCulture)}");
-            builder.AppendLine($"attempt={attempts.ToString(CultureInfo.InvariantCulture)}");
-            builder.AppendLine($"postTextFocusAttemptCount={postTextFocusAttempts.ToString(CultureInfo.InvariantCulture)}");
-            builder.AppendLine($"beforeState={FormatState(before)}");
-            builder.AppendLine($"afterState={FormatState(after)}");
-            builder.AppendLine($"matchCount={FormatNumber(after?.MatchCountValue)}");
-            builder.AppendLine($"page={FormatPage(after)}");
-            builder.AppendLine($"focusEvidence={Bound(focus?.Evidence ?? "(none)")}");
-            builder.AppendLine($"cancelled={cancelled}");
-            builder.AppendLine($"reason={Bound(reason)}");
-            for (int i = 0; i < trace.Count; i++)
-                builder.AppendLine($"trace[{i.ToString(CultureInfo.InvariantCulture)}]={Bound(trace[i])}");
-            return builder.ToString().TrimEnd();
-        }
-
-        private static string DescribeAttempt(
-            string transition,
-            int attempt,
-            AchievementScreenDetection screen,
-            AchievementSearchEditorDetection focus) =>
-            $"transition={transition}; attempt={attempt.ToString(CultureInfo.InvariantCulture)}; " +
-            $"screen={FormatState(screen)}; match={FormatNumber(screen?.MatchCountValue)}; " +
-            $"page={FormatPage(screen)}; focus={focus?.Evidence ?? "(not evaluated)"}";
-
-        private static string FormatState(AchievementScreenDetection detection) =>
-            detection?.ScreenState.ToString() ?? "(none)";
-
-        private static string FormatNumber(int? value) =>
-            value?.ToString(CultureInfo.InvariantCulture) ?? "(none)";
-
-        private static string FormatPage(AchievementScreenDetection detection) => detection == null
-            ? "(none)"
-            : $"{FormatNumber(detection.ResultPageCurrent)}/{FormatNumber(detection.ResultPageTotal)}";
-
-        private static string Bound(string value)
-        {
-            string singleLine = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
-            return singleLine.Length <= 300 ? singleLine : singleLine.Substring(0, 300) + "...";
         }
     }
 }

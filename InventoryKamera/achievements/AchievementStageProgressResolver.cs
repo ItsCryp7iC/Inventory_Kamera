@@ -55,6 +55,30 @@ namespace InventoryKamera
     /// </summary>
     internal sealed class AchievementStageProgressResolver
     {
+        internal AchievementStageProgressResult ResolveExplicitNoResults(
+            AchievementTitleGroup stageFamily)
+        {
+            if (stageFamily?.Kind != AchievementTitleGroupKind.StageFamily ||
+                stageFamily.Entries.Any(entry => !entry.Hidden))
+            {
+                return Finish(
+                    AchievementStageProgressState.InvalidContext,
+                    stageFamily,
+                    null,
+                    null,
+                    Array.Empty<int>(),
+                    "Explicit no-results stage resolution requires an all-hidden canonical stage family.");
+            }
+
+            return Finish(
+                AchievementStageProgressState.Resolved,
+                stageFamily,
+                null,
+                null,
+                Array.Empty<int>(),
+                "The exact-title no-results screen proves stage 1 is not complete, so zero stages are complete.");
+        }
+
         internal AchievementStageProgressResult Resolve(
             AchievementIdentityResult identity,
             AchievementCompletionResult completion,

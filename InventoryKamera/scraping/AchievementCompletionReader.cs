@@ -116,7 +116,7 @@ namespace InventoryKamera
             string rawText,
             float confidence,
             string reason,
-            AchievementCompletionOcrScope scope = AchievementCompletionOcrScope.FullCompletionRegion)
+            AchievementCompletionOcrScope scope = AchievementCompletionOcrScope.StateLabel)
         {
             Variant = variant;
             Scope = scope;
@@ -180,12 +180,21 @@ namespace InventoryKamera
         AchievementCompletionRead Read(Bitmap screenshot);
     }
 
+    internal interface IAchievementLazyCompletionReader
+    {
+        AchievementCompletionRead Read(
+            Bitmap screenshot,
+            Func<IReadOnlyList<AchievementCompletionOcrAttempt>, bool> stopAfterVariant);
+    }
+
     /// <summary>
     /// Reads only Phase 6A's normalized first-result completion-state crop. The variants are
     /// deliberately bounded and semantic tokens remain the primary evidence; color is not used to
     /// decide completion.
     /// </summary>
-    internal sealed class AchievementCompletionReader : IAchievementCompletionReader
+    internal sealed class AchievementCompletionReader :
+        IAchievementCompletionReader,
+        IAchievementLazyCompletionReader
     {
         private readonly IOcrService ocrService;
         private readonly IImagePreprocessor imagePreprocessor;
@@ -198,25 +207,65 @@ namespace InventoryKamera
             this.imagePreprocessor = imagePreprocessor ?? throw new ArgumentNullException(nameof(imagePreprocessor));
         }
 
-        public AchievementCompletionRead Read(Bitmap screenshot)
+        public AchievementCompletionRead Read(Bitmap screenshot) => Read(screenshot, null);
+
+        public AchievementCompletionRead Read(
+            Bitmap screenshot,
+            Func<IReadOnlyList<AchievementCompletionOcrAttempt>, bool> stopAfterVariant)
         {
             if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
 
             AchievementScreenRegions regions = AchievementScreenRegions.For(screenshot.Size);
             var attempts = new List<AchievementCompletionOcrAttempt>(6);
-            ReadRegion(
-                screenshot,
-                regions.FirstResultCompletionLabel,
-                AchievementCompletionOcrScope.StateLabel,
-                PageSegMode.SingleLine,
-                attempts);
-            ReadRegion(
-                screenshot,
-                regions.FirstResultCompletionState,
-                AchievementCompletionOcrScope.FullCompletionRegion,
-                PageSegMode.SparseText,
-                attempts);
+            AchievementCompletionOcrVariant[] variants =
+            {
+                AchievementCompletionOcrVariant.GrayscaleThreshold,
+                AchievementCompletionOcrVariant.GrayscaleContrast,
+                AchievementCompletionOcrVariant.GrayscaleContrastInverted,
+            };
+            foreach (AchievementCompletionOcrVariant variant in variants)
+            {
+                ReadVariantForRegion(
+                    screenshot,
+                    regions.FirstResultCompletionLabel,
+                    AchievementCompletionOcrScope.StateLabel,
+                    PageSegMode.SingleLine,
+                    variant,
+                    attempts);
+                ReadVariantForRegion(
+                    screenshot,
+                    regions.FirstResultCompletionState,
+                    AchievementCompletionOcrScope.FullCompletionRegion,
+                    PageSegMode.SparseText,
+                    variant,
+                    attempts);
+                if (stopAfterVariant != null && stopAfterVariant(attempts)) break;
+            }
             return new AchievementCompletionRead(attempts);
+        }
+
+        private void ReadVariantForRegion(
+            Bitmap screenshot,
+            Rectangle region,
+            AchievementCompletionOcrScope scope,
+            PageSegMode pageMode,
+            AchievementCompletionOcrVariant variant,
+            ICollection<AchievementCompletionOcrAttempt> attempts)
+        {
+            using Bitmap crop = screenshot.Clone(region, PixelFormat.Format24bppRgb);
+            using Bitmap resized = GenshinProcesor.ResizeImage(
+                crop,
+                Math.Max(1, crop.Width * 3),
+                Math.Max(1, crop.Height * 3));
+            if (variant == AchievementCompletionOcrVariant.GrayscaleThreshold)
+                ReadThresholdVariant(resized, scope, pageMode, attempts);
+            else
+                ReadContrastVariant(
+                    resized,
+                    inverted: variant == AchievementCompletionOcrVariant.GrayscaleContrastInverted,
+                    scope,
+                    pageMode,
+                    attempts);
         }
 
         private void ReadRegion(

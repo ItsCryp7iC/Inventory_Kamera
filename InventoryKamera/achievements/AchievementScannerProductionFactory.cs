@@ -5,20 +5,18 @@ using System.Threading;
 namespace InventoryKamera
 {
     /// <summary>
-    /// Borrowed per-run services from GameScanner. Ownership remains with the active scan session;
-    /// achievement components must not dispose or replace the navigator/controller.
+    /// Per-run services for the standalone keyboard/mouse Achievement scanner. This context has no
+    /// controller, GameNavigator, or GameInputSession dependency.
     /// </summary>
     internal sealed class AchievementScanRuntimeContext
     {
         internal AchievementScanRuntimeContext(
-            GameNavigator navigator,
             IOcrService ocrService,
             IImagePreprocessor imagePreprocessor,
             IGameScreenCapture screenCapture,
             IGameForegroundActivator foregroundActivator,
             CancellationToken cancellationToken)
         {
-            Navigator = navigator ?? throw new ArgumentNullException(nameof(navigator));
             OcrService = ocrService ?? throw new ArgumentNullException(nameof(ocrService));
             ImagePreprocessor = imagePreprocessor ?? throw new ArgumentNullException(nameof(imagePreprocessor));
             ScreenCapture = screenCapture ?? throw new ArgumentNullException(nameof(screenCapture));
@@ -26,7 +24,6 @@ namespace InventoryKamera
             CancellationToken = cancellationToken;
         }
 
-        internal GameNavigator Navigator { get; }
         internal IOcrService OcrService { get; }
         internal IImagePreprocessor ImagePreprocessor { get; }
         internal IGameScreenCapture ScreenCapture { get; }
@@ -63,12 +60,10 @@ namespace InventoryKamera
             var screenDetector = new AchievementScreenDetector(
                 runtime.OcrService,
                 runtime.ImagePreprocessor);
-            var editorDetector = new AchievementSearchEditorDetector();
-            var searchNavigator = new AchievementSearchNavigator(
-                runtime.Navigator,
+            var searchNavigator = new AchievementKeyboardMouseNavigator(
+                new AchievementWindowsPointerInput(),
                 new GameTextInput(),
                 screenDetector,
-                editorDetector,
                 runtime.ScreenCapture,
                 runtime.ForegroundActivator);
             var titleReader = new AchievementResultTitleReader(

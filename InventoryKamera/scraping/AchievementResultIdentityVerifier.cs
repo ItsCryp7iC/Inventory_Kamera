@@ -19,6 +19,15 @@ namespace InventoryKamera
             Bitmap screenshot);
     }
 
+    internal interface IAchievementSharedScreenIdentityVerifier
+    {
+        AchievementIdentityResult Verify(
+            AchievementSearchNavigationResult searchResult,
+            int expectedId,
+            Bitmap screenshot,
+            AchievementScreenDetection screenDetection);
+    }
+
     internal enum AchievementIdentityState
     {
         Identified,
@@ -33,12 +42,14 @@ namespace InventoryKamera
         internal AchievementIdentityOcrAttempt(
             AchievementTitleOcrAttempt ocrAttempt,
             double score,
+            string runnerUpTitle,
             double runnerUpScore,
             double margin,
             string reason)
         {
             OcrAttempt = ocrAttempt ?? throw new ArgumentNullException(nameof(ocrAttempt));
             Score = score;
+            RunnerUpTitle = runnerUpTitle ?? string.Empty;
             RunnerUpScore = runnerUpScore;
             Margin = margin;
             Reason = reason ?? string.Empty;
@@ -46,6 +57,7 @@ namespace InventoryKamera
 
         internal AchievementTitleOcrAttempt OcrAttempt { get; }
         internal double Score { get; }
+        internal string RunnerUpTitle { get; }
         internal double RunnerUpScore { get; }
         internal double Margin { get; }
         internal string Reason { get; }
@@ -69,7 +81,9 @@ namespace InventoryKamera
             IEnumerable<AchievementIdentityOcrAttempt> attempts,
             AchievementScreenDetection screenDetection,
             string reason,
-            string diagnostics)
+            string diagnostics,
+            bool usedCorroboratedSearchResult = false,
+            bool usedClippedPrefixEvidence = false)
         {
             State = state;
             ExpectedId = expectedId;
@@ -88,6 +102,8 @@ namespace InventoryKamera
             ScreenDetection = screenDetection;
             Reason = reason ?? string.Empty;
             Diagnostics = diagnostics ?? string.Empty;
+            UsedCorroboratedSearchResult = usedCorroboratedSearchResult;
+            UsedClippedPrefixEvidence = usedClippedPrefixEvidence;
         }
 
         internal AchievementIdentityState State { get; }
@@ -106,18 +122,22 @@ namespace InventoryKamera
         internal AchievementScreenDetection ScreenDetection { get; }
         internal string Reason { get; }
         internal string Diagnostics { get; }
+        internal bool UsedCorroboratedSearchResult { get; }
+        internal bool UsedClippedPrefixEvidence { get; }
     }
 
     internal readonly struct AchievementTitleMatch
     {
-        internal AchievementTitleMatch(double score, double runnerUpScore)
+        internal AchievementTitleMatch(double score, string runnerUpTitle, double runnerUpScore)
         {
             Score = score;
+            RunnerUpTitle = runnerUpTitle ?? string.Empty;
             RunnerUpScore = runnerUpScore;
             Margin = score - runnerUpScore;
         }
 
         internal double Score { get; }
+        internal string RunnerUpTitle { get; }
         internal double RunnerUpScore { get; }
         internal double Margin { get; }
     }
@@ -137,6 +157,7 @@ namespace InventoryKamera
         internal const double CandidateRelevanceScore = 70.0;
         internal const double DefiniteMismatchMaximumScore = 60.0;
         internal const double MinimumClippedPrefixScore = 90.0;
+        internal const int MinimumClippedPrefixLength = 20;
         internal const float MinimumOcrConfidence = 0.35f;
 
         internal static AchievementTitleMatch Match(
@@ -144,23 +165,59 @@ namespace InventoryKamera
             string expectedTitle,
             IEnumerable<string> alternativeTitles)
         {
-            string observed = AchievementTitleNormalizer.Normalize(observedTitle);
-            string expected = AchievementTitleNormalizer.Normalize(expectedTitle);
+            string observed = AchievementTitleNormalizer.NormalizeForComparison(observedTitle);
+            string expected = AchievementTitleNormalizer.NormalizeForComparison(expectedTitle);
             double score = Similarity(observed, expected);
-            double runnerUp = (alternativeTitles ?? Array.Empty<string>())
-                .Select(AchievementTitleNormalizer.Normalize)
-                .Where(title => title.Length > 0 && !string.Equals(title, expected, StringComparison.Ordinal))
+            var runnerUp = (alternativeTitles ?? Array.Empty<string>())
+                .Where(title => !string.IsNullOrWhiteSpace(title))
                 .Distinct(StringComparer.Ordinal)
-                .Select(title => Similarity(observed, title))
-                .DefaultIfEmpty(0.0)
-                .Max();
-            return new AchievementTitleMatch(score, runnerUp);
+                .Select(title => new
+                {
+                    Title = title,
+                    Score = Similarity(observed, AchievementTitleNormalizer.NormalizeForComparison(title)),
+                })
+                .OrderByDescending(candidate => candidate.Score)
+                .ThenBy(candidate => candidate.Title, StringComparer.Ordinal)
+                .FirstOrDefault();
+            return new AchievementTitleMatch(
+                score,
+                runnerUp?.Title,
+                runnerUp?.Score ?? 0.0);
         }
 
         internal static double Similarity(string left, string right)
         {
-            left = AchievementTitleNormalizer.Normalize(left);
-            right = AchievementTitleNormalizer.Normalize(right);
+            left = AchievementTitleNormalizer.NormalizeForComparison(left);
+            right = AchievementTitleNormalizer.NormalizeForComparison(right);
+            if (left.Length == 0 || right.Length == 0) return 0;
+            if (string.Equals(left, right, StringComparison.Ordinal)) return 100;
+
+            double fullScore = EditSimilarity(left, right);
+            if (left.Length <= right.Length || !HasNoisyTrailingContent(left, right.Length))
+                return fullScore;
+
+            // Live evidence shows the high-threshold title variant can retain a clean title at
+            // the start of the crop and then OCR description/card decoration as a noisy suffix.
+            // Score only the equally-sized leading span as an additional comparison, while the
+            // runner-up and collision gates remain fully enforced for every candidate title.
+            double leadingSpanScore = EditSimilarity(left.Substring(0, right.Length), right);
+            return Math.Max(fullScore, leadingSpanScore);
+        }
+
+        private static bool HasNoisyTrailingContent(string observed, int titleLength)
+        {
+            int symbolCount = 0;
+            for (int i = titleLength; i < observed.Length; i++)
+            {
+                char character = observed[i];
+                if (!char.IsLetterOrDigit(character) && !char.IsWhiteSpace(character))
+                    symbolCount++;
+            }
+            return symbolCount >= 2;
+        }
+
+        private static double EditSimilarity(string left, string right)
+        {
             if (left.Length == 0 || right.Length == 0) return 0;
             if (string.Equals(left, right, StringComparison.Ordinal)) return 100;
 
@@ -190,7 +247,9 @@ namespace InventoryKamera
     /// screen evidence, then proves the visible title against the supplied canonical ID. It never
     /// interprets completion state or chooses the first catalog/result candidate.
     /// </summary>
-    internal sealed class AchievementResultIdentityVerifier : IAchievementResultIdentityVerifier
+    internal sealed class AchievementResultIdentityVerifier :
+        IAchievementResultIdentityVerifier,
+        IAchievementSharedScreenIdentityVerifier
     {
         private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
         private readonly AchievementCatalog catalog;
@@ -212,7 +271,13 @@ namespace InventoryKamera
         public AchievementIdentityResult Verify(
             AchievementSearchNavigationResult searchResult,
             int expectedId,
-            Bitmap screenshot)
+            Bitmap screenshot) => Verify(searchResult, expectedId, screenshot, null);
+
+        public AchievementIdentityResult Verify(
+            AchievementSearchNavigationResult searchResult,
+            int expectedId,
+            Bitmap screenshot,
+            AchievementScreenDetection screenDetection)
         {
             AchievementCatalogEntry expected = catalog.GetById(expectedId);
             if (expected == null)
@@ -230,7 +295,7 @@ namespace InventoryKamera
             AchievementTitleGroup titleGroup = catalog.GetTitleGroupForId(expected.Id);
             int[] candidateIds = titleGroup?.CandidateIds.ToArray() ?? Array.Empty<int>();
             if (searchResult == null || !searchResult.Succeeded ||
-                searchResult.AfterDetection?.ScreenState != AchievementScreenState.SearchActive)
+                !HasUsableResultState(searchResult.AfterDetection))
             {
                 return Finish(
                     AchievementIdentityState.Unresolved,
@@ -258,26 +323,36 @@ namespace InventoryKamera
                     "The current full capture was not supplied.");
             }
 
-            AchievementScreenDetection screen;
-            try
+            AchievementScreenDetection screen = screenDetection;
+            if (screen == null)
             {
-                screen = screenDetector.Detect(screenshot);
-            }
-            catch (Exception ex)
-            {
-                return Finish(
-                    AchievementIdentityState.Unresolved,
-                    expectedId,
-                    expected,
-                    null,
-                    null,
-                    candidateIds,
-                    null,
-                    null,
-                    $"Current-screen detection failed: {ex.GetType().Name}: {ex.Message}");
+                try
+                {
+                    screen = screenDetector.Detect(screenshot);
+                }
+                catch (Exception ex)
+                {
+                    return Finish(
+                        AchievementIdentityState.Unresolved,
+                        expectedId,
+                        expected,
+                        null,
+                        null,
+                        candidateIds,
+                        null,
+                        null,
+                        $"Current-screen detection failed: {ex.GetType().Name}: {ex.Message}");
+                }
             }
 
-            if (screen.ScreenState != AchievementScreenState.SearchActive)
+            bool corroboratedUnknownSearchResult =
+                screen.ScreenState == AchievementScreenState.Unknown &&
+                screen.MatchCountAccepted &&
+                screen.ResultPageAccepted &&
+                screen.ResultPageCurrent == 1 &&
+                screen.ResultPageTotal == 1;
+            if (screen.ScreenState != AchievementScreenState.SearchActive &&
+                !corroboratedUnknownSearchResult)
                 return Finish(
                     AchievementIdentityState.Unresolved,
                     expectedId,
@@ -287,7 +362,7 @@ namespace InventoryKamera
                     candidateIds,
                     screen,
                     null,
-                    $"Current screen is not positively SearchActive; observed {screen.ScreenState}.");
+                    $"Current screen is not positively SearchActive and lacks corroborated current result markers; observed {screen.ScreenState}.");
 
             if (!screen.MatchCountAccepted || !screen.MatchCountValue.HasValue)
                 return Finish(
@@ -337,10 +412,16 @@ namespace InventoryKamera
                     null,
                     "The ordinary identity path requires exactly one positively verified match.");
 
+            string[] alternatives = BuildRelevantAlternativeTitles(expected.Name);
             AchievementResultTitleRead titleRead;
             try
             {
-                titleRead = titleReader.Read(screenshot);
+                titleRead = titleReader is IAchievementLazyResultTitleReader lazyReader
+                    ? lazyReader.Read(
+                        screenshot,
+                        attempt => IsPositiveAttempt(
+                            EvaluateAttempt(attempt, expected.Name, alternatives)))
+                    : titleReader.Read(screenshot);
             }
             catch (Exception ex)
             {
@@ -356,11 +437,14 @@ namespace InventoryKamera
                     $"Result-title OCR failed: {ex.GetType().Name}: {ex.Message}");
             }
 
-            string[] alternatives = BuildRelevantAlternativeTitles(expected.Name);
             var attempts = titleRead.Attempts
                 .Select(attempt => EvaluateAttempt(attempt, expected.Name, alternatives))
                 .ToArray();
             AchievementIdentityOcrAttempt selected = attempts
+                .Where(IsPositiveAttempt)
+                .OrderByDescending(attempt => attempt.Score)
+                .ThenByDescending(attempt => attempt.OcrAttempt.Confidence)
+                .FirstOrDefault() ?? attempts
                 .Where(attempt => attempt.OcrAttempt.NormalizedText.Length > 0)
                 .OrderByDescending(attempt => attempt.Score)
                 .ThenByDescending(attempt => attempt.OcrAttempt.Confidence)
@@ -396,6 +480,32 @@ namespace InventoryKamera
                 string observed = selected.OcrAttempt.NormalizedText;
                 string canonical = AchievementTitleNormalizer.Normalize(expected.Name);
                 if (IsPlausibleClippedPrefix(observed, canonical))
+                {
+                    if (IsSafeCorroboratedClippedPrefix(
+                        selected,
+                        expected.Name,
+                        titleGroup,
+                        screen))
+                    {
+                        AchievementIdentityState clippedState =
+                            titleGroup?.Kind == AchievementTitleGroupKind.StageFamily
+                                ? AchievementIdentityState.StageGroupIdentified
+                                : AchievementIdentityState.Identified;
+                        return Finish(
+                            clippedState,
+                            expectedId,
+                            expected,
+                            clippedState == AchievementIdentityState.Identified ? expected.Id : null,
+                            clippedState == AchievementIdentityState.StageGroupIdentified
+                                ? titleGroup.StageGroupId
+                                : null,
+                            candidateIds,
+                            screen,
+                            attempts,
+                            "A conservative left-anchored canonical prefix was corroborated by the exact query and a single result page.",
+                            selected,
+                            usedClippedPrefixEvidence: true);
+                    }
                     return Finish(
                         AchievementIdentityState.Unresolved,
                         expectedId,
@@ -407,6 +517,7 @@ namespace InventoryKamera
                         attempts,
                         "Visible title may be a clipped canonical prefix; full identity was not proven.",
                         selected);
+                }
 
                 bool competingTitleWon = selected.RunnerUpScore >= AchievementTitleMatcher.MinimumScore &&
                     selected.RunnerUpScore - selected.Score >= AchievementTitleMatcher.MinimumRunnerUpMargin;
@@ -493,6 +604,50 @@ namespace InventoryKamera
                 AchievementTitleMatcher.MinimumClippedPrefixScore;
         }
 
+        private bool IsSafeCorroboratedClippedPrefix(
+            AchievementIdentityOcrAttempt selected,
+            string expectedTitle,
+            AchievementTitleGroup titleGroup,
+            AchievementScreenDetection screen)
+        {
+            if (selected.OcrAttempt.Confidence < AchievementTitleMatcher.MinimumOcrConfidence ||
+                titleGroup == null ||
+                titleGroup.Kind == AchievementTitleGroupKind.UnrelatedCollision ||
+                screen?.MatchCountAccepted != true || screen.MatchCountValue != 1 ||
+                !screen.ResultPageAccepted || screen.ResultPageCurrent != 1 || screen.ResultPageTotal != 1)
+                return false;
+
+            string observed = AchievementTitleNormalizer.NormalizeForComparison(
+                selected.OcrAttempt.RawText);
+            string expected = AchievementTitleNormalizer.NormalizeForComparison(expectedTitle);
+            int usableLength = Math.Min(observed.Length, expected.Length - 1);
+            while (usableLength >= AchievementTitleMatcher.MinimumClippedPrefixLength)
+            {
+                string observedPrefix = observed.Substring(0, usableLength);
+                string expectedPrefix = expected.Substring(0, usableLength);
+                if (AchievementTitleMatcher.Similarity(observedPrefix, expectedPrefix) >=
+                    AchievementTitleMatcher.MinimumClippedPrefixScore)
+                {
+                    bool unsafeAlternate = catalog.All
+                        .Select(entry => AchievementTitleNormalizer.NormalizeForComparison(entry.Name))
+                        .Distinct(StringComparer.Ordinal)
+                        .Where(title => !string.Equals(title, expected, StringComparison.Ordinal))
+                        .Any(title => title.Length >= usableLength &&
+                            AchievementTitleMatcher.Similarity(
+                                observedPrefix,
+                                title.Substring(0, usableLength)) >=
+                            AchievementTitleMatcher.MinimumClippedPrefixScore);
+                    return !unsafeAlternate;
+                }
+
+                // Only discard a bounded damaged/clipped tail. An arbitrary substring or a weak
+                // leading read never reaches the positive prefix path.
+                if (observed.Length - usableLength >= 3) break;
+                usableLength--;
+            }
+            return false;
+        }
+
         private AchievementIdentityOcrAttempt EvaluateAttempt(
             AchievementTitleOcrAttempt attempt,
             string expectedTitle,
@@ -514,14 +669,22 @@ namespace InventoryKamera
             return new AchievementIdentityOcrAttempt(
                 attempt,
                 match.Score,
+                match.RunnerUpTitle,
                 match.RunnerUpScore,
                 match.Margin,
                 reason);
         }
 
+        private static bool IsPositiveAttempt(AchievementIdentityOcrAttempt attempt) =>
+            attempt.OcrAttempt.NormalizedText.Length > 0 &&
+            attempt.OcrAttempt.Confidence >= AchievementTitleMatcher.MinimumOcrConfidence &&
+            attempt.Score >= AchievementTitleMatcher.MinimumScore &&
+            attempt.Margin >= AchievementTitleMatcher.MinimumRunnerUpMargin;
+
         private string[] BuildRelevantAlternativeTitles(string expectedTitle)
         {
             string normalizedExpected = AchievementTitleNormalizer.Normalize(expectedTitle);
+            string comparisonExpected = AchievementTitleNormalizer.NormalizeForComparison(expectedTitle);
             return catalog.All
                 .Select(entry => entry.Name)
                 .Distinct(StringComparer.Ordinal)
@@ -529,11 +692,24 @@ namespace InventoryKamera
                     AchievementTitleNormalizer.Normalize(title),
                     normalizedExpected,
                     StringComparison.Ordinal))
-                .Where(title => AchievementTitleMatcher.Similarity(title, expectedTitle) >=
-                    AchievementTitleMatcher.CandidateRelevanceScore)
+                .Where(title =>
+                {
+                    string comparisonTitle = AchievementTitleNormalizer.NormalizeForComparison(title);
+                    return AchievementTitleMatcher.Similarity(comparisonTitle, comparisonExpected) >=
+                        AchievementTitleMatcher.CandidateRelevanceScore ||
+                        comparisonTitle.StartsWith(comparisonExpected, StringComparison.Ordinal) ||
+                        comparisonExpected.StartsWith(comparisonTitle, StringComparison.Ordinal);
+                })
                 .OrderBy(title => title, StringComparer.Ordinal)
                 .ToArray();
         }
+
+        private static bool HasUsableResultState(AchievementScreenDetection detection) =>
+            detection?.ScreenState == AchievementScreenState.SearchActive ||
+            (detection?.ScreenState == AchievementScreenState.Unknown &&
+             detection.MatchCountAccepted && detection.MatchCountValue == 1 &&
+             detection.ResultPageAccepted && detection.ResultPageCurrent == 1 &&
+             detection.ResultPageTotal == 1);
 
         private AchievementIdentityResult Finish(
             AchievementIdentityState state,
@@ -545,7 +721,8 @@ namespace InventoryKamera
             AchievementScreenDetection screen,
             IEnumerable<AchievementIdentityOcrAttempt> attempts,
             string reason,
-            AchievementIdentityOcrAttempt selected = null)
+            AchievementIdentityOcrAttempt selected = null,
+            bool usedClippedPrefixEvidence = false)
         {
             AchievementIdentityOcrAttempt[] attemptArray =
                 (attempts ?? Array.Empty<AchievementIdentityOcrAttempt>()).ToArray();
@@ -562,7 +739,8 @@ namespace InventoryKamera
                 selected,
                 candidateArray,
                 reason,
-                attemptArray);
+                attemptArray,
+                usedClippedPrefixEvidence);
             if (state == AchievementIdentityState.Identified ||
                 state == AchievementIdentityState.StageGroupIdentified)
                 Logger.Info(diagnostics);
@@ -585,7 +763,12 @@ namespace InventoryKamera
                 attemptArray,
                 screen,
                 reason,
-                diagnostics);
+                diagnostics,
+                usedCorroboratedSearchResult:
+                    (state == AchievementIdentityState.Identified ||
+                     state == AchievementIdentityState.StageGroupIdentified) &&
+                    screen?.ScreenState == AchievementScreenState.Unknown,
+                usedClippedPrefixEvidence: usedClippedPrefixEvidence);
         }
 
         private static string BuildDiagnostics(
@@ -597,38 +780,56 @@ namespace InventoryKamera
             AchievementIdentityOcrAttempt selected,
             IReadOnlyList<int> candidateIds,
             string reason,
-            IReadOnlyList<AchievementIdentityOcrAttempt> attempts)
+            IReadOnlyList<AchievementIdentityOcrAttempt> attempts,
+            bool usedClippedPrefixEvidence)
         {
             var builder = new StringBuilder(1400);
             builder.AppendLine("operation=identity-verify");
             builder.AppendLine($"expectedId={expectedId.ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"expectedTitle={Bound(expectedTitle)}");
             builder.AppendLine($"expectedTitleLength={(expectedTitle?.Length ?? 0).ToString(CultureInfo.InvariantCulture)}");
             builder.AppendLine($"screenState={screen?.ScreenState.ToString() ?? "(none)"}");
+            builder.AppendLine($"matchCountRaw={Bound(screen?.MatchCountRaw)}");
             builder.AppendLine($"matchCount={Format(screen?.MatchCountValue)}");
             builder.AppendLine($"page={Format(screen?.ResultPageCurrent)}/{Format(screen?.ResultPageTotal)}");
             builder.AppendLine($"rawTitle={Bound(selected?.OcrAttempt.RawText)}");
             builder.AppendLine($"normalizedTitle={Bound(selected?.OcrAttempt.NormalizedText)}");
+            builder.AppendLine($"comparisonTitle={Bound(selected?.OcrAttempt.ComparisonText)}");
             builder.AppendLine($"ocrConfidence={Format(selected?.OcrAttempt.Confidence)}");
             builder.AppendLine($"score={Format(selected?.Score)}");
+            builder.AppendLine($"bestAlternateTitle={Bound(selected?.RunnerUpTitle)}");
             builder.AppendLine($"runnerUpScore={Format(selected?.RunnerUpScore)}");
             builder.AppendLine($"margin={Format(selected?.Margin)}");
+            builder.AppendLine($"minimumScore={AchievementTitleMatcher.MinimumScore.ToString("0.0", CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"minimumRunnerUpMargin={AchievementTitleMatcher.MinimumRunnerUpMargin.ToString("0.0", CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"minimumOcrConfidence={AchievementTitleMatcher.MinimumOcrConfidence.ToString("0.000", CultureInfo.InvariantCulture)}");
             builder.AppendLine($"titleGroupKind={titleGroup?.Kind.ToString() ?? "(none)"}");
             builder.AppendLine($"candidateCount={candidateIds.Count.ToString(CultureInfo.InvariantCulture)}");
             builder.AppendLine($"candidateIds={string.Join(",", candidateIds)}");
             builder.AppendLine($"collision={titleGroup?.IsUnrelatedCollision == true}");
             builder.AppendLine($"multiMatch={screen?.MatchCountValue > 1}");
+            builder.AppendLine($"usedCorroboratedSearchResult={
+                (state == AchievementIdentityState.Identified ||
+                 state == AchievementIdentityState.StageGroupIdentified) &&
+                screen?.ScreenState == AchievementScreenState.Unknown}");
+            builder.AppendLine($"usedClippedPrefixEvidence={usedClippedPrefixEvidence}");
             builder.AppendLine($"state={state}");
+            builder.AppendLine($"finalIdentityState={state}");
             builder.AppendLine($"reason={Bound(reason)}");
+            builder.AppendLine($"finalRejectionReason={Bound(reason)}");
             for (int i = 0; i < attempts.Count; i++)
             {
                 AchievementIdentityOcrAttempt attempt = attempts[i];
                 builder.AppendLine(
                     $"attempt[{i.ToString(CultureInfo.InvariantCulture)}]=" +
                     $"variant={attempt.OcrAttempt.Variant}; " +
+                    $"scope={attempt.OcrAttempt.Scope}; " +
                     $"raw={Bound(attempt.OcrAttempt.RawText)}; " +
                     $"normalized={Bound(attempt.OcrAttempt.NormalizedText)}; " +
+                    $"comparison={Bound(attempt.OcrAttempt.ComparisonText)}; " +
                     $"confidence={attempt.OcrAttempt.Confidence.ToString("0.000", CultureInfo.InvariantCulture)}; " +
                     $"score={attempt.Score.ToString("0.0", CultureInfo.InvariantCulture)}; " +
+                    $"bestAlternate={Bound(attempt.RunnerUpTitle)}; " +
                     $"runnerUp={attempt.RunnerUpScore.ToString("0.0", CultureInfo.InvariantCulture)}; " +
                     $"margin={attempt.Margin.ToString("0.0", CultureInfo.InvariantCulture)}; " +
                     $"reason={Bound(attempt.Reason)}");

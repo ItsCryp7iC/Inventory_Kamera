@@ -103,6 +103,8 @@ namespace InventoryKamera.Tests
                 OverlayInteractionPolicy.ForState(ScanCompanionState.RestoringKeyboard));
             Assert.Equal(OverlayInteractionMode.Passive,
                 OverlayInteractionPolicy.ForState(ScanCompanionState.Completed));
+            Assert.Equal(OverlayInteractionMode.Passive,
+                OverlayInteractionPolicy.ForState(ScanCompanionState.WaitingForAchievementScreen));
             Assert.Equal(OverlayInteractionMode.Interactive,
                 OverlayInteractionPolicy.ForState(ScanCompanionState.WaitingForController));
             Assert.Equal(OverlayInteractionMode.Interactive,

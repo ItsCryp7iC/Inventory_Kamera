@@ -333,9 +333,7 @@ namespace InventoryKamera
 			}
 		}
 
-		public void GatherData() => GatherData(achievementStage: null);
-
-		internal void GatherData(Action<AchievementScanRuntimeContext> achievementStage)
+		public void GatherData()
 		{
 			ResetLogging();
 
@@ -343,8 +341,6 @@ namespace InventoryKamera
 				scanSettings.ScanCharacters || scanSettings.ScanCharDevItems || scanSettings.ScanMaterials;
 			if (legacyScanSelected)
 			{
-				// Achievement OCR is synchronous. The existing worker pool remains dedicated to
-				// inventory cards and is not started for an achievement-only scan.
 				scanSession.StartWorkers(NumWorkers, ImageProcessorWorkerAsync);
 				Logger.Debug("Added {0} workers", NumWorkers);
 			}
@@ -362,7 +358,7 @@ namespace InventoryKamera
 
 			bool scanInventory = scanSettings.ScanWeapons || scanSettings.ScanArtifacts
 				|| scanSettings.ScanCharDevItems || scanSettings.ScanMaterials;
-			if ((scanInventory || scanSettings.ScanCharacters || achievementStage != null) &&
+			if ((scanInventory || scanSettings.ScanCharacters) &&
 				!scanSession.IsCancellationRequested)
 			{
 				// Phase 3 §6c: a SINGLE controller connection spans every controller-driven scan phase
@@ -493,21 +489,6 @@ namespace InventoryKamera
 								Logger.Warn("Character scanning did not continue because Character entry was not verified.");
 						}
 
-						if (achievementStage != null && !scanSession.IsCancellationRequested)
-						{
-							// Inventory capture work is already closed above. Drain its OCR workers before
-							// achievement OCR begins so the stages do not contend for pooled engines.
-							AwaitProcessors();
-							Logger.Info("Starting achievement scan stage inside the active input session.");
-							progressReporter.SetProgramStatus("Scanning Achievements");
-							achievementStage(new AchievementScanRuntimeContext(
-								navigator,
-								ocrService,
-								imagePreprocessor,
-								screenCapture,
-								foregroundActivator,
-								scanSession.CancellationToken));
-						}
 					}
 				}
 				finally

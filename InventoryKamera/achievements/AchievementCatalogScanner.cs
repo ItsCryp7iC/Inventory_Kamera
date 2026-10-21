@@ -117,6 +117,12 @@ namespace InventoryKamera
 
         internal IReadOnlyList<AchievementScanTarget> Targets { get; }
 
+        internal void PrepareForScan(CancellationToken cancellationToken) =>
+            singleScanner.PrepareForScan(cancellationToken);
+
+        internal void ReacquireAfterUserInteraction(CancellationToken cancellationToken) =>
+            singleScanner.ReacquireAfterUserInteraction(cancellationToken);
+
         internal AchievementCatalogScanResult Scan(
             CancellationToken cancellationToken,
             IAchievementCatalogScanProgressReporter progress = null) =>

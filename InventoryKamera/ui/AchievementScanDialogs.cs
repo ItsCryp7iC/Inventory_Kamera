@@ -48,49 +48,6 @@ namespace InventoryKamera.ui
         }
     }
 
-    internal sealed class AchievementStartHandoffForm : Form
-    {
-        internal AchievementStartHandoffForm()
-        {
-            Text = "Achievement Scanner";
-            AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(500, 205);
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false;
-            MinimizeBox = false;
-            ShowInTaskbar = false;
-            StartPosition = FormStartPosition.CenterParent;
-
-            var message = new Label
-            {
-                AutoSize = false,
-                Location = new Point(18, 18),
-                Size = new Size(464, 112),
-                Text = "Open Genshin's Achievements screen and make sure no search is active.\n\n" +
-                    "You may interact with Genshin while this window is open. Return here and click Continue when the Achievement screen is ready.",
-            };
-            var continueButton = new Button
-            {
-                DialogResult = DialogResult.OK,
-                Location = new Point(222, 150),
-                Size = new Size(110, 35),
-                Text = "Continue",
-            };
-            var cancelButton = new Button
-            {
-                DialogResult = DialogResult.Cancel,
-                Location = new Point(342, 150),
-                Size = new Size(140, 35),
-                Text = "Cancel Achievement Scan",
-            };
-            Controls.Add(message);
-            Controls.Add(continueButton);
-            Controls.Add(cancelButton);
-            AcceptButton = continueButton;
-            CancelButton = cancelButton;
-        }
-    }
-
     internal sealed class AchievementPendingClaimForm : Form
     {
         internal AchievementPendingClaimForm(string achievementTitle)

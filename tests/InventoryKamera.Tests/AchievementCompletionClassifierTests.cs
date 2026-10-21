@@ -209,6 +209,78 @@ namespace InventoryKamera.Tests
             Assert.Contains("Multiple", result.Reason);
         }
 
+        [Theory]
+        [InlineData("Completed 57 2023/08/21")]
+        [InlineData("Completed 57 2112(1/11)/11")]
+        [InlineData("Completed 57 21)21/0)7/1)8")]
+        public void StrongCompletedLabel_IsNotRejectedByBroadCropDateOrFractionNoise(
+            string broadRaw)
+        {
+            Harness harness = Harness.Create(
+                Attempt("Completed", 0.95f, scope: AchievementCompletionOcrScope.StateLabel),
+                Attempt(
+                    broadRaw,
+                    0.70f,
+                    AchievementCompletionOcrVariant.GrayscaleThreshold,
+                    AchievementCompletionOcrScope.FullCompletionRegion));
+
+            AchievementCompletionResult result = harness.Classify(Identity());
+
+            Assert.Equal(AchievementCompletionState.CompletedClaimed, result.State);
+            Assert.True(result.CompletedDetected);
+            Assert.Null(result.ProgressCurrent);
+        }
+
+        [Fact]
+        public void StrongClaimLabel_IsNotRejectedByBroadCropNoise()
+        {
+            Harness harness = Harness.Create(
+                Attempt("Claim", 0.94f, scope: AchievementCompletionOcrScope.StateLabel),
+                Attempt(
+                    "Completed 57 2025/05/20 1/11",
+                    0.70f,
+                    AchievementCompletionOcrVariant.GrayscaleThreshold,
+                    AchievementCompletionOcrScope.FullCompletionRegion));
+
+            AchievementCompletionResult result = harness.Classify(Identity());
+
+            Assert.Equal(AchievementCompletionState.CompletedUnclaimed, result.State);
+            Assert.True(result.ClaimDetected);
+            Assert.False(result.CompletedDetected);
+            Assert.Null(result.ProgressCurrent);
+        }
+
+        [Fact]
+        public void DedicatedProgressLabel_StillFailsClosedOnConflictingFractions()
+        {
+            Harness harness = Harness.Create(
+                Attempt("3/20", 0.90f, scope: AchievementCompletionOcrScope.StateLabel),
+                Attempt(
+                    "4/20",
+                    0.91f,
+                    AchievementCompletionOcrVariant.GrayscaleContrastInverted,
+                    AchievementCompletionOcrScope.StateLabel));
+
+            AchievementCompletionResult result = harness.Classify(Identity());
+
+            Assert.Equal(AchievementCompletionState.Unresolved, result.State);
+            Assert.Contains("Multiple", result.Reason);
+        }
+
+        [Fact]
+        public void BroadCropFractionAlone_CannotProveIncomplete()
+        {
+            Harness harness = Harness.Create(Attempt(
+                "3/20",
+                0.95f,
+                scope: AchievementCompletionOcrScope.FullCompletionRegion));
+
+            AchievementCompletionResult result = harness.Classify(Identity());
+
+            Assert.Equal(AchievementCompletionState.Unresolved, result.State);
+            Assert.Null(result.ProgressCurrent);
+        }
+
         [Fact]
         public void MalformedProgress_DoesNotOverrideIndependentClaimEvidence()
         {
@@ -334,6 +406,24 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void CorroboratedUnknownIdentityAndFreshSinglePageMarkers_AllowCompletionProof()
+        {
+            AchievementScreenDetection detection = Detection(
+                AchievementScreenState.Unknown,
+                1,
+                includeResultMarkers: true);
+            AchievementIdentityResult identity = Identity(
+                screenDetection: detection,
+                usedCorroboratedSearchResult: true);
+            Harness harness = Harness.Create(detection, Attempt("Claim", 0.90f));
+
+            AchievementCompletionResult result = harness.Classify(identity);
+
+            Assert.Equal(AchievementCompletionState.CompletedUnclaimed, result.State);
+            Assert.Equal(1, harness.Reader.ReadCount);
+        }
+
+        [Fact]
         public void NullScreenshot_StopsBeforeScreenOrCompletionOcr()
         {
             Harness harness = Harness.Create("Claim", 0.90f);
@@ -408,11 +498,14 @@ namespace InventoryKamera.Tests
         private static AchievementCompletionOcrAttempt Attempt(
             string raw,
             float confidence,
-            AchievementCompletionOcrVariant variant = AchievementCompletionOcrVariant.GrayscaleContrast) =>
-            new(variant, raw, confidence, "test read");
+            AchievementCompletionOcrVariant variant = AchievementCompletionOcrVariant.GrayscaleContrast,
+            AchievementCompletionOcrScope scope = AchievementCompletionOcrScope.StateLabel) =>
+            new(variant, raw, confidence, "test read", scope);
 
         internal static AchievementIdentityResult Identity(
-            AchievementIdentityState state = AchievementIdentityState.Identified)
+            AchievementIdentityState state = AchievementIdentityState.Identified,
+            AchievementScreenDetection screenDetection = null,
+            bool usedCorroboratedSearchResult = false)
         {
             bool staged = state == AchievementIdentityState.StageGroupIdentified;
             int expectedId = staged ? 80127 : 81665;
@@ -430,22 +523,25 @@ namespace InventoryKamera.Tests
                 100,
                 0.95f,
                 Array.Empty<AchievementIdentityOcrAttempt>(),
-                Detection(AchievementScreenState.SearchActive, 1),
+                screenDetection ?? Detection(AchievementScreenState.SearchActive, 1),
                 "test identity",
-                "test diagnostics");
+                "test diagnostics",
+                usedCorroboratedSearchResult);
         }
 
         internal static AchievementScreenDetection Detection(
             AchievementScreenState state,
             int matchCount,
-            string completedCountRaw = "Achievements completed: 1")
+            string completedCountRaw = "Achievements completed: 1",
+            bool includeResultMarkers = false)
         {
-            string matchRaw = state == AchievementScreenState.SearchActive
+            bool hasResultMarkers = state == AchievementScreenState.SearchActive || includeResultMarkers;
+            string matchRaw = hasResultMarkers
                 ? $"Match(es): {matchCount}"
                 : string.Empty;
             AchievementMatchCountParseResult match = AchievementMatchCountParser.Parse(matchRaw);
             AchievementPageCounterParseResult page = AchievementPageCounterParser.Parse(
-                state == AchievementScreenState.SearchActive ? "1/1" : string.Empty);
+                hasResultMarkers ? "1/1" : string.Empty);
             return new AchievementScreenDetection(
                 state,
                 AchievementTextEvidence.ForTest("Achievements", state != AchievementScreenState.NotAchievementScreen),
@@ -568,7 +664,7 @@ namespace InventoryKamera.Tests
 
             output.WriteLine(result.Diagnostics);
             Assert.Equal((AchievementCompletionState)expectedStateValue, result.State);
-            Assert.Equal(6, result.Attempts.Count);
+            Assert.InRange(result.Attempts.Count, 2, 6);
             Assert.Equal(expectedCurrent, result.ProgressCurrent);
             Assert.Equal(expectedTarget, result.ProgressTarget);
             Assert.Contains(result.Attempts, attempt =>

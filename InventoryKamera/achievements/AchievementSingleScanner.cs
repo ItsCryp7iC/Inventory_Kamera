@@ -3,6 +3,7 @@ using NLog;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.Linq;
@@ -14,6 +15,8 @@ namespace InventoryKamera
 {
     internal interface IAchievementSingleScanner
     {
+        void PrepareForScan(CancellationToken cancellationToken) { }
+        void ReacquireAfterUserInteraction(CancellationToken cancellationToken) { }
         AchievementSingleScanResult Scan(
             int canonicalAchievementId,
             CancellationToken cancellationToken);
@@ -107,6 +110,7 @@ namespace InventoryKamera
         internal string Reason { get; }
         internal string Diagnostics { get; }
         internal AchievementStageProgressResult StageProgressResult { get; }
+        internal AchievementTargetTiming Timing => SearchResult?.Timing;
     }
 
     /// <summary>
@@ -116,6 +120,7 @@ namespace InventoryKamera
     /// </summary>
     internal sealed class AchievementSingleScanner : IAchievementSingleScanner
     {
+        internal const int RecognitionRecoveryDelayMs = 150;
         private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
 
         private readonly AchievementCatalog catalog;
@@ -126,6 +131,8 @@ namespace InventoryKamera
         private readonly IGameScreenCapture screenCapture;
         private readonly IAchievementRewardReader rewardReader;
         private readonly AchievementStageProgressResolver stageProgressResolver;
+        private readonly Action<int, CancellationToken> recoveryWait;
+        private bool idleStateVerifiedForNextTarget;
 
         internal AchievementSingleScanner(
             IAchievementCatalogProvider catalogProvider,
@@ -135,7 +142,8 @@ namespace InventoryKamera
             IAchievementCompletionClassifier completionClassifier,
             IGameScreenCapture screenCapture,
             IAchievementRewardReader rewardReader,
-            AchievementStageProgressResolver stageProgressResolver)
+            AchievementStageProgressResolver stageProgressResolver,
+            Action<int, CancellationToken> recoveryWait = null)
         {
             if (catalogProvider == null) throw new ArgumentNullException(nameof(catalogProvider));
             catalog = catalogProvider.Catalog ?? throw new ArgumentException(
@@ -147,6 +155,23 @@ namespace InventoryKamera
             this.screenCapture = screenCapture ?? throw new ArgumentNullException(nameof(screenCapture));
             this.rewardReader = rewardReader ?? throw new ArgumentNullException(nameof(rewardReader));
             this.stageProgressResolver = stageProgressResolver ?? throw new ArgumentNullException(nameof(stageProgressResolver));
+            this.recoveryWait = recoveryWait ?? WaitWithCancellation;
+        }
+
+        public void PrepareForScan(CancellationToken cancellationToken)
+        {
+            searchNavigator.PreparePointer(cancellationToken, forceReposition: true);
+            // MainForm calls this only after the passive readiness waiter positively verified
+            // Keyboard/Mouse Idle, so the first target can reuse that proof.
+            idleStateVerifiedForNextTarget = true;
+        }
+
+        public void ReacquireAfterUserInteraction(CancellationToken cancellationToken)
+        {
+            searchNavigator.PreparePointer(cancellationToken, forceReposition: true);
+            // The user may have changed the screen while claiming a reward. The resumed target must
+            // take one fresh start-state proof before issuing input.
+            idleStateVerifiedForNextTarget = false;
         }
 
         public AchievementSingleScanResult Scan(
@@ -164,6 +189,7 @@ namespace InventoryKamera
                     context,
                     AchievementSingleScanState.Failed,
                     "The requested canonical achievement ID was not found in the packaged catalog.");
+            context.TargetHidden = target.Hidden;
 
             if (cancellationToken.IsCancellationRequested)
                 return Finish(
@@ -171,7 +197,14 @@ namespace InventoryKamera
                     AchievementSingleScanState.Cancelled,
                     "Single-achievement scanning was cancelled before the start capture.");
 
-            try
+            bool reuseVerifiedIdle = idleStateVerifiedForNextTarget;
+            idleStateVerifiedForNextTarget = false;
+            if (reuseVerifiedIdle)
+            {
+                context.StartStateReused = true;
+                context.FinalScreenState = AchievementScreenState.Idle;
+            }
+            else try
             {
                 using Bitmap startScreenshot = screenCapture.CaptureWindow();
                 if (cancellationToken.IsCancellationRequested)
@@ -196,14 +229,17 @@ namespace InventoryKamera
                     $"Start-state capture or detection failed: {ex.GetType().Name}: {ex.Message}");
             }
 
-            context.FinalScreenState = context.StartDetection?.ScreenState;
-            if (context.StartDetection?.ScreenState != AchievementScreenState.Idle)
+            if (!reuseVerifiedIdle)
             {
-                return Finish(
-                    context,
-                    AchievementSingleScanState.Failed,
-                    $"Single-achievement scanning requires a positively verified Idle start; observed " +
-                    $"{context.StartDetection?.ScreenState.ToString() ?? "no state"}.");
+                context.FinalScreenState = context.StartDetection?.ScreenState;
+                if (context.StartDetection?.ScreenState != AchievementScreenState.Idle)
+                {
+                    return Finish(
+                        context,
+                        AchievementSingleScanState.Failed,
+                        $"Single-achievement scanning requires a positively verified Idle start; observed " +
+                        $"{context.StartDetection?.ScreenState.ToString() ?? "no state"}.");
+                }
             }
 
             if (cancellationToken.IsCancellationRequested)
@@ -238,17 +274,19 @@ namespace InventoryKamera
                     AchievementSingleScanState.Failed,
                     "Achievement search returned no structured result.");
             if (context.SearchResult.Cancelled || cancellationToken.IsCancellationRequested)
+            {
+                context.SearchResult.ResultScreenshot?.Dispose();
                 return Finish(
                     context,
                     AchievementSingleScanState.Cancelled,
                     context.SearchResult.FailureReason ?? "Single-achievement scanning was cancelled during search.");
-            if (!context.SearchResult.Succeeded ||
-                context.SearchResult.AfterDetection?.ScreenState != AchievementScreenState.SearchActive)
+            }
+            if (!context.SearchResult.Succeeded || !HasUsableResultState(context.SearchResult.AfterDetection))
                 return Finish(
                     context,
                     AchievementSingleScanState.Failed,
                     context.SearchResult.FailureReason ??
-                    "Achievement search did not return a positively verified SearchActive result.");
+                    "Achievement search did not return a positively verified result or explicit no-results state.");
 
             if (cancellationToken.IsCancellationRequested)
                 return Finish(
@@ -256,29 +294,42 @@ namespace InventoryKamera
                     AchievementSingleScanState.Cancelled,
                     "Single-achievement scanning was cancelled after search and before identity verification.");
 
-            Bitmap resultScreenshot;
-            try
+            if (context.SearchResult.AfterDetection.ScreenState == AchievementScreenState.SearchNoResults)
             {
-                resultScreenshot = screenCapture.CaptureWindow();
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return Finish(
-                    context,
-                    AchievementSingleScanState.Cancelled,
-                    "Single-achievement scanning was cancelled during the fresh result capture.");
-            }
-            catch (Exception ex)
-            {
+                context.SearchResult.ResultScreenshot?.Dispose();
+                context.ExplicitNoResultsHandled = true;
+                AchievementSingleScanState zeroResultState =
+                    ClassifyExplicitNoResults(context, target, out string zeroResultReason);
                 return FinishWithExit(
                     context,
-                    AchievementSingleScanState.Failed,
-                    $"Fresh result capture failed: {ex.GetType().Name}: {ex.Message}",
+                    zeroResultState,
+                    zeroResultReason,
                     cancellationToken);
+            }
+
+            Bitmap resultScreenshot = context.SearchResult.ResultScreenshot;
+            if (resultScreenshot == null)
+            {
+                // Test doubles and older callers may not transfer the navigator-owned frame. The
+                // production keyboard/mouse navigator always supplies it, so the live path has one
+                // and only one fresh result capture per target.
+                try
+                {
+                    resultScreenshot = screenCapture.CaptureWindow();
+                }
+                catch (Exception ex)
+                {
+                    return FinishWithExit(
+                        context,
+                        AchievementSingleScanState.Failed,
+                        $"Fresh result capture failed: {ex.GetType().Name}: {ex.Message}",
+                        cancellationToken);
+                }
             }
 
             using (resultScreenshot)
             {
+                Bitmap recoveryScreenshot = null;
                 if (cancellationToken.IsCancellationRequested)
                     return Finish(
                         context,
@@ -287,10 +338,11 @@ namespace InventoryKamera
 
                 try
                 {
-                    context.IdentityResult = identityVerifier.Verify(
-                        context.SearchResult,
+                    context.IdentityResult = VerifyIdentity(
+                        context,
                         target.Id,
-                        resultScreenshot);
+                        resultScreenshot,
+                        context.SearchResult.AfterDetection);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -334,10 +386,45 @@ namespace InventoryKamera
                         "The search returned multiple matches; first-result identity and completion were not inferred.",
                         cancellationToken);
 
-                if (context.IdentityResult == null ||
-                    (context.IdentityResult.State != AchievementIdentityState.Identified &&
-                     context.IdentityResult.State != AchievementIdentityState.StageGroupIdentified))
+                Bitmap evidenceScreenshot = resultScreenshot;
+                AchievementScreenDetection evidenceDetection = context.SearchResult.AfterDetection;
+                if (context.IdentityResult?.State == AchievementIdentityState.Unresolved)
                 {
+                    context.SearchResult.Timing.IdentityRecoveryUsed = true;
+                    try
+                    {
+                        recoveryScreenshot = CaptureRecoveryFrame(context, cancellationToken, out evidenceDetection);
+                        evidenceScreenshot = recoveryScreenshot;
+                        context.IdentityResult = VerifyIdentity(
+                            context,
+                            target.Id,
+                            evidenceScreenshot,
+                            evidenceDetection);
+                        context.SearchResult.Timing.RecoveryResult =
+                            $"identity:{context.IdentityResult?.State.ToString() ?? "(none)"}";
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        recoveryScreenshot?.Dispose();
+                        return Finish(
+                            context,
+                            AchievementSingleScanState.Cancelled,
+                            "Single-achievement scanning was cancelled before identity recovery completed.");
+                    }
+                    catch (Exception ex)
+                    {
+                        recoveryScreenshot?.Dispose();
+                        return FinishWithExit(
+                            context,
+                            AchievementSingleScanState.Failed,
+                            $"Achievement identity recovery failed: {ex.GetType().Name}: {ex.Message}",
+                            cancellationToken);
+                    }
+                }
+
+                if (!HasPositiveIdentity(context.IdentityResult))
+                {
+                    recoveryScreenshot?.Dispose();
                     return FinishWithExit(
                         context,
                         AchievementSingleScanState.Unresolved,
@@ -345,15 +432,26 @@ namespace InventoryKamera
                         cancellationToken);
                 }
 
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    recoveryScreenshot?.Dispose();
+                    return Finish(
+                        context,
+                        AchievementSingleScanState.Cancelled,
+                        "Single-achievement scanning was cancelled after identity recovery and before completion classification.");
+                }
+
                 try
                 {
                     context.CompletionInvoked = true;
-                    context.CompletionResult = completionClassifier.Classify(
-                        context.IdentityResult,
-                        resultScreenshot);
+                    context.CompletionResult = ClassifyCompletion(
+                        context,
+                        evidenceScreenshot,
+                        evidenceDetection);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
+                    recoveryScreenshot?.Dispose();
                     return Finish(
                         context,
                         AchievementSingleScanState.Cancelled,
@@ -361,6 +459,7 @@ namespace InventoryKamera
                 }
                 catch (Exception ex)
                 {
+                    recoveryScreenshot?.Dispose();
                     return FinishWithExit(
                         context,
                         AchievementSingleScanState.Failed,
@@ -368,7 +467,51 @@ namespace InventoryKamera
                         cancellationToken);
                 }
 
-                ResolveStageProgress(context, resultScreenshot);
+                if (context.CompletionResult?.State == AchievementCompletionState.Unresolved &&
+                    recoveryScreenshot == null)
+                {
+                    context.SearchResult.Timing.CompletionRecoveryUsed = true;
+                    try
+                    {
+                        recoveryScreenshot = CaptureRecoveryFrame(
+                            context,
+                            cancellationToken,
+                            out evidenceDetection);
+                        evidenceScreenshot = recoveryScreenshot;
+                        context.CompletionResult = ClassifyCompletion(
+                            context,
+                            evidenceScreenshot,
+                            evidenceDetection);
+                        context.SearchResult.Timing.RecoveryResult =
+                            $"completion:{context.CompletionResult?.State.ToString() ?? "(none)"}";
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        recoveryScreenshot?.Dispose();
+                        return Finish(
+                            context,
+                            AchievementSingleScanState.Cancelled,
+                            "Single-achievement scanning was cancelled before completion recovery completed.");
+                    }
+                    catch (Exception ex)
+                    {
+                        recoveryScreenshot?.Dispose();
+                        return FinishWithExit(
+                            context,
+                            AchievementSingleScanState.Failed,
+                            $"Achievement completion recovery failed: {ex.GetType().Name}: {ex.Message}",
+                            cancellationToken);
+                    }
+                }
+
+                try
+                {
+                    ResolveStageProgress(context, evidenceScreenshot);
+                }
+                finally
+                {
+                    recoveryScreenshot?.Dispose();
+                }
             }
 
             AchievementSingleScanState evidenceState = MapEvidenceState(context);
@@ -380,6 +523,80 @@ namespace InventoryKamera
                     $"Single-achievement scanning was cancelled before search exit. {evidenceReason}");
 
             return FinishWithExit(context, evidenceState, evidenceReason, cancellationToken);
+        }
+
+        private AchievementIdentityResult VerifyIdentity(
+            ScanContext context,
+            int targetId,
+            Bitmap screenshot,
+            AchievementScreenDetection detection)
+        {
+            Stopwatch timer = Stopwatch.StartNew();
+            AchievementIdentityResult result = identityVerifier is IAchievementSharedScreenIdentityVerifier shared
+                ? shared.Verify(context.SearchResult, targetId, screenshot, detection)
+                : identityVerifier.Verify(context.SearchResult, targetId, screenshot);
+            timer.Stop();
+            context.SearchResult.Timing.IdentityOcrMilliseconds += timer.ElapsedMilliseconds;
+            return result;
+        }
+
+        private AchievementCompletionResult ClassifyCompletion(
+            ScanContext context,
+            Bitmap screenshot,
+            AchievementScreenDetection detection)
+        {
+            Stopwatch timer = Stopwatch.StartNew();
+            AchievementCompletionResult result =
+                completionClassifier is IAchievementSharedScreenCompletionClassifier shared
+                    ? shared.Classify(context.IdentityResult, screenshot, detection)
+                    : completionClassifier.Classify(context.IdentityResult, screenshot);
+            timer.Stop();
+            context.SearchResult.Timing.CompletionOcrMilliseconds += timer.ElapsedMilliseconds;
+            return result;
+        }
+
+        private Bitmap CaptureRecoveryFrame(
+            ScanContext context,
+            CancellationToken cancellationToken,
+            out AchievementScreenDetection detection)
+        {
+            recoveryWait(RecognitionRecoveryDelayMs, cancellationToken);
+            context.SearchResult.Timing.RecoveryDelayMilliseconds += RecognitionRecoveryDelayMs;
+
+            Stopwatch captureTimer = Stopwatch.StartNew();
+            Bitmap screenshot = screenCapture.CaptureWindow();
+            captureTimer.Stop();
+            context.SearchResult.Timing.CaptureMilliseconds += captureTimer.ElapsedMilliseconds;
+            context.SearchResult.Timing.ExtraCaptureCount++;
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Stopwatch detectionTimer = Stopwatch.StartNew();
+                detection = screenDetector.Detect(screenshot);
+                detectionTimer.Stop();
+                context.SearchResult.Timing.ScreenDetectionMilliseconds += detectionTimer.ElapsedMilliseconds;
+                return screenshot;
+            }
+            catch
+            {
+                screenshot.Dispose();
+                throw;
+            }
+        }
+
+        private static bool HasPositiveIdentity(AchievementIdentityResult identity) =>
+            identity?.State == AchievementIdentityState.Identified ||
+            identity?.State == AchievementIdentityState.StageGroupIdentified;
+
+        private static void WaitWithCancellation(int milliseconds, CancellationToken cancellationToken)
+        {
+            if (milliseconds <= 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return;
+            }
+            if (cancellationToken.WaitHandle.WaitOne(milliseconds))
+                cancellationToken.ThrowIfCancellationRequested();
         }
 
         private void ResolveStageProgress(ScanContext context, Bitmap resultScreenshot)
@@ -395,9 +612,12 @@ namespace InventoryKamera
             {
                 try
                 {
+                    Stopwatch rewardTimer = Stopwatch.StartNew();
                     reward = rewardReader.Read(resultScreenshot) ??
                         AchievementRewardResult.Unresolved(
                             "The reward reader returned no structured result.");
+                    rewardTimer.Stop();
+                    context.SearchResult.Timing.RewardOcrMilliseconds = rewardTimer.ElapsedMilliseconds;
                 }
                 catch (Exception ex)
                 {
@@ -411,6 +631,42 @@ namespace InventoryKamera
                 context.CompletionResult,
                 reward,
                 context.TitleGroup);
+        }
+
+        private AchievementSingleScanState ClassifyExplicitNoResults(
+            ScanContext context,
+            AchievementCatalogEntry target,
+            out string reason)
+        {
+            AchievementTitleGroup group = context.TitleGroup;
+            if (group?.Kind == AchievementTitleGroupKind.Unique && target.Hidden)
+            {
+                context.ZeroResultDecision = "hidden-unique-incomplete";
+                reason =
+                    "The hidden unique achievement is absent from a positively verified exact-title no-results search.";
+                return AchievementSingleScanState.Incomplete;
+            }
+
+            if (group?.Kind == AchievementTitleGroupKind.StageFamily &&
+                group.Entries.All(entry => entry.Hidden))
+            {
+                context.StageProgressResult =
+                    stageProgressResolver.ResolveExplicitNoResults(group);
+                context.ZeroResultDecision = "all-hidden-stage-family-zero-completed";
+                reason =
+                    "The all-hidden staged title-family is absent from a positively verified exact-title no-results search; stage 1 is incomplete and zero stages are complete.";
+                return AchievementSingleScanState.Incomplete;
+            }
+
+            context.ZeroResultDecision = group?.Kind == AchievementTitleGroupKind.UnrelatedCollision
+                ? "collision-unresolved"
+                : target.Hidden
+                    ? "mixed-or-unsupported-hidden-group-unresolved"
+                    : "non-hidden-catalog-mismatch-unresolved";
+            reason = target.Hidden
+                ? "The explicit no-results search maps to a collision or mixed/unsupported hidden title group; no progress was inferred."
+                : "A non-hidden canonical achievement returned explicit no results; possible catalog, localization, version, or search mismatch remains unresolved.";
+            return AchievementSingleScanState.Unresolved;
         }
 
         private AchievementSingleScanResult FinishWithExit(
@@ -428,7 +684,10 @@ namespace InventoryKamera
             context.ExitAttempted = true;
             try
             {
-                context.ExitResult = searchNavigator.ExitSearch(cancellationToken);
+                context.ExitResult = searchNavigator.ClearSearch(cancellationToken);
+                if (context.SearchResult?.Timing != null)
+                    context.SearchResult.Timing.ClearMilliseconds =
+                        context.ExitResult?.Timing?.ClearMilliseconds ?? 0;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -463,6 +722,7 @@ namespace InventoryKamera
                     $"{context.ExitResult?.FailureReason ?? "no verified exit result"}");
             }
 
+            idleStateVerifiedForNextTarget = true;
             return Finish(context, evidenceState, evidenceReason);
         }
 
@@ -518,6 +778,8 @@ namespace InventoryKamera
             AchievementSingleScanState state,
             string reason)
         {
+            if (context.SearchResult?.Timing != null)
+                context.SearchResult.Timing.TotalMilliseconds = context.TotalStopwatch.ElapsedMilliseconds;
             string diagnostics = BuildDiagnostics(context, state, reason);
             if (state == AchievementSingleScanState.Completed ||
                 state == AchievementSingleScanState.Incomplete ||
@@ -561,7 +823,12 @@ namespace InventoryKamera
             builder.AppendLine($"collision={context.TitleGroup?.IsUnrelatedCollision == true}");
             builder.AppendLine($"multiMatch={CurrentMatchCount(context) > 1}");
             builder.AppendLine($"startState={Format(context.StartDetection?.ScreenState)}");
+            builder.AppendLine($"startStateReused={context.StartStateReused}");
             builder.AppendLine($"searchSucceeded={context.SearchResult?.Succeeded == true}");
+            builder.AppendLine($"searchNoResults={context.SearchResult?.AfterDetection?.ScreenState == AchievementScreenState.SearchNoResults}");
+            builder.AppendLine($"targetHidden={context.TargetHidden}");
+            builder.AppendLine($"zeroResultHandled={context.ExplicitNoResultsHandled}");
+            builder.AppendLine($"zeroResultDecision={context.ZeroResultDecision}");
             builder.AppendLine($"identityState={Format(context.IdentityResult?.State)}");
             builder.AppendLine($"completionState={Format(context.CompletionResult?.State)}");
             builder.AppendLine($"completionInvoked={context.CompletionInvoked}");
@@ -579,6 +846,8 @@ namespace InventoryKamera
             AppendNested(builder, "completion", context.CompletionResult?.Diagnostics);
             AppendNested(builder, "stageProgress", context.StageProgressResult?.Diagnostics);
             AppendNested(builder, "exit", context.ExitResult?.Diagnostics);
+            if (context.SearchResult?.Timing != null)
+                AppendNested(builder, "timing", context.SearchResult.Timing.ToDiagnostics());
             return builder.ToString().TrimEnd();
         }
 
@@ -608,6 +877,14 @@ namespace InventoryKamera
             return identityCount ?? searchCount;
         }
 
+        private static bool HasUsableResultState(AchievementScreenDetection detection) =>
+            detection?.ScreenState == AchievementScreenState.SearchActive ||
+            detection?.ScreenState == AchievementScreenState.SearchNoResults ||
+            (detection?.ScreenState == AchievementScreenState.Unknown &&
+             detection.MatchCountAccepted && detection.MatchCountValue == 1 &&
+             detection.ResultPageAccepted && detection.ResultPageCurrent == 1 &&
+             detection.ResultPageTotal == 1);
+
         private sealed class ScanContext
         {
             internal ScanContext(
@@ -618,12 +895,14 @@ namespace InventoryKamera
                 RequestedId = requestedId;
                 CanonicalTitle = canonicalTitle ?? string.Empty;
                 TitleGroup = titleGroup;
+                TotalStopwatch = Stopwatch.StartNew();
             }
 
             internal int RequestedId { get; }
             internal string CanonicalTitle { get; }
             internal AchievementTitleGroup TitleGroup { get; }
             internal AchievementScreenDetection StartDetection { get; set; }
+            internal bool StartStateReused { get; set; }
             internal AchievementSearchNavigationResult SearchResult { get; set; }
             internal AchievementIdentityResult IdentityResult { get; set; }
             internal AchievementCompletionResult CompletionResult { get; set; }
@@ -633,7 +912,11 @@ namespace InventoryKamera
             internal bool ExitSucceeded { get; set; }
             internal bool PendingClaim { get; set; }
             internal bool CompletionInvoked { get; set; }
+            internal bool TargetHidden { get; set; }
+            internal bool ExplicitNoResultsHandled { get; set; }
+            internal string ZeroResultDecision { get; set; } = string.Empty;
             internal AchievementScreenState? FinalScreenState { get; set; }
+            internal Stopwatch TotalStopwatch { get; }
         }
     }
 }

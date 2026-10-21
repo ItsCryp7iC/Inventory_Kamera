@@ -12,7 +12,11 @@ namespace InventoryKamera.game
     /// </summary>
     internal interface IGameTextInput
     {
+        void TypeExact(string text, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("This text-input implementation cannot type exact text without replacement.");
         void ReplaceAll(string text, CancellationToken cancellationToken);
+        void PressEnter(CancellationToken cancellationToken) =>
+            throw new NotSupportedException("This text-input implementation cannot submit Enter.");
     }
 
     internal interface IGameKeyboardTextBackend
@@ -20,6 +24,8 @@ namespace InventoryKamera.game
         void SelectAll();
         void DeleteSelection();
         void TypeText(string text);
+        void PressEnter() =>
+            throw new NotSupportedException("This keyboard backend cannot submit Enter.");
     }
 
     internal sealed class SendInputGameKeyboardTextBackend : IGameKeyboardTextBackend
@@ -48,6 +54,8 @@ namespace InventoryKamera.game
         public void SelectAll() => SendModifiedKey(VirtualKeyCode.CONTROL, VirtualKeyCode.VK_A);
 
         public void DeleteSelection() => SendKey(VirtualKeyCode.BACK);
+
+        public void PressEnter() => SendKey(VirtualKeyCode.RETURN);
 
         public void TypeText(string text)
         {
@@ -211,6 +219,14 @@ namespace InventoryKamera.game
             this.backend = backend ?? throw new ArgumentNullException(nameof(backend));
         }
 
+        public void TypeExact(string text, CancellationToken cancellationToken)
+        {
+            if (text == null) throw new ArgumentNullException(nameof(text));
+            cancellationToken.ThrowIfCancellationRequested();
+            backend.TypeText(text);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
         public void ReplaceAll(string text, CancellationToken cancellationToken)
         {
             if (text == null) throw new ArgumentNullException(nameof(text));
@@ -223,6 +239,13 @@ namespace InventoryKamera.game
             backend.DeleteSelection();
             cancellationToken.ThrowIfCancellationRequested();
             backend.TypeText(text);
+        }
+
+        public void PressEnter(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            backend.PressEnter();
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 }

@@ -46,6 +46,7 @@ namespace InventoryKamera
         private AchievementCatalogProvider achievementCatalogProvider;
         private AchievementResumeDataState achievementResumeData;
         private AchievementInteractiveScanResult lastAchievementScanResult;
+        private bool applyingScanSelectionPolicy;
 
         public MainForm()
         {
@@ -71,6 +72,7 @@ namespace InventoryKamera
                 new AchievementToolkitImporter(achievementCatalogProvider));
 
             BindSettings();
+            WireScanSelectionPolicy();
             RefreshAchievementResumeUi();
 
             Language_ComboBox.SelectedItem = "ENG";
@@ -145,6 +147,78 @@ namespace InventoryKamera
             Bind(MinimumWeaponLevelControl, "Value", "MinimumWeaponLevel");
             Bind(ArtifactRarityControl, "Value", "MinimumArtifactRarity");
             Bind(WeaponRarityControl, "Value", "MinimumWeaponRarity");
+        }
+
+        private void WireScanSelectionPolicy()
+        {
+            Achievements_CheckBox.CheckedChanged += (_, _) =>
+            {
+                if (applyingScanSelectionPolicy) return;
+                ApplyScanSelection(AchievementScanSelectionPolicy.SelectAchievements(
+                    Achievements_CheckBox.Checked));
+            };
+
+            EventHandler legacyChanged = (_, _) =>
+            {
+                if (applyingScanSelectionPolicy) return;
+                ApplyScanSelection(AchievementScanSelectionPolicy.SelectLegacy(
+                    Weapons_CheckBox.Checked,
+                    Artifacts_Checkbox.Checked,
+                    Characters_CheckBox.Checked,
+                    CharDevItems_CheckBox.Checked,
+                    Materials_CheckBox.Checked));
+            };
+            Weapons_CheckBox.CheckedChanged += legacyChanged;
+            Artifacts_Checkbox.CheckedChanged += legacyChanged;
+            Characters_CheckBox.CheckedChanged += legacyChanged;
+            CharDevItems_CheckBox.CheckedChanged += legacyChanged;
+            Materials_CheckBox.CheckedChanged += legacyChanged;
+
+            var initial = new AchievementScanSelection(
+                Achievements_CheckBox.Checked,
+                Weapons_CheckBox.Checked,
+                Artifacts_Checkbox.Checked,
+                Characters_CheckBox.Checked,
+                CharDevItems_CheckBox.Checked,
+                Materials_CheckBox.Checked);
+            if (!AchievementScanSelectionPolicy.IsValid(initial))
+                ApplyScanSelection(AchievementScanSelectionPolicy.SelectAchievements(true));
+            else
+                ApplyScanSelection(initial);
+        }
+
+        private void ApplyScanSelection(AchievementScanSelection selection)
+        {
+            applyingScanSelectionPolicy = true;
+            try
+            {
+                Achievements_CheckBox.Checked = selection.Achievements;
+                Weapons_CheckBox.Checked = selection.Weapons;
+                Artifacts_Checkbox.Checked = selection.Artifacts;
+                Characters_CheckBox.Checked = selection.Characters;
+                CharDevItems_CheckBox.Checked = selection.CharacterDevelopmentItems;
+                Materials_CheckBox.Checked = selection.Materials;
+
+                Weapons_CheckBox.Enabled = selection.LegacyChoicesEnabled;
+                Artifacts_Checkbox.Enabled = selection.LegacyChoicesEnabled;
+                Characters_CheckBox.Enabled = selection.LegacyChoicesEnabled;
+                CharDevItems_CheckBox.Enabled = selection.LegacyChoicesEnabled;
+                Materials_CheckBox.Enabled = selection.LegacyChoicesEnabled;
+                ScanAllArtifactPages_CheckBox.Enabled = selection.LegacyChoicesEnabled;
+                ScanAllCharacters_CheckBox.Enabled = selection.LegacyChoicesEnabled;
+                Achievements_CheckBox.Enabled = selection.AchievementChoiceEnabled;
+
+                ImportAchievementProgress_Button.Visible = selection.AchievementImportEnabled;
+                ClearAchievementProgress_Button.Visible = selection.AchievementImportEnabled;
+                AchievementResumeStatus_Label.Visible = selection.AchievementImportEnabled;
+                ImportAchievementProgressMenuItem.Enabled = selection.AchievementImportEnabled;
+                ClearAchievementProgressMenuItem.Enabled = selection.AchievementImportEnabled &&
+                    (achievementResumeData.HasResumeSeed || achievementResumeData.HasBlockingError);
+            }
+            finally
+            {
+                applyingScanSelectionPolicy = false;
+            }
         }
 
         // Renders scanViewModel's counter state into the labels MainForm owns directly -- the
@@ -378,13 +452,27 @@ namespace InventoryKamera
 
         private void RemoveHotkey()
         {
-            HotkeyManager.Current.Remove("Stop");
+            HotkeyManager.Current.Remove(ScanCancellationHotkeyPolicy.RegistrationName);
         }
 
         private void RegisterScanCancellationHotkey()
         {
-            HotkeyManager.Current.AddOrReplace("Stop", Keys.Enter, Hotkey_Pressed);
-            Logger.Info("Scan cancellation hotkey registered");
+            RegisterScanCancellationHotkey(ScanCancellationHotkeyMode.LegacyInventory);
+        }
+
+        private void RegisterAchievementCancellationHotkey()
+        {
+            RegisterScanCancellationHotkey(ScanCancellationHotkeyMode.Achievement);
+        }
+
+        private void RegisterScanCancellationHotkey(ScanCancellationHotkeyMode mode)
+        {
+            Keys key = ScanCancellationHotkeyPolicy.KeyFor(mode);
+            HotkeyManager.Current.AddOrReplace(
+                ScanCancellationHotkeyPolicy.RegistrationName,
+                key,
+                Hotkey_Pressed);
+            Logger.Info("{0} scan cancellation hotkey registered on {1}", mode, key);
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -521,6 +609,46 @@ namespace InventoryKamera
             return true;
         }
 
+        private bool AchievementPreflightChecksPass()
+        {
+            try
+            {
+                Navigation.Initialize();
+            }
+            catch (NullReferenceException)
+            {
+                MessageBox.Show("Genshin Impact isn't running. Please start the game and try again.",
+                    "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            catch (NotImplementedException ex)
+            {
+                MessageBox.Show(ex.Message, "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            var supportedAspectRatios = new List<Size> { new(16, 9), new(8, 5) };
+            if (!supportedAspectRatios.Contains(Navigation.GetAspectRatio()))
+            {
+                MessageBox.Show(
+                    $"{Navigation.GetSize().Width}x{Navigation.GetSize().Height} is an unsupported resolution. " +
+                    "Inventory Kamera supports 16:9 and 8:5 (16:10) aspect ratios.",
+                    "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            using var capture = Navigation.CaptureWindow();
+            var expectedSize = new Size(
+                (int)(Navigation.GetSize().Width * Navigation.CaptureScale),
+                (int)(Navigation.GetSize().Height * Navigation.CaptureScale));
+            if (capture.Size == expectedSize) return true;
+
+            MessageBox.Show(
+                "Window size and screenshot size mismatch. Please make sure the game is not in fullscreen mode.",
+                "Pre-flight Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
         private bool ScanSetupAccepted()
         {
             using var dialog = new ScanSetupForm(gameDataProvider.Current);
@@ -604,7 +732,8 @@ namespace InventoryKamera
             AchievementResumeStatus_Label.ForeColor = achievementResumeData.HasBlockingError
                 ? Color.Firebrick
                 : ForeColor;
-            bool canClear = achievementResumeData.HasResumeSeed || achievementResumeData.HasBlockingError;
+            bool canClear = Achievements_CheckBox.Checked &&
+                (achievementResumeData.HasResumeSeed || achievementResumeData.HasBlockingError);
             ClearAchievementProgress_Button.Enabled = canClear;
             ClearAchievementProgressMenuItem.Enabled = canClear;
         }
@@ -637,14 +766,6 @@ namespace InventoryKamera
                 decisionProvider,
                 scanRun.RequestCancellation);
 
-            if (!ShowAchievementStartHandoff(runtime.CancellationToken, scanRun))
-            {
-                lastAchievementScanResult = coordinator.CancelledBeforeStart(
-                    resumeSeed,
-                    "The achievement scan was cancelled before the start screen was confirmed.");
-                return;
-            }
-
             var progress = new MainFormAchievementProgressReporter(this);
             lastAchievementScanResult = coordinator.Scan(
                 resumeSeed,
@@ -657,26 +778,6 @@ namespace InventoryKamera
                 lastAchievementScanResult.PlannedScanTargets,
                 lastAchievementScanResult.TrustedCompletedIds.Count,
                 lastAchievementScanResult.StopReason);
-        }
-
-        private bool ShowAchievementStartHandoff(
-            CancellationToken cancellationToken,
-            ScanRun scanRun)
-        {
-            DialogResult result = ShowAchievementInteractionDialog(
-                new AchievementStartHandoffForm(),
-                cancellationToken);
-            if (result != DialogResult.OK)
-            {
-                scanRun.RequestCancellation();
-                return false;
-            }
-            if (scanRunOwner.TryResumeAfterInteractiveDialog(out string failureReason))
-                return true;
-
-            scanViewModel.AddError(failureReason ?? "Scanner control could not resume after the Achievement-screen handoff.");
-            scanRun.RequestCancellation();
-            return false;
         }
 
         private AchievementPendingClaimDecision ShowPendingClaimDecision(
@@ -912,6 +1013,99 @@ namespace InventoryKamera
             }
         }
 
+        private void StartAchievementOnlyScan(AchievementResumeSeed resumeSeed)
+        {
+            if (!AchievementWarningAccepted() || !AchievementPreflightChecksPass()) return;
+
+            GC.Collect();
+            scanViewModel.ResetAll();
+            if (scanOverlay != null)
+            {
+                if (ReferenceEquals(Navigation.CaptureOverlayGuard, scanOverlay))
+                    Navigation.CaptureOverlayGuard = null;
+                scanOverlay.Dispose();
+            }
+
+            scanOverlay = new ScanCompanionOverlay(
+                scanViewModel,
+                gameWindow: genshinWindowController,
+                beforeRecoveryHotkeys: RemoveHotkey,
+                onScanning: RegisterAchievementCancellationHotkey);
+            scanOverlay.ShowAttachedToGame();
+            Navigation.CaptureOverlayGuard = scanOverlay;
+            scanOverlay.ShowWaitingForAchievementScreen();
+            scanViewModel.SetProgramStatus("Waiting for Achievement screen");
+
+            if (!scanRunOwner.TryCreate(
+                    scanViewModel,
+                    out ScanRun scanRun,
+                    DeclaredInputMode.KeyboardMouse,
+                    scanOverlay))
+                return;
+
+            lastAchievementScanResult = null;
+            SetAchievementImportControlsEnabled(false);
+            SetAchievementExportEnabled(false);
+            scanRun.Start(() =>
+            {
+                try
+                {
+                    Navigation.Initialize();
+                    using var ocr = new OcrService();
+                    var imageProcessor = new ImageProcessor();
+                    var capture = new NavigationGameScreenCapture();
+                    var foreground = new NavigationGameForegroundActivator();
+                    var runtime = new AchievementScanRuntimeContext(
+                        ocr,
+                        imageProcessor,
+                        capture,
+                        foreground,
+                        scanRun.Session.CancellationToken);
+                    var readinessDetector = new AchievementScreenDetector(ocr, imageProcessor);
+                    var readiness = new AchievementScreenReadinessWaiter(capture, readinessDetector);
+                    if (!readiness.WaitUntilIdle(scanRun.Session.CancellationToken)) return;
+
+                    scanOverlay.ShowAchievementProgress(
+                        "Achievement screen ready",
+                        "Starting keyboard/mouse achievement scan");
+                    RunAchievementStage(runtime, resumeSeed, scanRun);
+                    ResetUI();
+
+                    if (lastAchievementScanResult != null)
+                        ShowAchievementScanSummary(lastAchievementScanResult);
+                    bool cancelled = scanRun.Session.IsCancellationRequested;
+                    scanViewModel.SetProgramStatus(cancelled ? "Scan cancelled" : "Scan complete", !cancelled);
+                    scanOverlay.ShowCompleted(cancelled
+                        ? "Achievement scan cancelled. Keyboard/Mouse was left unchanged."
+                        : "Achievement scan complete. Keyboard/Mouse was left unchanged.");
+                }
+                catch (OperationCanceledException) when (scanRun.Session.IsCancellationRequested)
+                {
+                    ResetUI();
+                    scanViewModel.SetProgramStatus("Scan cancelled", ok: false);
+                    scanOverlay.ShowCompleted("Achievement scan cancelled. Keyboard/Mouse was left unchanged.");
+                }
+                catch (Exception ex)
+                {
+                    ResetUI();
+                    scanViewModel.AddError(ex.ToString());
+                    scanViewModel.SetProgramStatus("Scan aborted", ok: false);
+                    scanOverlay.ShowError(ex.Message);
+                }
+                finally
+                {
+                    scanRunOwner.Complete(scanRun);
+                    ResetUI();
+                    BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
+                    {
+                        SetAchievementImportControlsEnabled(true);
+                        SetAchievementExportEnabled(
+                            lastAchievementScanResult?.TrustedCompletedIds.Count > 0);
+                    });
+                }
+            });
+        }
+
         private void StartButton_Clicked(object sender, EventArgs e)
         {
             if (scanRunOwner.HasActiveRun)
@@ -930,7 +1124,7 @@ namespace InventoryKamera
             bool achievementScanSelected = startSettings.ScanAchievements;
             bool legacyScanSelected = startSettings.ScanWeapons || startSettings.ScanArtifacts ||
                 startSettings.ScanCharacters || startSettings.ScanCharDevItems || startSettings.ScanMaterials;
-            bool controllerScanSelected = legacyScanSelected || achievementScanSelected;
+            bool controllerScanSelected = legacyScanSelected;
             if (achievementScanSelected && achievementResumeData.HasBlockingError)
             {
                 MessageBox.Show(
@@ -943,6 +1137,12 @@ namespace InventoryKamera
                 return;
             }
 
+            if (achievementScanSelected)
+            {
+                StartAchievementOnlyScan(achievementResumeData.ResumeSeed);
+                return;
+            }
+
             if (!ControllerScanPreflight.TryProceed(
                     controllerScanSelected,
                     () => ScanSetupAccepted() &&
@@ -950,10 +1150,6 @@ namespace InventoryKamera
                             AchievementWarningAccepted()),
                     PreflightChecksPass))
                 return;
-
-            AchievementResumeSeed achievementResumeSeed = achievementScanSelected
-                ? achievementResumeData.ResumeSeed
-                : null;
 
             GC.Collect();
 
@@ -1003,7 +1199,7 @@ namespace InventoryKamera
                     $"\tCharacters:\t\t\t\t {settings.ScanCharacters}\n" +
                     $"\tDev Items:\t\t\t\t {settings.ScanCharDevItems}\n" +
                     $"\tMaterials:\t\t\t\t {settings.ScanMaterials}\n" +
-                    $"\tAchievements:\t\t\t {achievementScanSelected}\n" +
+                    $"\tAchievements:\t\t\t False\n" +
                     $"\tMin Weapon Rarity:\t\t {settings.MinimumWeaponRarity}\n" +
                     $"\tMin Weapon Level:\t\t {settings.MinimumWeaponLevel}\n" +
                     $"\tEquip Weapons:\t\t\t {settings.EquipWeapons}\n" +
@@ -1013,13 +1209,6 @@ namespace InventoryKamera
                     $"\tDelay:\t\t\t\t\t {settings.ScannerDelay}";
 
                 Logger.Info("Scan settings: {0}", options);
-
-                if (achievementScanSelected)
-                {
-                    lastAchievementScanResult = null;
-                    SetAchievementImportControlsEnabled(false);
-                    SetAchievementExportEnabled(false);
-                }
 
                 scanRun.Start(() =>
                 {
@@ -1062,21 +1251,7 @@ namespace InventoryKamera
 
 
                         // The Data object of json object
-                        currentScanner.GatherData(achievementScanSelected
-                            ? runtime => RunAchievementStage(
-                                runtime,
-                                achievementResumeSeed,
-                                scanRun)
-                            : null);
-
-                        if (achievementScanSelected && lastAchievementScanResult != null)
-                        {
-                            if (!currentScanner.HasPendingInputModeRecovery)
-                                ShowAchievementScanSummary(lastAchievementScanResult);
-                            else
-                                Logger.Info(
-                                    "Achievement summary/export prompt deferred while input-mode Recovery is active; trusted progress remains available from the File menu.");
-                        }
+                        currentScanner.GatherData();
 
                         bool recoveryPending = currentScanner.HasPendingInputModeRecovery;
                         ScanCompletionPlan completion = ScanCompletionPolicy.Evaluate(
@@ -1099,12 +1274,6 @@ namespace InventoryKamera
                             // Thread.Abort behaviour: skip GOOD conversion/export/optimizer dialog.
                             // The user can still use "Export Scanned Data" to export what was collected.
                             currentScanner?.StopImageProcessorWorkers();
-                            scanViewModel.SetProgramStatus(completion.Status, completion.StatusOk);
-                            if (completion.ShowCompletedOverlay)
-                                scanOverlay.ShowCompleted(completion.CompletionMessage);
-                        }
-                        else if (!legacyScanSelected && achievementScanSelected)
-                        {
                             scanViewModel.SetProgramStatus(completion.Status, completion.StatusOk);
                             if (completion.ShowCompletedOverlay)
                                 scanOverlay.ShowCompleted(completion.CompletionMessage);
@@ -1162,13 +1331,6 @@ namespace InventoryKamera
                         });
                         if (lastScanData?.HasPendingInputModeRecovery != true)
                             MainForm_Activate();
-                        if (achievementScanSelected)
-                            BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
-                            {
-                                SetAchievementImportControlsEnabled(true);
-                                SetAchievementExportEnabled(
-                                    lastAchievementScanResult?.TrustedCompletedIds.Count > 0);
-                            });
                     }
                 });
             }

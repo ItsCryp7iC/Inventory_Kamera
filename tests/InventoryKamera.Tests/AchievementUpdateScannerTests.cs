@@ -118,6 +118,19 @@ namespace InventoryKamera.Tests
             Assert.Equal(1558, plan.ScanTargets.Count);
         }
 
+        [Fact]
+        public void PreviouslyTrustedNoAirForceIsSkippedBeforeZeroResultHandling()
+        {
+            AchievementUpdatePlan plan = Plan(
+                new AchievementCatalogProvider().Catalog,
+                new[] { 81581 });
+
+            AchievementSkippedTarget skipped = Assert.Single(plan.SkippedTargets);
+            Assert.Equal("No Air Force", skipped.CanonicalTitle);
+            Assert.Equal(new[] { 81581 }, skipped.CandidateIds);
+            Assert.DoesNotContain(plan.ScanTargets, target => target.RequestedCanonicalId == 81581);
+        }
+
         [Theory]
         [InlineData("Zoo Tycoon", 80127, 80128, 80129)]
         [InlineData("Moonmist Treasure Hunter", 80490, 80491, 80492)]

@@ -4,9 +4,90 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Windows.Forms;
 
 namespace InventoryKamera
 {
+    internal enum ScanCancellationHotkeyMode
+    {
+        LegacyInventory,
+        Achievement,
+    }
+
+    internal static class ScanCancellationHotkeyPolicy
+    {
+        internal const string RegistrationName = "Stop";
+
+        internal static Keys KeyFor(ScanCancellationHotkeyMode mode) => mode switch
+        {
+            ScanCancellationHotkeyMode.LegacyInventory => Keys.Enter,
+            ScanCancellationHotkeyMode.Achievement => Keys.F8,
+            _ => throw new ArgumentOutOfRangeException(nameof(mode)),
+        };
+
+        internal static string DisplayNameFor(ScanCancellationHotkeyMode mode) =>
+            KeyFor(mode) == Keys.F8 ? "F8" : "ENTER";
+
+        internal static bool IsCancellationKey(ScanCancellationHotkeyMode mode, Keys key) =>
+            KeyFor(mode) == key;
+    }
+
+    internal sealed class AchievementScanSelection
+    {
+        internal AchievementScanSelection(
+            bool achievements,
+            bool weapons,
+            bool artifacts,
+            bool characters,
+            bool characterDevelopmentItems,
+            bool materials)
+        {
+            Achievements = achievements;
+            Weapons = weapons;
+            Artifacts = artifacts;
+            Characters = characters;
+            CharacterDevelopmentItems = characterDevelopmentItems;
+            Materials = materials;
+        }
+
+        internal bool Achievements { get; }
+        internal bool Weapons { get; }
+        internal bool Artifacts { get; }
+        internal bool Characters { get; }
+        internal bool CharacterDevelopmentItems { get; }
+        internal bool Materials { get; }
+        internal bool HasLegacySelection => Weapons || Artifacts || Characters ||
+            CharacterDevelopmentItems || Materials;
+        internal bool LegacyChoicesEnabled => !Achievements;
+        internal bool AchievementChoiceEnabled => !HasLegacySelection;
+        internal bool AchievementImportEnabled => Achievements;
+    }
+
+    internal static class AchievementScanSelectionPolicy
+    {
+        internal static AchievementScanSelection SelectAchievements(bool selected) =>
+            selected
+                ? new AchievementScanSelection(true, false, false, false, false, false)
+                : new AchievementScanSelection(false, false, false, false, false, false);
+
+        internal static AchievementScanSelection SelectLegacy(
+            bool weapons,
+            bool artifacts,
+            bool characters,
+            bool characterDevelopmentItems,
+            bool materials) =>
+            new(
+                achievements: false,
+                weapons,
+                artifacts,
+                characters,
+                characterDevelopmentItems,
+                materials);
+
+        internal static bool IsValid(AchievementScanSelection selection) =>
+            selection != null && !(selection.Achievements && selection.HasLegacySelection);
+    }
+
     internal static class AchievementScanStartPolicy
     {
         internal static bool ShouldShowAchievementWarning(bool achievementsSelected) =>
@@ -154,6 +235,15 @@ namespace InventoryKamera
             builder.AppendLine($"Pending/skipped: {Math.Max(result.PendingClaimCount, result.UserSkippedTargets.Count).ToString("N0", CultureInfo.InvariantCulture)}");
             builder.AppendLine($"Newly trusted completed IDs: {result.NewlyTrustedCompletedCount.ToString("N0", CultureInfo.InvariantCulture)}");
             builder.AppendLine($"Trusted completed total: {result.TrustedCompletedIds.Count.ToString("N0", CultureInfo.InvariantCulture)}");
+            if (result.TimingSummary.CompletedTargetCount > 0)
+            {
+                builder.AppendLine(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Target timing (mean / median / P95): {0:0} / {1:0} / {2:0} ms",
+                    result.TimingSummary.MeanTotalMilliseconds,
+                    result.TimingSummary.MedianTotalMilliseconds,
+                    result.TimingSummary.P95TotalMilliseconds));
+            }
             if (result.StopReason.Length > 0 && result.State != AchievementCatalogScanState.Completed)
                 builder.AppendLine($"Reason: {result.StopReason}");
             return builder.ToString().TrimEnd();
@@ -180,7 +270,7 @@ namespace InventoryKamera
                     AchievementSingleScanState.Unresolved when
                         scan.StageProgressResult?.State == AchievementStageProgressState.AmbiguousReward =>
                         "unresolved: stage reward ambiguity",
-                    AchievementSingleScanState.Unresolved => "unresolved: could not identify safely",
+                    AchievementSingleScanState.Unresolved => UnresolvedStatus(scan),
                     AchievementSingleScanState.PendingClaimRequiresUserAction =>
                         "paused: unclaimed reward",
                     AchievementSingleScanState.Failed => "failed: operational error",
@@ -190,6 +280,23 @@ namespace InventoryKamera
                     issues.Add(new AchievementScanReportItem(scan.CanonicalTitle, status));
             }
             return new ReadOnlyCollection<AchievementScanReportItem>(issues);
+        }
+
+        private static string UnresolvedStatus(AchievementSingleScanResult scan)
+        {
+            AchievementIdentityResult identity = scan.IdentityResult;
+            if (identity == null)
+                return "unresolved: could not identify safely";
+            if (identity.State == AchievementIdentityState.Ambiguous)
+                return "unresolved: multiple possible canonical titles";
+            if (identity.State == AchievementIdentityState.Identified ||
+                identity.State == AchievementIdentityState.StageGroupIdentified)
+                return "unresolved: completion state uncertain";
+            if (identity.Attempts.Count == 0 ||
+                identity.Attempts.All(attempt => attempt.OcrAttempt.NormalizedText.Length == 0) ||
+                identity.Reason.Contains("clipped", StringComparison.OrdinalIgnoreCase))
+                return "unresolved: title clipped/unreadable";
+            return "unresolved: title OCR uncertain";
         }
 
         internal static string BuildIssueReport(AchievementInteractiveScanResult result)

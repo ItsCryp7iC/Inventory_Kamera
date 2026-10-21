@@ -13,6 +13,7 @@ namespace InventoryKamera.ui
     {
         Preparing,
         WaitingForController,
+        WaitingForAchievementScreen,
         Scanning,
         Cancelling,
         RestoringKeyboard,
@@ -40,6 +41,7 @@ namespace InventoryKamera.ui
         ScanCompanionState State { get; }
         void ShowPreparing(DeclaredInputMode declaredMode);
         bool WaitForControllerReady(CancellationToken cancellationToken);
+        void ShowWaitingForAchievementScreen() { }
         void ShowScanning();
         void ShowAchievementProgress(string progress, string details);
         void ShowCancelling();
@@ -58,6 +60,7 @@ namespace InventoryKamera.ui
         public ScanCompanionState State { get; private set; }
         public void ShowPreparing(DeclaredInputMode declaredMode) => State = ScanCompanionState.Preparing;
         public bool WaitForControllerReady(CancellationToken cancellationToken) => !cancellationToken.IsCancellationRequested;
+        public void ShowWaitingForAchievementScreen() => State = ScanCompanionState.WaitingForAchievementScreen;
         public void ShowScanning() => State = ScanCompanionState.Scanning;
         public void ShowAchievementProgress(string progress, string details) => State = ScanCompanionState.Scanning;
         public void ShowCancelling() => State = ScanCompanionState.Cancelling;
@@ -394,6 +397,18 @@ namespace InventoryKamera.ui
             }
         }
 
+        public void ShowWaitingForAchievementScreen() => Ui(() =>
+        {
+            achievementProgressActive = false;
+            SetState(
+                ScanCompanionState.WaitingForAchievementScreen,
+                "Waiting for Achievement screen",
+                "Use Keyboard/Mouse in Genshin and open Achievements.\n\n" +
+                "Leave the screen idle with no active search.\n\n" +
+                "Press F8 to cancel.");
+            onScanning?.Invoke();
+        });
+
         public void ShowScanning() => Ui(() =>
         {
             achievementProgressActive = false;
@@ -408,8 +423,8 @@ namespace InventoryKamera.ui
             achievementProgressDetails = details ?? string.Empty;
             State = ScanCompanionState.Scanning;
             stateLabel.Text = "Scanning";
-            messageLabel.Text = achievementProgressDetails;
-            messageLabel.Height = ScaleLogical(42);
+            messageLabel.Text = achievementProgressDetails + "\nPress F8 to cancel";
+            messageLabel.Height = ScaleLogical(56);
             phaseLabel.Visible = true;
             phaseLabel.Text = "Current phase: Achievements";
             phaseLabel.Top = ScaleLogical(119);
@@ -807,6 +822,18 @@ namespace InventoryKamera.ui
             int height;
             switch (state)
             {
+                case ScanCompanionState.WaitingForAchievementScreen:
+                    stateLabel.Height = ScaleLogical(30);
+                    messageLabel.Top = stateLabel.Bottom + ScaleLogical(5);
+                    messageLabel.Height = TextRenderer.MeasureText(
+                        messageLabel.Text,
+                        messageLabel.Font,
+                        new Size(messageLabel.Width, int.MaxValue),
+                        TextFormatFlags.Left | TextFormatFlags.Top |
+                        TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height +
+                        ScaleLogical(6);
+                    SetCardHeightFromControls(messageLabel);
+                    return;
                 case ScanCompanionState.WaitingForController:
                     stateLabel.Height = ScaleLogical(30);
                     messageLabel.Top = stateLabel.Bottom + ScaleLogical(5);
