@@ -2,14 +2,20 @@ using InventoryKamera.game;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using Tesseract;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace InventoryKamera.Tests
 {
     public sealed class AchievementBulkFrameReaderTests
     {
+        private readonly ITestOutputHelper output;
+
+        public AchievementBulkFrameReaderTests(ITestOutputHelper output) => this.output = output;
+
         [Theory]
         [InlineData(1920, 1080)]
         [InlineData(1600, 1000)]
@@ -44,8 +50,107 @@ namespace InventoryKamera.Tests
 
             AchievementVisibleRowDetection result = new AchievementVisibleRowDetector().Detect(frame);
 
-            Assert.Equal(new[] { 0, 2, 5 }, result.VisibleRows.Select(row => row.Index));
-            Assert.Contains("rowSlot=1; accepted=False", result.Diagnostics);
+            Assert.Equal(3, result.VisibleRows.Count);
+            Assert.All(result.VisibleRows, row => Assert.Equal(
+                AchievementVisibleRowVisibility.Complete, row.Visibility));
+            Assert.Equal(new[] { 145, 395, 771 }, result.VisibleRows.Select(row => row.Bounds.Top));
+        }
+
+        [Theory]
+        [InlineData("real_list_standard_top.png", 7, 1, 0)]
+        [InlineData("real_list_standard_scrolled.png", 7, 1, 0)]
+        [InlineData("real_list_summary.png", 6, 2, 1)]
+        [InlineData("real_list_summary_scrolled.png", 6, 1, 1)]
+        public void RealSanitizedPanels_DetectRowsAndExcludeSummaryHeader(
+            string fixtureName, int expectedRows, int expectedPartial, int expectedHeaders)
+        {
+            using Bitmap frame = BuildPanelComposite(fixtureName);
+
+            AchievementVisibleRowDetection result = new AchievementVisibleRowDetector().Detect(frame);
+
+            output.WriteLine(result.Diagnostics);
+            Assert.Equal(expectedRows, result.VisibleRows.Count);
+            Assert.Equal(expectedPartial, result.VisibleRows.Count(row =>
+                row.Visibility != AchievementVisibleRowVisibility.Complete));
+            Assert.Equal(expectedHeaders, result.Slots.Count(slot => slot.SummaryHeader));
+        }
+
+        [Fact]
+        public void RealSanitizedPanel_TitleAndCompletionUseProductionOcr()
+        {
+            using Bitmap frame = BuildPanelComposite("real_list_standard_top.png");
+            AchievementVisibleRowGeometryAssert(frame, out AchievementListRowGeometry first,
+                out AchievementListRowGeometry completed);
+            using var ocr = new OcrService(engineCount: 1);
+            ocr.Restart();
+            var preprocessor = new ImageProcessor();
+            var titleReader = new AchievementListRowTitleReader(ocr, preprocessor);
+            var completionReader = new AchievementListRowCompletionReader(ocr, preprocessor);
+
+            AchievementResultTitleRead title = titleReader.Read(frame, first);
+            AchievementCompletionRead incomplete = completionReader.Read(frame, first);
+            AchievementCompletionRead claimed = completionReader.Read(frame, completed);
+            var identityResolver = new AchievementVisibleRowIdentityResolver(new AchievementCatalogProvider());
+            AchievementIdentityResult identity = identityResolver.Resolve(title);
+            AchievementCompletionResult incompleteState =
+                AchievementVisibleRowCompletionResolver.Resolve(identity, incomplete.Attempts);
+
+            foreach (AchievementTitleOcrAttempt attempt in title.Attempts)
+                output.WriteLine($"title raw={attempt.RawText}; confidence={attempt.Confidence:0.000}");
+            Assert.Contains(title.Attempts, attempt =>
+                attempt.Confidence >= AchievementTitleMatcher.MinimumOcrConfidence &&
+                AchievementTitleMatcher.Similarity(attempt.NormalizedText, "Magnum Opus") >=
+                    AchievementTitleMatcher.MinimumScore);
+            Assert.Contains(incomplete.Attempts, attempt => attempt.Progress.Accepted &&
+                attempt.Progress.Current == 0 && attempt.Progress.Target == 1);
+            Assert.Contains(claimed.Attempts, attempt => attempt.CompletedTokenDetected &&
+                attempt.Confidence >= AchievementCompletionClassifier.MinimumEvidenceConfidence);
+            Assert.Equal(AchievementIdentityState.StageGroupIdentified, identity.State);
+            Assert.Equal("Magnum Opus", identity.ExpectedTitle);
+            Assert.Equal(AchievementCompletionState.Incomplete, incompleteState.State);
+            Assert.Equal((0, 1), (incompleteState.ProgressCurrent, incompleteState.ProgressTarget));
+        }
+
+        [Theory]
+        [InlineData((int)AchievementVisibleRowVisibility.Partial)]
+        [InlineData((int)AchievementVisibleRowVisibility.Uncertain)]
+        public void ClippedOrUncertainRow_IsRetainedUnresolvedWithoutOcr(int visibilityValue)
+        {
+            AchievementVisibleRowVisibility visibility = (AchievementVisibleRowVisibility)visibilityValue;
+            AchievementListRowGeometry row = AchievementListRegions.CreateDetectedRow(
+                new Size(1920, 1080), 0, 895, 895, 991, visibility);
+            var titleReader = new FakeTitleReader(new Dictionary<int, string>());
+            var completionReader = new FakeCompletionReader(new Dictionary<int, string>());
+            AchievementListFrameReader reader = CreateReader(new[] { row }, titleReader, completionReader);
+            using var screenshot = new Bitmap(1920, 1080);
+
+            AchievementVisibleRow result = Assert.Single(reader.Read(screenshot).VisibleRows);
+
+            Assert.Equal(visibility, result.Visibility);
+            Assert.Equal(AchievementIdentityState.Unresolved, result.IdentityState);
+            Assert.Equal(AchievementCompletionState.Unresolved, result.CompletionState);
+            Assert.Empty(titleReader.AttemptsPerRow);
+            Assert.Empty(completionReader.ReadRows);
+            Assert.False(result.SuitableForTrustedCompletionExtraction);
+        }
+
+        [Fact]
+        public void RealSanitizedCompletedTotal_UsesProductionOcr()
+        {
+            using var frame = new Bitmap(1919, 1079);
+            using (Graphics graphics = Graphics.FromImage(frame)) graphics.Clear(Color.White);
+            using Bitmap fixture = LoadBulkFixture("real_completed_total_1769.png");
+            using (Graphics graphics = Graphics.FromImage(frame))
+                graphics.DrawImageUnscaled(fixture, 1370, 12);
+            using var ocr = new OcrService(engineCount: 1);
+            ocr.Restart();
+
+            AchievementCompletedTotalResult result = new AchievementCompletedTotalReader(
+                ocr, new ImageProcessor()).Read(frame);
+
+            output.WriteLine(string.Join(Environment.NewLine, result.Attempts.Select(attempt =>
+                $"raw={attempt.RawText}; confidence={attempt.Confidence:0.000}; value={attempt.Value}")));
+            Assert.Equal(1769, result.CompletedTotal);
         }
 
         [Theory]
@@ -239,6 +344,32 @@ namespace InventoryKamera.Tests
                 new FixedCompletedTotalReader(17),
                 new AchievementStageProgressResolver());
 
+        private static Bitmap LoadBulkFixture(string fixtureName) => new(Path.Combine(
+            AppContext.BaseDirectory, "Fixtures", "AchievementsBulk", fixtureName));
+
+        private static Bitmap BuildPanelComposite(string fixtureName)
+        {
+            var frame = new Bitmap(1919, 1079);
+            using (Graphics graphics = Graphics.FromImage(frame)) graphics.Clear(Color.Black);
+            using Bitmap fixture = LoadBulkFixture(fixtureName);
+            using (Graphics graphics = Graphics.FromImage(frame))
+                graphics.DrawImageUnscaled(fixture, 727, 125);
+            return frame;
+        }
+
+        private static void AchievementVisibleRowGeometryAssert(
+            Bitmap frame,
+            out AchievementListRowGeometry first,
+            out AchievementListRowGeometry completed)
+        {
+            AchievementVisibleRowDetection detection = new AchievementVisibleRowDetector().Detect(frame);
+            Assert.True(detection.VisibleRows.Count >= 3, detection.Diagnostics);
+            first = detection.VisibleRows[0];
+            completed = detection.VisibleRows[2];
+            Assert.Equal(AchievementVisibleRowVisibility.Complete, first.Visibility);
+            Assert.Equal(AchievementVisibleRowVisibility.Complete, completed.Visibility);
+        }
+
         private static AchievementCatalogProvider CreateCatalogProvider()
         {
             var entries = new[]
@@ -283,7 +414,10 @@ namespace InventoryKamera.Tests
         {
             graphics.FillRectangle(Brushes.LightGray, row.Title);
             graphics.DrawLine(Pens.Black, row.Title.Left + 4, row.Title.Top + 8, row.Title.Right - 4, row.Title.Bottom - 8);
-            graphics.FillEllipse(Brushes.DarkSlateBlue, row.Emblem);
+            using var borderPen = new Pen(Color.FromArgb(218, 207, 190), 2);
+            graphics.DrawLine(borderPen, row.Bounds.Left, row.Bounds.Top, row.Bounds.Right - 1, row.Bounds.Top);
+            graphics.DrawLine(borderPen, row.Bounds.Left, row.Bounds.Bottom - 1, row.Bounds.Right - 1, row.Bounds.Bottom - 1);
+            graphics.FillEllipse(Brushes.Goldenrod, row.Emblem);
             graphics.DrawEllipse(Pens.White, row.Emblem);
             graphics.FillRectangle(Brushes.IndianRed, row.CompletionLabel);
             graphics.DrawLine(Pens.White, row.CompletionLabel.Left, row.CompletionLabel.Top, row.CompletionLabel.Right, row.CompletionLabel.Bottom);

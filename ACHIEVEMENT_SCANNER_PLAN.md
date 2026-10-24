@@ -1227,6 +1227,36 @@ scrollbar, reconcile the catalog, infer hidden absence, invoke exact-title fallb
 Scan UI. It is not production-ready without sanitized current-list fixtures and live geometry/OCR
 validation.
 
+#### Phase 7A.1 real-list calibration (automated evidence complete)
+
+Phase 7A.1 calibrated the visible-frame foundation from nine current 1919x1079 captures. The
+ordinary right-panel card bounds are approximately x=738..1818 with a 121 px card height and a
+125 px pitch inside the y=136..991 list viewport. Scrolling changes the vertical phase, so row
+discovery is anchored to measured long card-border runs rather than a fixed first-row origin.
+
+The calibrated detector:
+
+- classifies observations as `Complete`, `Partial`, or `Uncertain`;
+- retains clipped/occluded edge observations for diagnostics but does not OCR or trust them unless
+  the complete title and completion regions are proven visible;
+- positively excludes the `Achievement Progress` summary card using both absence of the ordinary
+  gold-emblem signature and presence of its wide progress-bar signature;
+- treats a populated one-row gap whose borders are occluded by that summary layout as `Uncertain`
+  and therefore unresolved rather than guessing;
+- keeps staged-reward OCR conditional on the reward crop being completely visible.
+
+Committed regression evidence is limited to four sanitized right-panel crops (ordinary top,
+ordinary scrolled, summary, and summary-scrolled layouts) plus one narrow completed-total crop.
+No full frame or UID-bearing image is part of the test corpus. Production Tesseract tests cover a
+real title, canonical identity, incomplete and completed state evidence, and the completed total
+1769.
+
+Known calibration limits remain: the evidence set is 1919x1079 only, normalized scaling at other
+supported resolutions is synthetic, and no live game validation was performed. Phase 7B requires
+separately approved evidence for category transitions, scroll increments and end states, overlap
+across successive frames, scrollbar semantics, and complete traversal proof. This calibration does
+not authorize traversal, hidden-absence inference, reconciliation, or exact-title fallback changes.
+
 ### Later Phase 7 slices (not implemented)
 
 - Phase 7B: bounded category traversal, scrolling, overlap handling, and complete-list proof.

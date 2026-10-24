@@ -28,6 +28,7 @@ namespace InventoryKamera
         internal AchievementVisibleRow(
             int rowIndex,
             NormalizedRectangle normalizedBounds,
+            AchievementVisibleRowVisibility visibility,
             string rawTitle,
             string normalizedTitle,
             AchievementIdentityState identityState,
@@ -49,6 +50,7 @@ namespace InventoryKamera
         {
             RowIndex = rowIndex;
             NormalizedBounds = normalizedBounds;
+            Visibility = visibility;
             RawTitle = rawTitle ?? string.Empty;
             NormalizedTitle = normalizedTitle ?? string.Empty;
             IdentityState = identityState;
@@ -72,6 +74,7 @@ namespace InventoryKamera
         internal int RowIndex { get; }
         internal double NormalizedVerticalPosition => NormalizedBounds.Y;
         internal NormalizedRectangle NormalizedBounds { get; }
+        internal AchievementVisibleRowVisibility Visibility { get; }
         internal string RawTitle { get; }
         internal string NormalizedTitle { get; }
         internal AchievementIdentityState IdentityState { get; }
@@ -533,6 +536,13 @@ namespace InventoryKamera
             {
                 try
                 {
+                if (geometry.Visibility == AchievementVisibleRowVisibility.Uncertain ||
+                    !geometry.TitleRegionVisible || !geometry.CompletionRegionVisible)
+                {
+                    rows.Add(CreateUnobservableRow(geometry,
+                        "The visible row is clipped and does not contain complete title and completion regions."));
+                    continue;
+                }
                 part.Restart();
                 AchievementResultTitleRead titleRead = titleReader.Read(
                     screenshot,
@@ -573,10 +583,13 @@ namespace InventoryKamera
                     else if (completion.State == AchievementCompletionState.Incomplete ||
                         completion.State == AchievementCompletionState.CompletedClaimed)
                     {
-                        part.Restart();
-                        reward = rewardReader.Read(screenshot, geometry);
-                        part.Stop();
-                        rewardTime += part.Elapsed;
+                        if (geometry.RewardRegionVisible)
+                        {
+                            part.Restart();
+                            reward = rewardReader.Read(screenshot, geometry);
+                            part.Stop();
+                            rewardTime += part.Elapsed;
+                        }
                         stageProgress = stageResolver.Resolve(identity, completion, reward, group);
                     }
                 }
@@ -586,6 +599,7 @@ namespace InventoryKamera
                 string diagnostics = string.Join(Environment.NewLine, new[]
                 {
                     $"rowIndex={geometry.Index}; normalizedY={geometry.NormalizedBounds.Y.ToString("0.000000", CultureInfo.InvariantCulture)}",
+                    $"visibility={geometry.Visibility}; titleRegionVisible={geometry.TitleRegionVisible}; completionRegionVisible={geometry.CompletionRegionVisible}; rewardRegionVisible={geometry.RewardRegionVisible}",
                     identity.Diagnostics,
                     completion.Diagnostics,
                     stageProgress?.Diagnostics ?? "stageProgressState=(not-applicable)",
@@ -594,6 +608,7 @@ namespace InventoryKamera
                 rows.Add(new AchievementVisibleRow(
                     geometry.Index,
                     geometry.NormalizedBounds,
+                    geometry.Visibility,
                     identity.RawTitle,
                     identity.NormalizedTitle,
                     identity.State,
@@ -682,6 +697,7 @@ namespace InventoryKamera
             return new AchievementVisibleRow(
                 geometry.Index,
                 geometry.NormalizedBounds,
+                geometry.Visibility,
                 string.Empty,
                 string.Empty,
                 AchievementIdentityState.Unresolved,
@@ -700,6 +716,28 @@ namespace InventoryKamera
                 completion,
                 null,
                 reason);
+        }
+
+        private static AchievementVisibleRow CreateUnobservableRow(
+            AchievementListRowGeometry geometry,
+            string reason)
+        {
+            var identity = new AchievementIdentityResult(
+                AchievementIdentityState.Unresolved, 0, string.Empty, null, null,
+                Array.Empty<int>(), string.Empty, string.Empty, 0, 0, 0, 0,
+                Array.Empty<AchievementIdentityOcrAttempt>(), null, reason, reason);
+            AchievementCompletionResult completion = AchievementVisibleRowCompletionResolver.Resolve(
+                identity, Array.Empty<AchievementCompletionOcrAttempt>());
+            var fingerprint = new AchievementRowFingerprint(
+                $"diagnostic:partial@{geometry.NormalizedBounds.Y:0.000}", canonical: false);
+            return new AchievementVisibleRow(
+                geometry.Index, geometry.NormalizedBounds, geometry.Visibility,
+                string.Empty, string.Empty, AchievementIdentityState.Unresolved,
+                Array.Empty<int>(), null, AchievementCompletionState.Unresolved,
+                null, null, null, 0, 0, 0, false, fingerprint, identity,
+                completion, null,
+                $"visibility={geometry.Visibility}; titleRegionVisible={geometry.TitleRegionVisible}; " +
+                $"completionRegionVisible={geometry.CompletionRegionVisible}; reason={reason}");
         }
 
         private static bool IsSuitableForTrust(
