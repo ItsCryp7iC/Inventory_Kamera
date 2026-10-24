@@ -50,6 +50,27 @@ namespace InventoryKamera
 
     internal static class AchievementScannerProductionFactory
     {
+        internal static AchievementListFrameReader CreateBulkFrameReader(
+            IAchievementCatalogProvider catalogProvider,
+            AchievementScanRuntimeContext runtime)
+        {
+            if (catalogProvider == null) throw new ArgumentNullException(nameof(catalogProvider));
+            if (runtime == null) throw new ArgumentNullException(nameof(runtime));
+
+            var screenDetector = new AchievementScreenDetector(
+                runtime.OcrService,
+                runtime.ImagePreprocessor);
+            return new AchievementListFrameReader(
+                catalogProvider,
+                screenDetector,
+                new AchievementVisibleRowDetector(),
+                new AchievementListRowTitleReader(runtime.OcrService, runtime.ImagePreprocessor),
+                new AchievementListRowCompletionReader(runtime.OcrService, runtime.ImagePreprocessor),
+                new AchievementListRowRewardReader(runtime.OcrService, runtime.ImagePreprocessor),
+                new AchievementCompletedTotalReader(runtime.OcrService, runtime.ImagePreprocessor),
+                new AchievementStageProgressResolver());
+        }
+
         internal static AchievementScannerProductionComponents Create(
             IAchievementCatalogProvider catalogProvider,
             AchievementScanRuntimeContext runtime)

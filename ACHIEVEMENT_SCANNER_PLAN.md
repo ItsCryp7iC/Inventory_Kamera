@@ -1188,3 +1188,52 @@ The next task after the automated Phase 6K.3 implementation gate is **Phase 6K.3
 It must be performed manually by the user under a separately approved brief. Automated implementation
 work must not launch Genshin, run a live harness, or create/control ViGEm for Achievement scanning.
 
+---
+
+## 28. Phase 7 — Fast Scan optimization track
+
+Phase 7 is an approved optimization layer alongside the exact-title scanner. It does not remove,
+weaken, or replace exact-title verification. The production architecture is:
+
+```text
+bulk list discovery
+    -> catalog reconciliation
+    -> hidden set difference after proven complete traversal
+    -> completed-total checksum
+    -> exact-title fallback / Full Verification where necessary
+```
+
+### Phase 7A — bulk visible-frame foundation (implemented; automated gate only)
+
+Phase 7A adds a separate read-only pipeline for one screenshot of the ordinary Achievement list:
+
+- normalized ordinary-list row slots, independent of search-result geometry;
+- positive geometry-based visible-row detection rather than OCR-only discovery;
+- lazy per-row title, completion-state, and conditional staged-reward OCR;
+- fail-closed canonical identity using the Phase 6 normalization, score, margin, confidence, stage,
+  and unrelated-collision rules;
+- immutable row/frame results with no retained bitmaps;
+- canonical-only deduplication fingerprints, with non-deduplicating diagnostic fingerprints for
+  unresolved or ambiguous rows;
+- nullable `Achievements completed: X` extraction;
+- capture, row-detection, OCR-category, total-frame, row-count, and per-resolved-row timing;
+- serial OCR because `IOcrService` does not currently guarantee thread safety;
+- deterministic synthetic multi-row, mixed-identity, boundary, scaling, completed-total, staged,
+  trust-extraction, and independent-row-failure coverage.
+
+A positively identified visible hidden achievement is handled exactly like any other visible row.
+Absence from a single frame proves nothing. Phase 7A does not navigate categories, scroll, inspect a
+scrollbar, reconcile the catalog, infer hidden absence, invoke exact-title fallback, or expose a Fast
+Scan UI. It is not production-ready without sanitized current-list fixtures and live geometry/OCR
+validation.
+
+### Later Phase 7 slices (not implemented)
+
+- Phase 7B: bounded category traversal, scrolling, overlap handling, and complete-list proof.
+- Phase 7C: catalog reconciliation and hidden-set difference only after traversal completeness is
+  positively established.
+- Phase 7D: completed-total checksum, exact-title fallback orchestration, and user-facing Fast Scan /
+  Full Verification workflow.
+
+Do not begin a later Phase 7 slice without a separately approved task.
+

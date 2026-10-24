@@ -16,6 +16,44 @@ namespace InventoryKamera
             IEnumerable<AchievementSingleScanResult> results) =>
             Merge(Array.Empty<int>(), results);
 
+        /// <summary>
+        /// Applies the same canonical trust boundary to bulk-list rows. Positive unique completion
+        /// evidence contributes its single ID; staged rows contribute only the IDs returned by the
+        /// shared stage-progress resolver.
+        /// </summary>
+        internal static IReadOnlyList<int> Extract(
+            IEnumerable<AchievementVisibleRow> rows)
+        {
+            if (rows == null) throw new ArgumentNullException(nameof(rows));
+
+            var trustedIds = new HashSet<int>();
+            foreach (AchievementVisibleRow row in rows)
+            {
+                if (row == null || !row.SuitableForTrustedCompletionExtraction)
+                    continue;
+
+                if (TryGetTrustedCompletedId(
+                    row.IdentityState == AchievementIdentityState.Identified
+                        ? AchievementTitleGroupKind.Unique
+                        : AchievementTitleGroupKind.StageFamily,
+                    row.CandidateIds,
+                    row.CompletionState == AchievementCompletionState.CompletedClaimed ||
+                        row.CompletionState == AchievementCompletionState.CompletedUnclaimed,
+                    out int id))
+                {
+                    trustedIds.Add(id);
+                }
+
+                if (row.StageProgressResult?.State == AchievementStageProgressState.Resolved)
+                {
+                    foreach (int stageId in row.StageProgressResult.CompletedStageIds)
+                        trustedIds.Add(stageId);
+                }
+            }
+
+            return new ReadOnlyCollection<int>(trustedIds.OrderBy(id => id).ToArray());
+        }
+
         internal static IReadOnlyList<int> Merge(
             IEnumerable<int> previousTrustedIds,
             IEnumerable<AchievementSingleScanResult> results)
@@ -72,9 +110,19 @@ namespace InventoryKamera
             AchievementTitleGroupKind? titleGroupKind,
             IReadOnlyList<int> candidateIds,
             AchievementSingleScanState state,
+            out int id) => TryGetTrustedCompletedId(
+                titleGroupKind,
+                candidateIds,
+                state == AchievementSingleScanState.Completed,
+                out id);
+
+        private static bool TryGetTrustedCompletedId(
+            AchievementTitleGroupKind? titleGroupKind,
+            IReadOnlyList<int> candidateIds,
+            bool positivelyCompleted,
             out int id)
         {
-            if (state == AchievementSingleScanState.Completed &&
+            if (positivelyCompleted &&
                 titleGroupKind == AchievementTitleGroupKind.Unique &&
                 candidateIds != null &&
                 candidateIds.Count == 1)
