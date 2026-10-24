@@ -11,6 +11,7 @@ namespace InventoryKamera.game
         private const uint InputMouse = 0;
         private const uint MouseLeftDown = 0x0002;
         private const uint MouseLeftUp = 0x0004;
+        private const uint MouseWheel = 0x0800;
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetCursorPos(int x, int y);
@@ -56,10 +57,25 @@ namespace InventoryKamera.game
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows could not deliver the requested mouse click.");
         }
 
-        private static NativeInput MouseInput(uint flags) => new()
+        public void ScrollWheel(int delta, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (delta == 0 || delta % 120 != 0)
+                throw new ArgumentOutOfRangeException(nameof(delta));
+            NativeInput input = MouseInput(MouseWheel, unchecked((uint)delta));
+            uint sent = SendInput(1, new[] { input }, Marshal.SizeOf<NativeInput>());
+            if (sent != 1)
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "Windows could not deliver the requested mouse-wheel input.");
+        }
+
+        private static NativeInput MouseInput(uint flags, uint mouseData = 0) => new()
         {
             Type = InputMouse,
-            Union = new NativeInputUnion { Mouse = new NativeMouseInput { Flags = flags } }
+            Union = new NativeInputUnion
+            {
+                Mouse = new NativeMouseInput { Flags = flags, MouseData = mouseData }
+            }
         };
 
         [StructLayout(LayoutKind.Sequential)]

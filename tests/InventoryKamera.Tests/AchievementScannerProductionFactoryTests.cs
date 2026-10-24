@@ -23,10 +23,13 @@ namespace InventoryKamera.Tests
 
             AchievementScannerProductionComponents components =
                 AchievementScannerProductionFactory.Create(provider, runtime);
+            AchievementCategoryCrawler categoryCrawler =
+                AchievementScannerProductionFactory.CreateCategoryCrawler(provider, runtime);
 
             Assert.NotNull(components.SingleScanner);
             Assert.NotNull(components.CatalogScanner);
             Assert.NotNull(components.UpdateScanner);
+            Assert.NotNull(categoryCrawler);
             Assert.Equal(1559, components.CatalogScanner.Targets.Count);
             Assert.Equal(cancellation.Token, runtime.CancellationToken);
         }

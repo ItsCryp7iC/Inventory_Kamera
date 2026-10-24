@@ -21,6 +21,8 @@ namespace InventoryKamera.game
         void MoveNormalized(double x, double y, CancellationToken cancellationToken);
         bool IsAtNormalized(double x, double y);
         void Click(CancellationToken cancellationToken);
+        void ScrollWheel(int delta, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("This pointer input cannot send mouse-wheel input.");
     }
 
     internal sealed class AchievementSearchNavigationTiming

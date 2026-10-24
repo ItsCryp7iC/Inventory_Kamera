@@ -71,6 +71,22 @@ namespace InventoryKamera
                 new AchievementStageProgressResolver());
         }
 
+        internal static AchievementCategoryCrawler CreateCategoryCrawler(
+            IAchievementCatalogProvider catalogProvider,
+            AchievementScanRuntimeContext runtime,
+            AchievementCategoryCrawlOptions options = null)
+        {
+            if (catalogProvider == null) throw new ArgumentNullException(nameof(catalogProvider));
+            if (runtime == null) throw new ArgumentNullException(nameof(runtime));
+            var pointer = new AchievementWindowsPointerInput();
+            return new AchievementCategoryCrawler(
+                CreateBulkFrameReader(catalogProvider, runtime),
+                runtime.ScreenCapture,
+                new AchievementWindowsListScrollInput(pointer, runtime.ForegroundActivator),
+                new UncalibratedAchievementCategoryFrameEvidenceDetector(),
+                options);
+        }
+
         internal static AchievementScannerProductionComponents Create(
             IAchievementCatalogProvider catalogProvider,
             AchievementScanRuntimeContext runtime)

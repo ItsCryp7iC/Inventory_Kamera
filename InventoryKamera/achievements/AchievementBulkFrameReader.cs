@@ -137,7 +137,8 @@ namespace InventoryKamera
             IEnumerable<AchievementVisibleRow> visibleRows,
             int? completedTotal,
             AchievementBulkFrameTiming timing,
-            string diagnostics)
+            string diagnostics,
+            bool isKeyboardMouseIdle = true)
         {
             ScreenState = screenState;
             VisibleRows = new ReadOnlyCollection<AchievementVisibleRow>(
@@ -156,6 +157,7 @@ namespace InventoryKamera
             CompletedTotal = completedTotal;
             Timing = timing ?? throw new ArgumentNullException(nameof(timing));
             Diagnostics = diagnostics ?? string.Empty;
+            IsKeyboardMouseIdle = isKeyboardMouseIdle;
         }
 
         internal AchievementScreenState ScreenState { get; }
@@ -165,6 +167,7 @@ namespace InventoryKamera
         internal int? CompletedTotal { get; }
         internal AchievementBulkFrameTiming Timing { get; }
         internal string Diagnostics { get; }
+        internal bool IsKeyboardMouseIdle { get; }
     }
 
     internal interface IAchievementListFrameReader
@@ -518,7 +521,8 @@ namespace InventoryKamera
                     Array.Empty<AchievementVisibleRow>(),
                     completedTotal.CompletedTotal,
                     emptyTiming,
-                    "Bulk row parsing requires a positively detected ordinary Idle Achievement list.");
+                    "Bulk row parsing requires a positively detected ordinary Idle Achievement list.",
+                    screen.IsKeyboardMouseIdle);
             }
 
             Stopwatch part = Stopwatch.StartNew();
@@ -662,7 +666,8 @@ namespace InventoryKamera
                 rows,
                 completedTotal.CompletedTotal,
                 timing,
-                frameDiagnostics.ToString());
+                frameDiagnostics.ToString(),
+                screen.IsKeyboardMouseIdle);
         }
 
         private static AchievementVisibleRow CreateFailedRow(

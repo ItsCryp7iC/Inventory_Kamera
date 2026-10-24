@@ -1257,13 +1257,50 @@ separately approved evidence for category transitions, scroll increments and end
 across successive frames, scrollbar semantics, and complete traversal proof. This calibration does
 not authorize traversal, hidden-absence inference, reconciliation, or exact-title fallback changes.
 
+### Phase 7B — single-category crawler (implemented; automated gate only)
+
+Phase 7B adds a reusable UI-independent crawler for one category that the user or a future
+coordinator has already selected. It does not change categories, reconcile the full catalog, infer
+hidden absence, or invoke exact-title fallback. The crawler requires an ordinary Idle Achievement
+list and either positive top-of-list evidence or an explicitly supported known traversal origin.
+
+Each bounded mouse-wheel action targets normalized client coordinates `(0.75, 0.50)` inside the
+right achievement panel. The default provisional step is `-360`, chosen to preserve overlap and
+kept configurable because no real consecutive wheel sequence is available. Foreground state is
+verified before input, capture continues through the existing overlay-safe capture path, settling
+is cancellable, and frame, scroll, uncertain-frame, and no-movement recovery limits all terminate
+as incomplete rather than complete.
+
+Rows from the Phase 7A reader are merged only by positive canonical title-group fingerprints.
+Provenance records first/last frame, observation count, all source observations, and whether a row
+was ever completely visible. Stronger complete evidence supersedes weaker partial evidence;
+equally strong contradictory completion evidence remains conflicting and unresolved. Noncanonical
+and unreadable observations are retained independently rather than deduplicated by screen position.
+
+Completion of traversal requires independent bottom-at-extent evidence on both sides of a bounded
+scroll attempt, an unchanged cursor-excluded right-viewport fingerprint, an unchanged row-layout
+fingerprint, and a recognizable final complete canonical row, with no category or screen
+contradiction. Repeated frames or absence of new IDs alone never prove completion. The available
+Phase 7A.1 fixtures show a plausible narrow right-side scrollbar but contain neither a verified
+bottom state nor a trustworthy consecutive scroll sequence. Production scrollbar/category
+evidence therefore remains explicitly uncalibrated and returns no top/bottom proof; such endings
+remain incomplete until Phase 7F live calibration supplies safe thresholds and wheel behavior.
+
+The immutable result reports complete, incomplete, cancelled, or failed traversal; bounded
+diagnostics; complete/partial/uncertain observations; canonical, unresolved, and conflicting rows;
+frame and input counts; repeated and recovered-partial counts; and capture, processing, scrolling,
+settling, deduplication, and total timing. It retains no screenshots. A complete traversal still
+does not authorize absence-based conclusions; Phase 7C must separately define and validate any
+catalog reconciliation rules after real category, top, bottom, and overlap evidence exists.
+
 ### Later Phase 7 slices (not implemented)
 
-- Phase 7B: bounded category traversal, scrolling, overlap handling, and complete-list proof.
 - Phase 7C: catalog reconciliation and hidden-set difference only after traversal completeness is
   positively established.
 - Phase 7D: completed-total checksum, exact-title fallback orchestration, and user-facing Fast Scan /
   Full Verification workflow.
+- Phase 7F: live calibration of category identity, top/bottom scrollbar evidence, wheel delta,
+  overlap, and end-state behavior across supported resolutions.
 
 Do not begin a later Phase 7 slice without a separately approved task.
 
