@@ -1438,6 +1438,50 @@ the demonstrated rendering variation while rejecting nearby positions outside th
 confidence, plausible height, repeated bottom frames, stable post-scroll viewport/layout, final-row
 recognition, and category continuity remain mandatory. A repeat live run is still required.
 
+#### Phase 7B.4 recognition-coverage reconciliation (implemented; automated gate only)
+
+The first successful 1920x1080 `Memories of the Heart` traversal completed the independent
+top-to-bottom proof after 20 frames and 19 verified-overlap batches, but reported 23 raw unresolved
+observations and 23 outstanding partial rows alongside 57 canonical title groups. Those counts were
+observation-level: the previous accumulator deduplicated only positive canonical fingerprints and
+therefore represented every noncanonical clipped observation as a separate row. The live summary
+does not prove how many of those observations describe distinct achievements.
+
+Phase 7B.4 retains every raw observation but builds bitmap-free row intervals across adjacent frames.
+An unidentified `Partial` observation may be associated with the next frame only when input and
+overlap were verified, measured row or visual displacement is available, the predicted normalized
+row position agrees within six capture pixels, and the association is mutually one-to-one. Partial
+intervals may span several consecutive frames and become reconciled when one member is later fully
+visible with an existing positive canonical fingerprint. The retained provenance includes source
+and matched frame/row, movement batch, predicted position, geometric error, canonical fingerprint,
+status, and an accepted or rejected reason.
+
+Geometry never creates a canonical identity or completion classification. `Uncertain` boundaries,
+complete-but-unreadable rows, missing/unverified movement, unobserved overlap, incompatible motion,
+and ambiguous matches remain unresolved. A geometric chain reaching different canonical
+fingerprints is a conflict and fails closed. Staged families and unrelated same-name collisions
+continue to use the Phase 6 identity and stage policies.
+
+Coverage now distinguishes total raw observations, raw unresolved observations, reconciled partial
+observations, observations linked to a previously identified row, outstanding observations,
+distinct unresolved intervals, unmatched partials, canonical repeats, ambiguous/conflicting rows,
+and identified groups lacking trusted completion evidence. Traversal completeness is unchanged.
+Identity recognition coverage can be sufficient while trusted completion coverage remains
+insufficient; a title recovered through geometry does not make an unresolved completion state
+trusted and contributes no completed achievement ID.
+
+The crawler also aggregates the existing per-frame row-detection, title-OCR, completion-OCR, and
+reward-OCR timings alongside capture, wheel execution, settling, deduplication, other frame
+processing, and total time. The approximately 98.6-second live run did not retain the detailed
+breakdown required to identify a dominant cost, so no timing, OCR, overlap, capture, or batching
+behavior was weakened or optimized in this slice. A repeat user-operated traversal is required to
+measure the new breakdown and determine how many of the 23 earlier observations reconcile safely.
+
+Phase 7C remains gated on that live evidence, representative categories and supported resolutions,
+and review of every remaining unmatched interval, completion-trust limitation, conflict, or movement
+gap. Reconciliation is diagnostic accounting only and does not authorize catalog set difference,
+hidden-absence inference, exact-title fallback, progress mutation, or export.
+
 ### Later Phase 7 slices (not implemented)
 
 - Phase 7C: catalog reconciliation and hidden-set difference only after traversal completeness is

@@ -240,12 +240,25 @@ namespace InventoryKamera
             builder.AppendLine($"Traversal complete: {(result.IsComplete ? "yes" : "no")}" +
                 (result.IsComplete ? $" - {result.CompletenessEvidence}" : string.Empty));
             builder.AppendLine($"Recognition coverage sufficient: {(result.RecognitionCoverageSufficient ? "yes" : "no")}");
+            builder.AppendLine($"Trusted completion coverage sufficient: {(result.TrustedCompletionCoverageSufficient ? "yes" : "no")}");
             builder.AppendLine($"Rows: {result.IdentifiedRows.Count} unique identified, {result.UnresolvedRows.Count} unresolved, " +
                 $"{result.AmbiguousGroupCount} ambiguous groups, {result.ConflictingRows.Count} conflicting");
-            builder.AppendLine($"Repeated observations: {result.RepeatedObservations}; partial rows recovered: {result.PartialRowsRecovered}; " +
-                $"partial rows outstanding: {result.PartialRowsOutstanding}");
+            builder.AppendLine($"Raw observations: {result.TotalRawObservations}; raw unresolved: {result.RawUnresolvedObservations}; " +
+                $"reconciled to identified rows: {result.ReconciledUnresolvedObservations}; " +
+                $"linked to previously identified rows: {result.ObservationsLinkedToPreviouslyIdentifiedRows}; " +
+                $"outstanding unresolved: {result.OutstandingUnresolvedObservations}");
+            builder.AppendLine($"Repeated canonical observations: {result.RepeatedObservations}; partial observations recovered: " +
+                $"{result.PartialObservationsRecovered}; unmatched partial observations: {result.UnmatchedPartialObservations}; " +
+                $"distinct unresolved intervals: {result.DistinctUnresolvedRowIntervals}");
+            builder.AppendLine($"Partial rows recovered: {result.PartialRowsRecovered}; partial rows outstanding: " +
+                $"{result.PartialRowsOutstanding}; reconciliation conflicts: {result.ReconciliationConflicts}; " +
+                $"identified groups lacking trusted completion evidence: {result.IdentifiedGroupsLackingTrustedCompletionEvidence}");
             builder.AppendLine($"Frame overlap: {result.OverlapVerifiedScrolls} batches verified; unobserved movement gaps: {result.UnobservedMovementGaps}");
             builder.AppendLine($"Traversal state: {result.FinalScrollState}");
+            builder.AppendLine($"Timing: capture={Milliseconds(result.Timing.Capture)} ms; scrolling={Milliseconds(result.Timing.Scrolling)} ms; " +
+                $"settling={Milliseconds(result.Timing.Settling)} ms; row detection={Milliseconds(result.Timing.RowDetection)} ms; " +
+                $"title OCR={Milliseconds(result.Timing.TitleOcr)} ms; completion OCR={Milliseconds(result.Timing.CompletionOcr)} ms; " +
+                $"reward OCR={Milliseconds(result.Timing.RewardOcr)} ms; other frame processing={Milliseconds(result.Timing.OtherFrameProcessing)} ms");
             builder.AppendLine($"Elapsed: {result.Timing.Total.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture)} ms");
             builder.AppendLine($"Reason: {result.Reason}");
             return builder.ToString().TrimEnd();
@@ -258,6 +271,9 @@ namespace InventoryKamera
                 ? "not measured"
                 : string.Join(", ", measurements.Select(value => value.ToString(CultureInfo.InvariantCulture) + "px"));
         }
+
+        private static string Milliseconds(TimeSpan value) =>
+            value.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture);
 
         internal static string ModeName(AchievementBulkDiagnosticMode mode) =>
             mode == AchievementBulkDiagnosticMode.FullTraversal

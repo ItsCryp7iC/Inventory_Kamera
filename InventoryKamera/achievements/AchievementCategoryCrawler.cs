@@ -376,16 +376,51 @@ namespace InventoryKamera
             $"; sharedCanonicalRows={SharedCanonicalRows}; contradictory={Contradictory}";
     }
 
+    internal enum AchievementObservationReconciliationStatus
+    {
+        CanonicalIdentity,
+        ReconciledToCanonical,
+        AssociatedUnresolved,
+        Unresolved,
+    }
+
     internal sealed class AchievementRowFrameObservation
     {
-        internal AchievementRowFrameObservation(int frameIndex, AchievementVisibleRow row)
+        internal AchievementRowFrameObservation(int frameIndex, AchievementVisibleRow row,
+            AchievementObservationReconciliationStatus reconciliationStatus =
+                AchievementObservationReconciliationStatus.Unresolved,
+            int? matchedFrameIndex = null,
+            int? matchedRowIndex = null,
+            int? movementBatchIndex = null,
+            double? expectedNormalizedY = null,
+            double? geometricErrorPixels = null,
+            string canonicalFingerprint = null,
+            string reconciliationReason = null)
         {
             FrameIndex = frameIndex;
             Row = row ?? throw new ArgumentNullException(nameof(row));
+            ReconciliationStatus = reconciliationStatus;
+            MatchedFrameIndex = matchedFrameIndex;
+            MatchedRowIndex = matchedRowIndex;
+            MovementBatchIndex = movementBatchIndex;
+            ExpectedNormalizedY = expectedNormalizedY;
+            GeometricErrorPixels = geometricErrorPixels;
+            CanonicalFingerprint = canonicalFingerprint ?? string.Empty;
+            ReconciliationReason = reconciliationReason ?? string.Empty;
         }
 
         internal int FrameIndex { get; }
         internal AchievementVisibleRow Row { get; }
+        internal AchievementObservationReconciliationStatus ReconciliationStatus { get; }
+        internal int? MatchedFrameIndex { get; }
+        internal int? MatchedRowIndex { get; }
+        internal int? MovementBatchIndex { get; }
+        internal double? ExpectedNormalizedY { get; }
+        internal double? GeometricErrorPixels { get; }
+        internal string CanonicalFingerprint { get; }
+        internal string ReconciliationReason { get; }
+        internal bool ReconciledToCanonical =>
+            ReconciliationStatus == AchievementObservationReconciliationStatus.ReconciledToCanonical;
     }
 
     internal sealed class AchievementObservedRow
@@ -407,6 +442,10 @@ namespace InventoryKamera
             LastObservedFrame = Observations.Count == 0 ? -1 : Observations.Max(value => value.FrameIndex);
             EverFullyVisible = Observations.Any(value =>
                 value.Row.Visibility == AchievementVisibleRowVisibility.Complete);
+            ReconciledObservationCount = Observations.Count(value => value.ReconciledToCanonical);
+            HasTrustedCompletionEvidence = Observations.Any(value =>
+                value.Row.Fingerprint.SuitableForDeduplication &&
+                HasTrustedCompletion(value.Row));
         }
 
         internal string Key { get; }
@@ -419,6 +458,13 @@ namespace InventoryKamera
         internal bool EverFullyVisible { get; }
         internal bool Conflicting { get; }
         internal bool Resolved => Canonical && !Conflicting && SelectedObservation != null;
+        internal int ReconciledObservationCount { get; }
+        internal bool HasTrustedCompletionEvidence { get; }
+
+        private static bool HasTrustedCompletion(AchievementVisibleRow row) =>
+            row.CompletionState != AchievementCompletionState.Unresolved &&
+            (row.IdentityState != AchievementIdentityState.StageGroupIdentified ||
+             row.StageProgressResult?.State == AchievementStageProgressState.Resolved);
     }
 
     internal sealed class AchievementCategoryCrawlProgress
@@ -495,7 +541,9 @@ namespace InventoryKamera
     internal sealed class AchievementCategoryCrawlTiming
     {
         internal AchievementCategoryCrawlTiming(TimeSpan capture, TimeSpan frameProcessing,
-            TimeSpan scrolling, TimeSpan settling, TimeSpan deduplication, TimeSpan total)
+            TimeSpan scrolling, TimeSpan settling, TimeSpan deduplication, TimeSpan total,
+            TimeSpan rowDetection = default, TimeSpan titleOcr = default,
+            TimeSpan completionOcr = default, TimeSpan rewardOcr = default)
         {
             Capture = capture;
             FrameProcessing = frameProcessing;
@@ -503,6 +551,10 @@ namespace InventoryKamera
             Settling = settling;
             Deduplication = deduplication;
             Total = total;
+            RowDetection = rowDetection;
+            TitleOcr = titleOcr;
+            CompletionOcr = completionOcr;
+            RewardOcr = rewardOcr;
         }
 
         internal TimeSpan Capture { get; }
@@ -511,6 +563,18 @@ namespace InventoryKamera
         internal TimeSpan Settling { get; }
         internal TimeSpan Deduplication { get; }
         internal TimeSpan Total { get; }
+        internal TimeSpan RowDetection { get; }
+        internal TimeSpan TitleOcr { get; }
+        internal TimeSpan CompletionOcr { get; }
+        internal TimeSpan RewardOcr { get; }
+        internal TimeSpan OtherFrameProcessing
+        {
+            get
+            {
+                TimeSpan categorized = RowDetection + TitleOcr + CompletionOcr + RewardOcr;
+                return FrameProcessing > categorized ? FrameProcessing - categorized : TimeSpan.Zero;
+            }
+        }
     }
 
     internal sealed class AchievementScrollObservation
@@ -518,7 +582,8 @@ namespace InventoryKamera
         internal AchievementScrollObservation(int batchIndex,
             AchievementListScrollRequest request,
             AchievementViewportMotion motion,
-            AchievementListScrollCommandResult command = null)
+            AchievementListScrollCommandResult command = null,
+            int captureHeight = 0)
         {
             BatchIndex = batchIndex;
             RequestedNotches = request?.NotchCount ?? 0;
@@ -537,6 +602,7 @@ namespace InventoryKamera
             InputSucceeded = command?.Succeeded ?? true;
             InputCancelled = command?.Cancelled == true;
             InputFailureReason = command?.FailureReason ?? string.Empty;
+            CaptureHeight = Math.Max(0, captureHeight);
         }
 
         internal int BatchIndex { get; }
@@ -554,6 +620,10 @@ namespace InventoryKamera
         internal bool InputSucceeded { get; }
         internal bool InputCancelled { get; }
         internal string InputFailureReason { get; }
+        internal int CaptureHeight { get; }
+        internal double? ObservedNormalizedDisplacement => CaptureHeight <= 0
+            ? null
+            : (ObservedRowDisplacementPixels ?? ObservedVisualDisplacementPixels) / CaptureHeight;
     }
 
     internal sealed class AchievementCategoryCrawlResult
@@ -603,13 +673,41 @@ namespace InventoryKamera
                 value.Row.Visibility == AchievementVisibleRowVisibility.Partial));
             UncertainRowObservations = ObservedRows.Sum(row => row.Observations.Count(value =>
                 value.Row.Visibility == AchievementVisibleRowVisibility.Uncertain));
+            TotalRawObservations = ObservedRows.Sum(row => row.ObservationCount);
+            RawUnresolvedObservations = ObservedRows.Sum(row => row.Observations.Count(value =>
+                !value.Row.Fingerprint.SuitableForDeduplication));
+            ReconciledUnresolvedObservations = ObservedRows.Sum(row =>
+                row.ReconciledObservationCount);
+            ObservationsLinkedToPreviouslyIdentifiedRows = ObservedRows.Sum(row =>
+                row.Observations.Count(value => value.ReconciledToCanonical &&
+                    row.Observations.Any(canonical =>
+                        canonical.Row.Fingerprint.SuitableForDeduplication &&
+                        canonical.FrameIndex < value.FrameIndex)));
+            OutstandingUnresolvedObservations = ObservedRows.Sum(row => row.Observations.Count(value =>
+                !value.Row.Fingerprint.SuitableForDeduplication && !value.ReconciledToCanonical));
             RepeatedObservations = ObservedRows.Where(row => row.Canonical)
-                .Sum(row => Math.Max(0, row.ObservationCount - 1));
+                .Sum(row => Math.Max(0, row.Observations.Count(value =>
+                    value.Row.Fingerprint.SuitableForDeduplication) - 1));
             PartialRowsRecovered = ObservedRows.Count(row => row.Canonical && row.EverFullyVisible &&
                 row.Observations.Any(value => value.Row.Visibility != AchievementVisibleRowVisibility.Complete));
+            PartialObservationsRecovered = ObservedRows.Sum(row => row.Observations.Count(value =>
+                value.ReconciledToCanonical &&
+                value.Row.Visibility == AchievementVisibleRowVisibility.Partial));
             PartialRowsOutstanding = ObservedRows.Count(row => !row.EverFullyVisible &&
                 row.Observations.Any(value =>
-                    value.Row.Visibility != AchievementVisibleRowVisibility.Complete));
+                    value.Row.Visibility == AchievementVisibleRowVisibility.Partial &&
+                    !value.ReconciledToCanonical));
+            UnmatchedPartialObservations = ObservedRows.Sum(row => row.Observations.Count(value =>
+                value.Row.Visibility == AchievementVisibleRowVisibility.Partial &&
+                !value.ReconciledToCanonical && !row.EverFullyVisible));
+            DistinctUnresolvedRowIntervals = ObservedRows.Count(row => !row.Canonical);
+            IdentifiedGroupsLackingTrustedCompletionEvidence = IdentifiedRows.Count(row =>
+                !row.HasTrustedCompletionEvidence);
+            ReconciliationConflicts = ObservedRows.Count(row => row.Conflicting &&
+                row.Observations.Where(value =>
+                        value.Row.Fingerprint.SuitableForDeduplication)
+                    .Select(value => value.Row.Fingerprint.Value)
+                    .Distinct(StringComparer.Ordinal).Skip(1).Any());
             OverlapVerifiedScrolls = ScrollObservations.Count(value => value.OverlapVerified);
             UnobservedMovementGaps = ScrollObservations.Count(value =>
                 value.MovementVerified && !value.OverlapVerified);
@@ -637,14 +735,28 @@ namespace InventoryKamera
         internal int PartialRowObservations { get; }
         internal int UncertainRowObservations { get; }
         internal int RepeatedObservations { get; }
+        internal int TotalRawObservations { get; }
+        internal int RawUnresolvedObservations { get; }
+        internal int ReconciledUnresolvedObservations { get; }
+        internal int ObservationsLinkedToPreviouslyIdentifiedRows { get; }
+        internal int OutstandingUnresolvedObservations { get; }
         internal int PartialRowsRecovered { get; }
+        internal int PartialObservationsRecovered { get; }
         internal int PartialRowsOutstanding { get; }
+        internal int UnmatchedPartialObservations { get; }
+        internal int DistinctUnresolvedRowIntervals { get; }
+        internal int IdentifiedGroupsLackingTrustedCompletionEvidence { get; }
+        internal int ReconciliationConflicts { get; }
         internal int OverlapVerifiedScrolls { get; }
         internal int UnobservedMovementGaps { get; }
         internal bool RecognitionCoverageSufficient => IsComplete &&
-            UnresolvedRows.Count == 0 && AmbiguousRows.Count == 0 &&
-            ConflictingRows.Count == 0 && PartialRowsOutstanding == 0 &&
+            OutstandingUnresolvedObservations == 0 && AmbiguousRows.Count == 0 &&
+            ConflictingRows.Count == 0 && ReconciliationConflicts == 0 &&
+            PartialRowsOutstanding == 0 &&
             UnobservedMovementGaps == 0;
+        internal bool TrustedCompletionCoverageSufficient => IsComplete &&
+            RecognitionCoverageSufficient &&
+            IdentifiedGroupsLackingTrustedCompletionEvidence == 0;
         internal AchievementScrollProgressState FinalScrollState { get; }
         internal string Reason { get; }
         internal AchievementCategoryCrawlTiming Timing { get; }
@@ -706,6 +818,10 @@ namespace InventoryKamera
             TimeSpan scrollingTime = TimeSpan.Zero;
             TimeSpan settlingTime = TimeSpan.Zero;
             TimeSpan deduplicationTime = TimeSpan.Zero;
+            TimeSpan rowDetectionTime = TimeSpan.Zero;
+            TimeSpan titleOcrTime = TimeSpan.Zero;
+            TimeSpan completionOcrTime = TimeSpan.Zero;
+            TimeSpan rewardOcrTime = TimeSpan.Zero;
             var aggregate = new ObservationAccumulator();
             var scrollObservations = new List<AchievementScrollObservation>();
             var frameObservations = new List<AchievementCategoryFrameObservation>();
@@ -721,7 +837,9 @@ namespace InventoryKamera
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 FrameSnapshot previous = ProcessFrame(startingFrame, 0, startingCaptureDuration ?? TimeSpan.Zero,
-                    aggregate, ref processingTime, ref deduplicationTime);
+                    aggregate, ref processingTime, ref deduplicationTime,
+                    ref rowDetectionTime, ref titleOcrTime,
+                    ref completionOcrTime, ref rewardOcrTime);
                 frameObservations.Add(Observe(previous, 0));
                 frames = 1;
                 diagnostics.Add(previous.Diagnostics);
@@ -806,7 +924,9 @@ namespace InventoryKamera
                                 "stabilization=unresolved");
 
                         FrameSnapshot current = ProcessFrame(captured, frames, stabilized.FinalCaptureDuration,
-                            aggregate, ref processingTime, ref deduplicationTime);
+                            aggregate, ref processingTime, ref deduplicationTime,
+                            ref rowDetectionTime, ref titleOcrTime,
+                            ref completionOcrTime, ref rewardOcrTime);
                         frameObservations.Add(Observe(current, frames));
                         frames++;
                         diagnostics.Add(current.Diagnostics);
@@ -829,7 +949,7 @@ namespace InventoryKamera
                             current.Result, current.Fingerprint,
                             captured.Height);
                         var scrollObservation = new AchievementScrollObservation(
-                            scrolls, options.ScrollRequest, motion, command);
+                            scrolls, options.ScrollRequest, motion, command, captured.Height);
                         scrollObservations[^1] = scrollObservation;
                         diagnostics.Add($"scroll={scrolls}; observedMotion: {motion}");
                         if (motion.Contradictory)
@@ -913,16 +1033,22 @@ namespace InventoryKamera
                 string completenessEvidence)
             {
                 total.Stop();
-                AchievementObservedRow[] rows = aggregate.Build();
+                AchievementObservedRow[] rows = aggregate.Build(scrollObservations);
                 var timing = new AchievementCategoryCrawlTiming(captureTime, processingTime,
-                    scrollingTime, settlingTime, deduplicationTime, total.Elapsed);
+                    scrollingTime, settlingTime, deduplicationTime, total.Elapsed,
+                    rowDetectionTime, titleOcrTime, completionOcrTime, rewardOcrTime);
                 diagnostics.Add($"state={state}; frames={frames}; scrolls={scrolls}; uniqueIdentified={rows.Count(row => row.Resolved)}; " +
-                    $"unresolved={rows.Count(row => !row.Resolved)}; repeated={rows.Where(row => row.Canonical).Sum(row => Math.Max(0, row.ObservationCount - 1))}; " +
+                    $"unresolved={rows.Count(row => !row.Resolved)}; repeated={rows.Where(row => row.Canonical).Sum(row => Math.Max(0, row.Observations.Count(value => value.Row.Fingerprint.SuitableForDeduplication) - 1))}; " +
                     $"ambiguous={rows.Count(row => row.Observations.Any(value => value.Row.IdentityState == AchievementIdentityState.Ambiguous))}; " +
-                    $"conflicting={rows.Count(row => row.Conflicting)}; partialOutstanding={rows.Count(row => !row.EverFullyVisible && row.Observations.Any(value => value.Row.Visibility != AchievementVisibleRowVisibility.Complete))}; " +
+                    $"conflicting={rows.Count(row => row.Conflicting)}; rawObservations={rows.Sum(row => row.ObservationCount)}; " +
+                    $"rawUnresolved={rows.Sum(row => row.Observations.Count(value => !value.Row.Fingerprint.SuitableForDeduplication))}; " +
+                    $"reconciled={rows.Sum(row => row.ReconciledObservationCount)}; outstandingUnresolved={rows.Sum(row => row.Observations.Count(value => !value.Row.Fingerprint.SuitableForDeduplication && !value.ReconciledToCanonical))}; " +
+                    $"partialOutstanding={rows.Count(row => !row.Canonical && row.Observations.Any(value => value.Row.Visibility == AchievementVisibleRowVisibility.Partial))}; " +
                     $"unobservedMovementGaps={scrollObservations.Count(value => value.MovementVerified && !value.OverlapVerified)}; " +
                     $"captureMs={captureTime.TotalMilliseconds:0.00}; processingMs={processingTime.TotalMilliseconds:0.00}; " +
                     $"scrollMs={scrollingTime.TotalMilliseconds:0.00}; settleMs={settlingTime.TotalMilliseconds:0.00}; " +
+                    $"rowDetectionMs={rowDetectionTime.TotalMilliseconds:0.00}; titleOcrMs={titleOcrTime.TotalMilliseconds:0.00}; " +
+                    $"completionOcrMs={completionOcrTime.TotalMilliseconds:0.00}; rewardOcrMs={rewardOcrTime.TotalMilliseconds:0.00}; " +
                     $"dedupMs={deduplicationTime.TotalMilliseconds:0.00}; totalMs={total.Elapsed.TotalMilliseconds:0.00}");
                 return new AchievementCategoryCrawlResult(context, state, completenessEvidence,
                     frames, scrolls, rows, scrollObservations, frameObservations, scrollState, reason, timing,
@@ -997,7 +1123,9 @@ namespace InventoryKamera
         }
 
         private FrameSnapshot ProcessFrame(Bitmap screenshot, int frameIndex, TimeSpan captureDuration,
-            ObservationAccumulator aggregate, ref TimeSpan processingTime, ref TimeSpan deduplicationTime)
+            ObservationAccumulator aggregate, ref TimeSpan processingTime, ref TimeSpan deduplicationTime,
+            ref TimeSpan rowDetectionTime, ref TimeSpan titleOcrTime,
+            ref TimeSpan completionOcrTime, ref TimeSpan rewardOcrTime)
         {
             Stopwatch part = Stopwatch.StartNew();
             AchievementCategoryFrameEvidence evidence = frameEvidenceDetector.Detect(screenshot);
@@ -1005,6 +1133,10 @@ namespace InventoryKamera
             AchievementBulkFrameResult result = frameReader.Read(screenshot, captureDuration);
             part.Stop();
             processingTime += part.Elapsed;
+            rowDetectionTime += result.Timing.RowDetection;
+            titleOcrTime += result.Timing.TitleOcr;
+            completionOcrTime += result.Timing.CompletionOcr;
+            rewardOcrTime += result.Timing.RewardOcr;
             string layout = string.Join("|", result.VisibleRows.Select(row =>
                 $"{row.Visibility}:{row.Fingerprint.Value}:{row.IdentityState}:{row.CompletionState}"));
             part.Restart();
@@ -1088,22 +1220,25 @@ namespace InventoryKamera
             AchievementScrollObservation scrollObservation,
             IEnumerable<AchievementScrollObservation> scrollObservations)
         {
-            AchievementObservedRow[] rows = aggregate.Build();
             AchievementScrollObservation[] movements =
                 (scrollObservations ?? Array.Empty<AchievementScrollObservation>()).ToArray();
+            AchievementObservedRow[] rows = aggregate.Build(movements);
             return new AchievementCategoryCrawlProgress(frames, scrolls,
-                rows.Count(row => row.Resolved), rows.Count(row => !row.Resolved),
+                rows.Count(row => row.Resolved), rows.Sum(row => row.Observations.Count(value =>
+                    !value.Row.Fingerprint.SuitableForDeduplication && !value.ReconciledToCanonical)),
                 rows.Where(row => row.Observations.Any(value =>
                         value.Row.IdentityState == AchievementIdentityState.Ambiguous))
                     .Select(row => (row.SelectedObservation ?? row.Observations[0].Row).NormalizedTitle + ":" +
                         string.Join(",", (row.SelectedObservation ?? row.Observations[0].Row).CandidateIds.OrderBy(value => value)))
                     .Distinct(StringComparer.Ordinal).Count(),
                 rows.Count(row => row.Conflicting),
-                rows.Where(row => row.Canonical).Sum(row => Math.Max(0, row.ObservationCount - 1)),
+                rows.Where(row => row.Canonical).Sum(row => Math.Max(0,
+                    row.Observations.Count(value => value.Row.Fingerprint.SuitableForDeduplication) - 1)),
                 rows.Count(row => row.Canonical && row.EverFullyVisible &&
                     row.Observations.Any(value => value.Row.Visibility != AchievementVisibleRowVisibility.Complete)),
                 rows.Count(row => !row.EverFullyVisible && row.Observations.Any(value =>
-                    value.Row.Visibility != AchievementVisibleRowVisibility.Complete)),
+                    value.Row.Visibility == AchievementVisibleRowVisibility.Partial &&
+                    !value.ReconciledToCanonical)),
                 movements.Count(value => value.MovementVerified && !value.OverlapVerified),
                 state, frameObservation, scrollObservation);
         }
@@ -1154,74 +1289,142 @@ namespace InventoryKamera
 
         private sealed class ObservationAccumulator
         {
-            private readonly Dictionary<string, MutableObservedRow> canonical = new(StringComparer.Ordinal);
-            private readonly List<MutableObservedRow> unresolved = new();
+            private const double MaximumAssociationErrorPixels = 6.0;
+            private readonly List<RawObservation> observations = new();
 
             internal void Add(int frameIndex, IEnumerable<AchievementVisibleRow> rows)
             {
                 foreach (AchievementVisibleRow row in rows ?? Array.Empty<AchievementVisibleRow>())
-                {
-                    var observation = new AchievementRowFrameObservation(frameIndex, row);
-                    if (row.Fingerprint.SuitableForDeduplication)
-                    {
-                        if (!canonical.TryGetValue(row.Fingerprint.Value, out MutableObservedRow value))
-                        {
-                            value = new MutableObservedRow(row.Fingerprint.Value, canonical: true);
-                            canonical.Add(row.Fingerprint.Value, value);
-                        }
-                        value.Add(observation);
-                    }
-                    else
-                    {
-                        var value = new MutableObservedRow(
-                            $"observation:{frameIndex}:{row.RowIndex}:{unresolved.Count}", canonical: false);
-                        value.Add(observation);
-                        unresolved.Add(value);
-                    }
-                }
+                    observations.Add(new RawObservation(observations.Count, frameIndex, row));
             }
 
-            internal AchievementObservedRow[] Build() => canonical.Values.Concat(unresolved)
-                .Select(value => value.Build())
-                .OrderBy(value => value.FirstObservedFrame)
-                .ThenBy(value => value.Key, StringComparer.Ordinal)
-                .ToArray();
-        }
-
-        private sealed class MutableObservedRow
-        {
-            private readonly List<AchievementRowFrameObservation> observations = new();
-            private AchievementVisibleRow selected;
-            private int selectedStrength = int.MinValue;
-            private bool conflicting;
-
-            internal MutableObservedRow(string key, bool canonical)
+            internal AchievementObservedRow[] Build(
+                IEnumerable<AchievementScrollObservation> sourceScrolls = null)
             {
-                Key = key;
-                Canonical = canonical;
+                var sets = new DisjointObservationSets(observations.Count);
+                foreach (IGrouping<string, RawObservation> group in observations
+                    .Where(value => value.Row.Fingerprint.SuitableForDeduplication)
+                    .GroupBy(value => value.Row.Fingerprint.Value, StringComparer.Ordinal))
+                {
+                    RawObservation first = group.First();
+                    foreach (RawObservation value in group.Skip(1))
+                        sets.Union(first.Id, value.Id);
+                }
+
+                foreach (AchievementScrollObservation scroll in
+                    sourceScrolls ?? Array.Empty<AchievementScrollObservation>())
+                    AssociateAdjacentFrames(scroll, sets);
+
+                return observations
+                    .GroupBy(value => sets.Find(value.Id))
+                    .Select((group, index) => BuildObservedRow(group.ToArray(), index))
+                    .OrderBy(value => value.FirstObservedFrame)
+                    .ThenBy(value => value.Key, StringComparer.Ordinal)
+                    .ToArray();
             }
 
-            internal string Key { get; }
-            internal bool Canonical { get; }
-
-            internal void Add(AchievementRowFrameObservation observation)
+            private void AssociateAdjacentFrames(
+                AchievementScrollObservation scroll,
+                DisjointObservationSets sets)
             {
-                observations.Add(observation);
-                int strength = Strength(observation.Row);
-                if (selected == null || strength > selectedStrength)
+                int previousFrame = scroll.BatchIndex - 1;
+                int currentFrame = scroll.BatchIndex;
+                RawObservation[] previous = observations.Where(value =>
+                    value.FrameIndex == previousFrame).ToArray();
+                RawObservation[] current = observations.Where(value =>
+                    value.FrameIndex == currentFrame).ToArray();
+                RawObservation[] relevant = previous.Concat(current)
+                    .Where(IsEligiblePartial).ToArray();
+                if (relevant.Length == 0) return;
+
+                double? normalizedMovement = scroll.ObservedNormalizedDisplacement;
+                if (!scroll.InputSucceeded || scroll.Contradictory ||
+                    (!scroll.MovementVerified && !scroll.ViewportStable) ||
+                    !scroll.OverlapVerified ||
+                    !normalizedMovement.HasValue || scroll.CaptureHeight <= 0)
                 {
-                    selected = observation.Row;
-                    selectedStrength = strength;
-                    conflicting = false;
+                    foreach (RawObservation value in relevant)
+                        value.NoteRejection("missing-or-unverified-movement");
+                    return;
                 }
-                else if (strength == selectedStrength && Conflicts(selected, observation.Row))
+
+                var candidates = new List<AssociationCandidate>();
+                foreach (RawObservation left in previous)
                 {
-                    conflicting = true;
+                    foreach (RawObservation right in current)
+                    {
+                        if (!IsEligiblePair(left, right)) continue;
+                        double expectedY = left.Row.NormalizedVerticalPosition + normalizedMovement.Value;
+                        double error = Math.Abs(right.Row.NormalizedVerticalPosition - expectedY) *
+                            scroll.CaptureHeight;
+                        if (error <= MaximumAssociationErrorPixels)
+                            candidates.Add(new AssociationCandidate(left, right, expectedY, error));
+                    }
+                }
+
+                foreach (RawObservation value in relevant)
+                {
+                    int count = candidates.Count(candidate => candidate.Contains(value));
+                    if (count == 0) value.NoteRejection("geometry-incompatible-with-measured-movement");
+                    else if (count > 1) value.NoteRejection("ambiguous-geometric-match");
+                }
+
+                foreach (AssociationCandidate candidate in candidates)
+                {
+                    if (candidates.Count(value => value.Left == candidate.Left) != 1 ||
+                        candidates.Count(value => value.Right == candidate.Right) != 1)
+                        continue;
+                    sets.Union(candidate.Left.Id, candidate.Right.Id);
+                    candidate.Left.NoteMatch(candidate.Right, scroll.BatchIndex,
+                        candidate.ExpectedNormalizedY, candidate.ErrorPixels);
+                    candidate.Right.NoteMatch(candidate.Left, scroll.BatchIndex,
+                        candidate.Right.Row.NormalizedVerticalPosition, candidate.ErrorPixels);
                 }
             }
 
-            internal AchievementObservedRow Build() => new(Key, Canonical,
-                observations, selected, conflicting);
+            private static bool IsEligiblePartial(RawObservation value) =>
+                !value.Row.Fingerprint.SuitableForDeduplication &&
+                value.Row.Visibility == AchievementVisibleRowVisibility.Partial;
+
+            private static bool IsEligiblePair(RawObservation left, RawObservation right) =>
+                (IsEligiblePartial(left) || IsEligiblePartial(right)) &&
+                (!left.Row.Fingerprint.SuitableForDeduplication ||
+                 !right.Row.Fingerprint.SuitableForDeduplication);
+
+            private static AchievementObservedRow BuildObservedRow(
+                RawObservation[] values, int intervalIndex)
+            {
+                string[] canonicalFingerprints = values
+                    .Where(value => value.Row.Fingerprint.SuitableForDeduplication)
+                    .Select(value => value.Row.Fingerprint.Value)
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(value => value, StringComparer.Ordinal)
+                    .ToArray();
+                bool canonical = canonicalFingerprints.Length == 1;
+                bool identityConflict = canonicalFingerprints.Length > 1;
+                string canonicalFingerprint = canonical
+                    ? canonicalFingerprints[0]
+                    : string.Empty;
+                AchievementVisibleRow selected = values.Select(value => value.Row)
+                    .OrderByDescending(Strength)
+                    .FirstOrDefault();
+                int selectedStrength = selected == null ? int.MinValue : Strength(selected);
+                bool evidenceConflict = values.Select(value => value.Row)
+                    .Where(value => Strength(value) == selectedStrength)
+                    .Any(value => selected != null && Conflicts(selected, value));
+                bool conflicting = identityConflict || evidenceConflict;
+                string key = canonical
+                    ? canonicalFingerprint
+                    : $"interval:{values.Min(value => value.FrameIndex)}:{intervalIndex}";
+                AchievementRowFrameObservation[] finalized = values
+                    .OrderBy(value => value.FrameIndex)
+                    .ThenBy(value => value.Row.RowIndex)
+                    .Select(value => value.Build(canonicalFingerprint,
+                        canonical, identityConflict))
+                    .ToArray();
+                return new AchievementObservedRow(key, canonical, finalized,
+                    selected, conflicting);
+            }
 
             private static int Strength(AchievementVisibleRow row)
             {
@@ -1238,6 +1441,108 @@ namespace InventoryKamera
                 left.CompletionState != right.CompletionState ||
                 !left.CandidateIds.SequenceEqual(right.CandidateIds) ||
                 left.StageGroupId != right.StageGroupId;
+
+            private sealed class RawObservation
+            {
+                private RawObservation matched;
+                private int? movementBatchIndex;
+                private double? expectedNormalizedY;
+                private double? geometricErrorPixels;
+                private string reason = "No verified geometric association was established.";
+
+                internal RawObservation(int id, int frameIndex, AchievementVisibleRow row)
+                {
+                    Id = id;
+                    FrameIndex = frameIndex;
+                    Row = row;
+                }
+
+                internal int Id { get; }
+                internal int FrameIndex { get; }
+                internal AchievementVisibleRow Row { get; }
+
+                internal void NoteMatch(RawObservation other, int batchIndex,
+                    double expectedY, double errorPixels)
+                {
+                    matched = other;
+                    movementBatchIndex = batchIndex;
+                    expectedNormalizedY = expectedY;
+                    geometricErrorPixels = errorPixels;
+                    reason = $"accepted-adjacent-geometric-match(error={errorPixels:0.0}px)";
+                }
+
+                internal void NoteRejection(string value)
+                {
+                    if (matched == null) reason = value ?? string.Empty;
+                }
+
+                internal AchievementRowFrameObservation Build(string canonicalFingerprint,
+                    bool canonicalComponent, bool identityConflict)
+                {
+                    AchievementObservationReconciliationStatus status;
+                    if (Row.Fingerprint.SuitableForDeduplication)
+                        status = AchievementObservationReconciliationStatus.CanonicalIdentity;
+                    else if (canonicalComponent)
+                        status = AchievementObservationReconciliationStatus.ReconciledToCanonical;
+                    else if (matched != null && !identityConflict)
+                        status = AchievementObservationReconciliationStatus.AssociatedUnresolved;
+                    else
+                        status = AchievementObservationReconciliationStatus.Unresolved;
+                    string finalReason = identityConflict
+                        ? "conflicting-canonical-identities-through-geometric-association"
+                        : reason;
+                    return new AchievementRowFrameObservation(FrameIndex, Row, status,
+                        matched?.FrameIndex, matched?.Row.RowIndex, movementBatchIndex,
+                        expectedNormalizedY, geometricErrorPixels,
+                        canonicalComponent || identityConflict ? canonicalFingerprint : string.Empty,
+                        finalReason);
+                }
+            }
+
+            private sealed class AssociationCandidate
+            {
+                internal AssociationCandidate(RawObservation left, RawObservation right,
+                    double expectedNormalizedY, double errorPixels)
+                {
+                    Left = left;
+                    Right = right;
+                    ExpectedNormalizedY = expectedNormalizedY;
+                    ErrorPixels = errorPixels;
+                }
+
+                internal RawObservation Left { get; }
+                internal RawObservation Right { get; }
+                internal double ExpectedNormalizedY { get; }
+                internal double ErrorPixels { get; }
+                internal bool Contains(RawObservation value) => Left == value || Right == value;
+            }
+
+            private sealed class DisjointObservationSets
+            {
+                private readonly int[] parents;
+
+                internal DisjointObservationSets(int count)
+                {
+                    parents = Enumerable.Range(0, count).ToArray();
+                }
+
+                internal int Find(int value)
+                {
+                    while (parents[value] != value)
+                    {
+                        parents[value] = parents[parents[value]];
+                        value = parents[value];
+                    }
+                    return value;
+                }
+
+                internal void Union(int left, int right)
+                {
+                    int leftRoot = Find(left);
+                    int rightRoot = Find(right);
+                    if (leftRoot != rightRoot) parents[rightRoot] = leftRoot;
+                }
+            }
         }
     }
 }

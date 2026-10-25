@@ -27,7 +27,8 @@ namespace InventoryKamera.Tests
             AchievementCategoryCrawlResult result = crawler.Crawl(
                 Context(), start, CancellationToken.None);
 
-            Assert.Equal(AchievementCategoryCrawlState.Complete, result.State);
+            Assert.True(result.State == AchievementCategoryCrawlState.Complete,
+                result.Reason + Environment.NewLine + result.Diagnostics);
             Assert.Equal(AchievementScrollProgressState.ReachedBottom, result.FinalScrollState);
             Assert.Equal(6, result.IdentifiedRows.Count);
             Assert.Equal(6, result.RepeatedObservations);
@@ -61,6 +62,226 @@ namespace InventoryKamera.Tests
             Assert.Equal(1, result.PartialRowsRecovered);
             Assert.Equal(0, result.PartialRowsOutstanding);
             Assert.True(result.RecognitionCoverageSufficient);
+        }
+
+        [Fact]
+        public void UnidentifiedPartialThatBecomesComplete_IsGeometricallyReconciled()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Row(1, normalizedY: 0.70), Unresolved("clipped", 0.80, AchievementVisibleRowVisibility.Partial)),
+                    Frame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.45)),
+                    Frame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.45)),
+                });
+
+            Assert.True(result.State == AchievementCategoryCrawlState.Complete,
+                result.Reason + Environment.NewLine + result.Diagnostics);
+            Assert.Equal(6, result.TotalRawObservations);
+            Assert.Equal(1, result.RawUnresolvedObservations);
+            Assert.Equal(1, result.ReconciledUnresolvedObservations);
+            Assert.Equal(0, result.OutstandingUnresolvedObservations);
+            Assert.Equal(1, result.PartialObservationsRecovered);
+            Assert.Equal(0, result.DistinctUnresolvedRowIntervals);
+            Assert.True(result.RecognitionCoverageSufficient);
+            AchievementRowFrameObservation recovered = Assert.Single(result.IdentifiedRows
+                .Single(row => row.Key == "canonical:10").Observations,
+                value => value.ReconciledToCanonical);
+            Assert.Equal(1, recovered.MatchedFrameIndex);
+            Assert.Equal(1, recovered.MovementBatchIndex);
+            Assert.InRange(recovered.GeometricErrorPixels.Value, 0, 0.01);
+            Assert.Contains("accepted-adjacent-geometric-match", recovered.ReconciliationReason);
+        }
+
+        [Fact]
+        public void MultiplePartialObservations_ReconcileToOneLaterCanonicalRow()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Row(1, normalizedY: 0.70), Unresolved("first", 0.80, AchievementVisibleRowVisibility.Partial)),
+                    Frame(Row(1, normalizedY: 0.35), Unresolved("second", 0.45, AchievementVisibleRowVisibility.Partial)),
+                    Frame(Row(1, normalizedY: 0.00), Row(10, normalizedY: 0.10)),
+                    Frame(Row(1, normalizedY: 0.00), Row(10, normalizedY: 0.10)),
+                });
+
+            AchievementObservedRow row = result.IdentifiedRows.Single(value => value.Key == "canonical:10");
+            Assert.Equal(2, row.ReconciledObservationCount);
+            Assert.Equal(2, result.PartialObservationsRecovered);
+            Assert.Equal(0, result.OutstandingUnresolvedObservations);
+            Assert.True(result.RecognitionCoverageSufficient);
+        }
+
+        [Fact]
+        public void LaterPartial_CanLinkToPreviouslyIdentifiedRowWithVerifiedMotion()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Row(1, normalizedY: 0.70), Row(10, normalizedY: 0.80)),
+                    Frame(Row(1, normalizedY: 0.35),
+                        Unresolved("clipped", 0.45, AchievementVisibleRowVisibility.Partial),
+                        Row(20, normalizedY: 0.70)),
+                    Frame(Row(1, normalizedY: 0.35),
+                        Unresolved("clipped", 0.45, AchievementVisibleRowVisibility.Partial),
+                        Row(20, normalizedY: 0.70)),
+                });
+
+            Assert.Equal(2, result.ObservationsLinkedToPreviouslyIdentifiedRows);
+            Assert.Equal(0, result.OutstandingUnresolvedObservations);
+            Assert.True(result.RecognitionCoverageSufficient);
+        }
+
+        [Fact]
+        public void PartialReconciledToStagedFamily_PreservesStageTrustBoundary()
+        {
+            AchievementVisibleRow staged = Row(20,
+                completion: AchievementCompletionState.Incomplete,
+                candidateIds: new[] { 20, 21 },
+                identity: AchievementIdentityState.StageGroupIdentified,
+                stageGroupId: 20,
+                fingerprint: "canonical:20,21",
+                normalizedY: 0.45);
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Row(1, normalizedY: 0.70),
+                        Unresolved("stage clipped", 0.80, AchievementVisibleRowVisibility.Partial)),
+                    Frame(Row(1, normalizedY: 0.35), staged),
+                    Frame(Row(1, normalizedY: 0.35), staged),
+                });
+
+            AchievementObservedRow observed = result.IdentifiedRows.Single(row => row.Key == "canonical:20,21");
+            Assert.Equal(new[] { 20, 21 }, observed.SelectedObservation.CandidateIds);
+            Assert.Equal(1, observed.ReconciledObservationCount);
+            Assert.False(observed.HasTrustedCompletionEvidence);
+            Assert.False(result.TrustedCompletionCoverageSufficient);
+        }
+
+        [Fact]
+        public void PartialWithGeometryIncompatibleWithMeasuredMotion_RemainsUnresolved()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Row(1, normalizedY: 0.70), Unresolved("clipped", 0.80, AchievementVisibleRowVisibility.Partial)),
+                    Frame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.50)),
+                    Frame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.50)),
+                });
+
+            Assert.Equal(1, result.OutstandingUnresolvedObservations);
+            Assert.False(result.RecognitionCoverageSufficient);
+            Assert.Contains(result.UnresolvedRows.SelectMany(row => row.Observations),
+                value => value.ReconciliationReason == "geometry-incompatible-with-measured-movement");
+        }
+
+        [Fact]
+        public void AmbiguousGeometricMatch_RemainsUnresolved()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Row(1, normalizedY: 0.70), Unresolved("clipped", 0.80, AchievementVisibleRowVisibility.Partial)),
+                    Frame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.447), Row(20, normalizedY: 0.453)),
+                    Frame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.447), Row(20, normalizedY: 0.453)),
+                });
+
+            Assert.Equal(1, result.OutstandingUnresolvedObservations);
+            Assert.False(result.RecognitionCoverageSufficient);
+            Assert.Contains(result.UnresolvedRows.SelectMany(row => row.Observations),
+                value => value.ReconciliationReason == "ambiguous-geometric-match");
+        }
+
+        [Fact]
+        public void MissingMovementMeasurement_DoesNotReconcilePartialByPositionGuess()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Unresolved("clipped", 0.80, AchievementVisibleRowVisibility.Partial)),
+                    Frame(Row(10, normalizedY: 0.45)),
+                    Frame(Row(10, normalizedY: 0.45)),
+                });
+
+            Assert.Equal(1, result.OutstandingUnresolvedObservations);
+            Assert.False(result.RecognitionCoverageSufficient);
+            Assert.Contains(result.UnresolvedRows.SelectMany(row => row.Observations),
+                value => value.ReconciliationReason == "missing-or-unverified-movement");
+        }
+
+        [Fact]
+        public void PartialChainConnectingDifferentCanonicalRows_FailsClosedAsConflict()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Row(99, normalizedY: 0.70), Row(10, normalizedY: 0.80)),
+                    Frame(Row(99, normalizedY: 0.35), Unresolved("clipped", 0.45, AchievementVisibleRowVisibility.Partial)),
+                    Frame(Row(99, normalizedY: 0.00), Row(20, normalizedY: 0.10)),
+                    Frame(Row(99, normalizedY: 0.00), Row(20, normalizedY: 0.10)),
+                });
+
+            Assert.Equal(1, result.ReconciliationConflicts);
+            Assert.NotEmpty(result.ConflictingRows);
+            Assert.False(result.RecognitionCoverageSufficient);
+            Assert.Contains(result.ConflictingRows.SelectMany(row => row.Observations),
+                value => value.ReconciliationReason.Contains("conflicting-canonical-identities"));
+        }
+
+        [Fact]
+        public void ReconciledIdentity_DoesNotFabricateCompletionTrust()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Row(1, normalizedY: 0.70), Unresolved("clipped", 0.80, AchievementVisibleRowVisibility.Partial)),
+                    Frame(Row(1, normalizedY: 0.35),
+                        Row(10, completion: AchievementCompletionState.Unresolved, normalizedY: 0.45)),
+                    Frame(Row(1, normalizedY: 0.35),
+                        Row(10, completion: AchievementCompletionState.Unresolved, normalizedY: 0.45)),
+                });
+
+            Assert.True(result.RecognitionCoverageSufficient);
+            Assert.False(result.TrustedCompletionCoverageSufficient);
+            Assert.Equal(1, result.IdentifiedGroupsLackingTrustedCompletionEvidence);
+            Assert.Equal(AchievementCompletionState.Unresolved,
+                result.IdentifiedRows.Single(row => row.Key == "canonical:10")
+                    .SelectedObservation.CompletionState);
+        }
+
+        [Fact]
+        public void UncertainOrCompleteUnreadableRows_AreNeverReconciledByGeometry()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    Frame(Row(1, normalizedY: 0.70),
+                        Unresolved("uncertain", 0.80, AchievementVisibleRowVisibility.Uncertain),
+                        Unresolved("complete collision", 0.60, AchievementVisibleRowVisibility.Complete)),
+                    Frame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.45), Row(20, normalizedY: 0.25)),
+                    Frame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.45), Row(20, normalizedY: 0.25)),
+                });
+
+            Assert.Equal(2, result.OutstandingUnresolvedObservations);
+            Assert.Equal(0, result.ReconciledUnresolvedObservations);
+            Assert.False(result.RecognitionCoverageSufficient);
+        }
+
+        [Fact]
+        public void FrameOcrTiming_IsAggregatedWithoutChangingTraversalBehavior()
+        {
+            AchievementCategoryCrawlResult result = ReconciliationCrawl(
+                new[]
+                {
+                    TimedFrame(Row(1, normalizedY: 0.70)),
+                    TimedFrame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.45)),
+                    TimedFrame(Row(1, normalizedY: 0.35), Row(10, normalizedY: 0.45)),
+                });
+
+            Assert.Equal(TimeSpan.FromMilliseconds(3), result.Timing.RowDetection);
+            Assert.Equal(TimeSpan.FromMilliseconds(6), result.Timing.TitleOcr);
+            Assert.Equal(TimeSpan.FromMilliseconds(9), result.Timing.CompletionOcr);
+            Assert.Equal(TimeSpan.FromMilliseconds(12), result.Timing.RewardOcr);
         }
 
         [Fact]
@@ -577,6 +798,28 @@ namespace InventoryKamera.Tests
         private static AchievementCategoryCrawlContext Context() =>
             new("Category", knownTraversalOrigin: true);
 
+        private static AchievementCategoryCrawlResult ReconciliationCrawl(
+            AchievementBulkFrameResult[] frames)
+        {
+            using Bitmap start = Image(16);
+            Bitmap[] captures = Enumerable.Range(1, frames.Length - 1)
+                .Select(index => Image(index >= frames.Length - 2 ? (byte)80 : (byte)(16 + index * 32)))
+                .ToArray();
+            try
+            {
+                AchievementCategoryFrameEvidence[] evidence = Enumerable.Range(0, frames.Length)
+                    .Select(index => Evidence(top: index == 0,
+                        bottom: index >= frames.Length - 2))
+                    .ToArray();
+                return Crawler(frames, captures, evidence).Crawl(
+                    Context(), start, CancellationToken.None);
+            }
+            finally
+            {
+                foreach (Bitmap capture in captures) capture.Dispose();
+            }
+        }
+
         private static AchievementCategoryFrameEvidence Evidence(
             bool top = false, bool bottom = false, string signature = null) => new(
                 top, bottom, signature ?? string.Empty, signature != null, "Synthetic evidence.");
@@ -590,6 +833,14 @@ namespace InventoryKamera.Tests
                 new AchievementBulkFrameTiming(TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
                     TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, rows.Length, rows.Length),
                 "Synthetic frame.");
+
+        private static AchievementBulkFrameResult TimedFrame(params AchievementVisibleRow[] rows) => new(
+            AchievementScreenState.Idle, rows, 17,
+            new AchievementBulkFrameTiming(TimeSpan.Zero,
+                TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(2),
+                TimeSpan.FromMilliseconds(3), TimeSpan.FromMilliseconds(4),
+                TimeSpan.FromMilliseconds(15), rows.Length, rows.Length),
+            "Synthetic timed frame.");
 
         private static AchievementVisibleRow Row(
             int id,
@@ -615,9 +866,11 @@ namespace InventoryKamera.Tests
                 null, null, null, "Synthetic row.");
         }
 
-        private static AchievementVisibleRow Unresolved(string value) => new(
-            0, new NormalizedRectangle(0.38, 0.2, 0.56, 0.1),
-            AchievementVisibleRowVisibility.Uncertain, value, value,
+        private static AchievementVisibleRow Unresolved(string value,
+            double normalizedY = 0.2,
+            AchievementVisibleRowVisibility visibility = AchievementVisibleRowVisibility.Uncertain) => new(
+            0, new NormalizedRectangle(0.38, normalizedY, 0.56, 0.1),
+            visibility, value, value,
             AchievementIdentityState.Unresolved, Array.Empty<int>(), null,
             AchievementCompletionState.Unresolved, null, null, null, 0, 0, 0,
             false, new AchievementRowFingerprint("diagnostic:" + value, false),

@@ -460,6 +460,12 @@ namespace InventoryKamera.Tests
 
             Assert.Contains("Traversal complete: yes", report);
             Assert.Contains("Recognition coverage sufficient: yes", report);
+            Assert.Contains("Trusted completion coverage sufficient: yes", report);
+            Assert.Contains("Raw observations:", report);
+            Assert.Contains("reconciled to identified rows:", report);
+            Assert.Contains("distinct unresolved intervals:", report);
+            Assert.Contains("identified groups lacking trusted completion evidence:", report);
+            Assert.Contains("title OCR=0 ms", report);
             Assert.Contains("Positive top evidence: True", report);
             Assert.Contains("Positive bottom-position evidence: True", report);
         }
