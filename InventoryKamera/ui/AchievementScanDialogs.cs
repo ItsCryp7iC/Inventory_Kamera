@@ -143,11 +143,15 @@ namespace InventoryKamera.ui
 
     internal sealed class AchievementBulkDiagnosticStartForm : Form
     {
+        private readonly RadioButton shortDiagnostic;
+        private readonly RadioButton fullTraversal;
+        private readonly Label modeDescription;
+
         internal AchievementBulkDiagnosticStartForm()
         {
-            Text = "Test Bulk Scrolling";
+            Text = "Achievement Bulk Diagnostics";
             AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(570, 315);
+            ClientSize = new Size(570, 423);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -158,35 +162,90 @@ namespace InventoryKamera.ui
             {
                 AutoSize = false,
                 Location = new Point(18, 18),
-                Size = new Size(534, 225),
-                Text = "This short, read-only diagnostic tests one manually selected Achievement category. " +
-                    "It scrolls the right-side list and collects recognition evidence; it does not save or export achievement progress.\n\n" +
+                Size = new Size(534, 154),
+                Text = "Both read-only diagnostics test one manually selected Achievement category. " +
+                    "They collect recognition and traversal evidence without saving or exporting achievement progress.\n\n" +
                     "Before continuing:\n" +
                     "1. Use Keyboard/Mouse mode in Genshin.\n" +
                     "2. Open Achievements and select the category to test.\n" +
                     "3. Move that category's achievement list to the top.\n" +
-                    "4. Leave the ordinary category list visible with no search or dialog open.\n\n" +
-                    "The diagnostic captures at most 5 frames and requests at most 4 scroll batches. Press F8 to cancel.",
+                    "4. Leave the ordinary category list visible with no search or dialog open.",
+            };
+            var modeGroup = new GroupBox
+            {
+                Location = new Point(18, 178),
+                Size = new Size(534, 103),
+                Text = "Diagnostic mode",
+            };
+            shortDiagnostic = new RadioButton
+            {
+                AutoSize = true,
+                Checked = true,
+                Location = new Point(15, 25),
+                Text = "Test Bulk Scrolling (5-frame diagnostic)",
+            };
+            fullTraversal = new RadioButton
+            {
+                AutoSize = true,
+                Location = new Point(15, 60),
+                Text = "Verify Full Category Traversal",
+            };
+            shortDiagnostic.CheckedChanged += (_, _) => UpdateModeDescription();
+            fullTraversal.CheckedChanged += (_, _) => UpdateModeDescription();
+            modeGroup.Controls.Add(shortDiagnostic);
+            modeGroup.Controls.Add(fullTraversal);
+
+            modeDescription = new Label
+            {
+                AutoSize = false,
+                Location = new Point(18, 292),
+                Size = new Size(534, 70),
             };
             var startButton = new Button
             {
                 DialogResult = DialogResult.OK,
-                Location = new Point(332, 260),
+                Location = new Point(332, 370),
                 Size = new Size(105, 35),
                 Text = "Start Test",
             };
             var cancelButton = new Button
             {
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(447, 260),
+                Location = new Point(447, 370),
                 Size = new Size(105, 35),
                 Text = "Cancel",
             };
             Controls.Add(message);
+            Controls.Add(modeGroup);
+            Controls.Add(modeDescription);
             Controls.Add(startButton);
             Controls.Add(cancelButton);
             AcceptButton = startButton;
             CancelButton = cancelButton;
+            UpdateModeDescription();
+        }
+
+        internal AchievementBulkDiagnosticMode SelectedMode => fullTraversal.Checked
+            ? AchievementBulkDiagnosticMode.FullTraversal
+            : AchievementBulkDiagnosticMode.Short;
+
+        internal void SelectMode(AchievementBulkDiagnosticMode mode)
+        {
+            if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+            fullTraversal.Checked = mode == AchievementBulkDiagnosticMode.FullTraversal;
+            shortDiagnostic.Checked = mode == AchievementBulkDiagnosticMode.Short;
+            UpdateModeDescription();
+        }
+
+        internal string ModeDescription => modeDescription.Text;
+
+        private void UpdateModeDescription()
+        {
+            modeDescription.Text = SelectedMode == AchievementBulkDiagnosticMode.FullTraversal
+                ? "Starts only after positive top evidence, then scrolls through the selected category to verify its real bottom. " +
+                  "This may take longer, is bounded to 80 frames / 79 batches, and can be cancelled with F8. No progress is saved or exported."
+                : "Runs the existing short diagnostic: at most 5 frames and 4 scroll batches. " +
+                  "It may stop before the category bottom. Press F8 to cancel; no progress is saved or exported.";
         }
     }
 }

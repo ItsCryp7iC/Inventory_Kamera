@@ -198,6 +198,68 @@ namespace InventoryKamera.Tests
             Assert.Equal(5, crawler.MaximumCapturedFrames);
             Assert.Equal(4, crawler.MaximumScrollActions);
             Assert.Equal(21, crawler.WheelNotchesPerBatch);
+            Assert.Equal(AchievementBulkDiagnosticMode.Short, options.Mode);
+            Assert.Same(AchievementBulkDiagnosticOptions.ShortProfile, options);
+        }
+
+        [Fact]
+        public void FullTraversalProfile_IsSeparateNamedAndBounded()
+        {
+            AchievementBulkDiagnosticOptions options =
+                AchievementBulkDiagnosticOptions.FullTraversalProfile;
+            AchievementCategoryCrawlOptions crawler = options.ToCrawlerOptions();
+
+            Assert.Equal(AchievementBulkDiagnosticMode.FullTraversal, options.Mode);
+            Assert.Equal(80, options.MaximumCapturedFrames);
+            Assert.Equal(79, options.MaximumScrollBatches);
+            Assert.Equal(21, options.WheelNotchesPerBatch);
+            Assert.Equal(80, crawler.MaximumCapturedFrames);
+            Assert.Equal(79, crawler.MaximumScrollActions);
+            Assert.Equal(21, crawler.WheelNotchesPerBatch);
+        }
+
+        [Fact]
+        public void DiagnosticProfiles_RejectUnboundedOrInconsistentLimits()
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new AchievementBulkDiagnosticOptions(maximumCapturedFrames: 81));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new AchievementBulkDiagnosticOptions(maximumCapturedFrames: 5,
+                    maximumScrollBatches: 5));
+        }
+
+        [Fact]
+        public void DiagnosticDialog_OffersExplicitFullTraversalChoiceAndSafetyText()
+        {
+            using var dialog = new AchievementBulkDiagnosticStartForm();
+
+            Assert.Equal(AchievementBulkDiagnosticMode.Short, dialog.SelectedMode);
+            Assert.Contains("5 frames", dialog.ModeDescription);
+            dialog.SelectMode(AchievementBulkDiagnosticMode.FullTraversal);
+
+            Assert.Equal(AchievementBulkDiagnosticMode.FullTraversal, dialog.SelectedMode);
+            Assert.Contains("real bottom", dialog.ModeDescription);
+            Assert.Contains("longer", dialog.ModeDescription);
+            Assert.Contains("F8", dialog.ModeDescription);
+            Assert.Contains("No progress is saved or exported", dialog.ModeDescription);
+            Assert.Contains(dialog.Controls.OfType<GroupBox>().SelectMany(group =>
+                group.Controls.OfType<RadioButton>()), radio =>
+                radio.Text == "Verify Full Category Traversal");
+        }
+
+        [Fact]
+        public void RunnerAndReport_PreserveSelectedFullTraversalMode()
+        {
+            var runner = new AchievementBulkDiagnosticRunner(
+                new FakeCapture(),
+                new FakeCrawler(Result(AchievementCategoryCrawlState.Incomplete)),
+                AchievementBulkDiagnosticMode.FullTraversal);
+
+            AchievementBulkDiagnosticResult result = runner.Run(CancellationToken.None);
+            string report = AchievementBulkDiagnosticReportBuilder.BuildSummary(result);
+
+            Assert.Equal(AchievementBulkDiagnosticMode.FullTraversal, result.Mode);
+            Assert.Contains("Diagnostic mode: Verify Full Category Traversal", report);
         }
 
         [Fact]
@@ -383,6 +445,23 @@ namespace InventoryKamera.Tests
             Assert.Contains("Wheel events confirmed sent: 21", report);
             Assert.Contains("Observed visual displacement by batch: not measured", report);
             Assert.DoesNotContain("378px", report);
+        }
+
+        [Fact]
+        public void Report_SeparatesTraversalCompletionFromRecognitionCoverage()
+        {
+            AchievementCategoryCrawlResult crawl = Result(
+                AchievementCategoryCrawlState.Complete,
+                processedFrames: 2,
+                completeness: "verified stationary bottom");
+            string report = AchievementBulkDiagnosticReportBuilder.BuildSummary(
+                new AchievementBulkDiagnosticResult(crawl,
+                    AchievementBulkDiagnosticMode.FullTraversal));
+
+            Assert.Contains("Traversal complete: yes", report);
+            Assert.Contains("Recognition coverage sufficient: yes", report);
+            Assert.Contains("Positive top evidence: True", report);
+            Assert.Contains("Positive bottom-position evidence: True", report);
         }
 
         [Theory]

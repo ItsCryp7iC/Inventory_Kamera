@@ -25,8 +25,9 @@ namespace InventoryKamera
         private const int ReferenceTrackBottom = 967;
         private const int ReferenceTopMaximum = 150;
         private const int ReferenceTopBottomMaximum = 265;
-        private const int ReferenceBottomMinimum = 848;
-        private const int ReferenceBottomBottomMinimum = 966;
+        private const int ReferenceBottomThumbTop = 853;
+        private const int ReferenceBottomThumbBottom = 967;
+        private const int BottomEndpointTolerance = 2;
         private const int ReferenceThumbHeight = 115;
         private const int ReferenceMinimumThumbHeight = 105;
         private const int ReferenceMaximumThumbHeight = 125;
@@ -157,19 +158,25 @@ namespace InventoryKamera
                 (thumbTop - trackTop) / (double)(maximumThumbTop - trackTop), 0.0, 1.0);
             bool top = thumbTop <= ScaleY(ReferenceTopMaximum, screenshot.Height) &&
                 thumbBottom <= ScaleY(ReferenceTopBottomMaximum, screenshot.Height);
-            bool bottom = thumbTop >= ScaleY(ReferenceBottomMinimum, screenshot.Height) &&
-                thumbBottom >= ScaleY(ReferenceBottomBottomMinimum, screenshot.Height);
+            int expectedBottomTop = ScaleY(ReferenceBottomThumbTop, screenshot.Height);
+            int expectedBottomBottom = ScaleY(ReferenceBottomThumbBottom, screenshot.Height);
+            int bottomTolerance = ScaleLengthY(BottomEndpointTolerance, screenshot.Height);
+            int bottomTopDelta = thumbTop - expectedBottomTop;
+            int bottomBottomDelta = thumbBottom - expectedBottomBottom;
+            bool bottom = Math.Abs(bottomTopDelta) <= bottomTolerance &&
+                Math.Abs(bottomBottomDelta) <= bottomTolerance;
             string topRejection = top ? "none" :
                 $"thumb-not-at-top(top>{ScaleY(ReferenceTopMaximum, screenshot.Height)}" +
                 $" or bottom>{ScaleY(ReferenceTopBottomMaximum, screenshot.Height)})";
             string bottomRejection = bottom ? "none" :
-                $"thumb-not-at-bottom(top<{ScaleY(ReferenceBottomMinimum, screenshot.Height)}" +
-                $" or bottom<{ScaleY(ReferenceBottomBottomMinimum, screenshot.Height)})";
+                $"thumb-not-at-calibrated-bottom(topDelta={bottomTopDelta}," +
+                $" bottomDelta={bottomBottomDelta}, tolerance={bottomTolerance})";
             return AchievementScrollbarEvidence.CreateResolved(
                 selectedX, searchTop, searchBottom, trackTop, trackBottom,
                 calibration, screenshot.Size, thumbTop, thumbBottom,
                 normalizedPosition, confidence, top, bottom,
-                topRejection, bottomRejection, candidates.Count);
+                topRejection, bottomRejection, candidates.Count,
+                expectedBottomTop, expectedBottomBottom, bottomTolerance);
         }
 
         private bool TryReadSelectedCategory(Bitmap screenshot,
@@ -336,7 +343,8 @@ namespace InventoryKamera
             int trackTop, int trackBottom, int? thumbTop, int? thumbBottom,
             double? normalizedPosition, double confidence, int candidateCount,
             string calibration, Size captureSize, string rejectionReason,
-            string topRejection, string bottomRejection, string observedRuns)
+            string topRejection, string bottomRejection, string observedRuns,
+            int? expectedBottomTop, int? expectedBottomBottom, int bottomTolerance)
         {
             Resolved = resolved;
             TopAtExtent = topAtExtent;
@@ -357,6 +365,9 @@ namespace InventoryKamera
             TopRejection = topRejection ?? string.Empty;
             BottomRejection = bottomRejection ?? string.Empty;
             ObservedRuns = observedRuns ?? string.Empty;
+            ExpectedBottomTop = expectedBottomTop;
+            ExpectedBottomBottom = expectedBottomBottom;
+            BottomTolerance = bottomTolerance;
         }
 
         internal bool Resolved { get; }
@@ -378,6 +389,9 @@ namespace InventoryKamera
         internal string TopRejection { get; }
         internal string BottomRejection { get; }
         internal string ObservedRuns { get; }
+        internal int? ExpectedBottomTop { get; }
+        internal int? ExpectedBottomBottom { get; }
+        internal int BottomTolerance { get; }
         internal string Diagnostics =>
             $"scrollbarTrack=x{X},y{TrackTop}-{TrackBottom}; searchY={SearchTop}-{SearchBottom}; " +
             $"scrollbarThumb={(ThumbTop.HasValue ? $"{ThumbTop}-{ThumbBottom}" : "unresolved")}; " +
@@ -385,17 +399,21 @@ namespace InventoryKamera
             $"confidence={Confidence.ToString("0.000", CultureInfo.InvariantCulture)}; candidates={CandidateCount}; " +
             $"top={TopAtExtent}; bottom={BottomAtExtent}; rejectionReason={RejectionReason}; " +
             $"topRejection={TopRejection}; bottomRejection={BottomRejection}; " +
+            $"bottomEndpointExpected={(ExpectedBottomTop.HasValue ? $"{ExpectedBottomTop}-{ExpectedBottomBottom}" : "unavailable")}; " +
+            $"bottomEndpointTolerance={BottomTolerance}px; " +
             $"observedRuns={ObservedRuns}; calibration={Calibration}; size={CaptureSize.Width}x{CaptureSize.Height}";
 
         internal static AchievementScrollbarEvidence CreateResolved(
             int x, int searchTop, int searchBottom, int trackTop, int trackBottom,
             string calibration, Size captureSize, int thumbTop, int thumbBottom,
             double normalizedPosition, double confidence, bool top, bool bottom,
-            string topRejection, string bottomRejection, int candidateCount) =>
+            string topRejection, string bottomRejection, int candidateCount,
+            int expectedBottomTop, int expectedBottomBottom, int bottomTolerance) =>
             new(true, top, bottom, x, searchTop, searchBottom, trackTop, trackBottom,
                 thumbTop, thumbBottom, normalizedPosition, confidence, candidateCount,
                 calibration, captureSize, "none", topRejection, bottomRejection,
-                $"{thumbTop}-{thumbBottom}");
+                $"{thumbTop}-{thumbBottom}", expectedBottomTop, expectedBottomBottom,
+                bottomTolerance);
 
         internal static AchievementScrollbarEvidence CreateUnresolved(
             int x, int searchTop, int searchBottom, int trackTop, int trackBottom,
@@ -404,6 +422,7 @@ namespace InventoryKamera
             int? thumbBottom = null, double confidence = 0.0) =>
             new(false, false, false, x, searchTop, searchBottom, trackTop, trackBottom,
                 thumbTop, thumbBottom, null, confidence, candidateCount, calibration,
-                captureSize, rejectionReason, rejectionReason, rejectionReason, observedRuns);
+                captureSize, rejectionReason, rejectionReason, rejectionReason, observedRuns,
+                null, null, 0);
     }
 }

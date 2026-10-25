@@ -1294,9 +1294,11 @@ Five consecutive 1919x1079 `Memories of the Heart` captures establish measured m
 for each of two physical downward wheel notches, -36 px across both notches, and 0 px between a
 bottom frame and a further downward notch. With the measured 125 px row pitch, a provisional batch
 of 21 independent -120 wheel events targets about 378 px, leaving about 477 px (nearly four rows)
-of viewport overlap. This is a batching proposal, not proof that programmatic -2520 input produces
-378 px: every batch records its logical request separately from visual and canonical-row
-displacement measured from the captured frames.
+of viewport overlap. At the time of 7B.1 this was only a batching proposal. The subsequent
+user-operated 7B.2 diagnostic verified at 1920x1080 that one programmatic 21-notch batch produced
+approximately 378 px and four batches produced 1,512 px while preserving recognizable overlap and
+canonical deduplication. Every batch still records its logical request separately from measured
+visual and canonical-row displacement; the observed relationship is not assumed universal.
 
 After the initial 350 ms settle, capture stabilization compares lightweight row-luminance profiles
 at bounded 75 ms intervals and OCRs only the final stable frame. Visual correlation detects
@@ -1320,7 +1322,7 @@ candidate evidence for that gate at the measured resolution, not a universal scr
 Live validation must still verify programmatic batching, animation timing, category recognition,
 and scrollbar behavior at every supported resolution before Phase 7C absence reasoning.
 
-#### Phase 7B.2 controlled live-crawler diagnostic (implemented; awaiting manual validation)
+#### Phase 7B.2 controlled live-crawler diagnostic (implemented; initial live evidence collected)
 
 The Achievements-only UI now exposes **Test Bulk Scrolling**, an explicitly started, short,
 read-only diagnostic for one category that the user has manually selected and moved to the top.
@@ -1335,6 +1337,11 @@ right-panel wheel target, foreground verifier, and overlay-safe `Navigation.Capt
 Its default boundary is five processed frames and four requested scroll batches, with the existing
 21-notch provisional batch and bounded settle/stabilization settings. Reaching either diagnostic
 limit without the independent bottom gate remains `Incomplete`.
+
+The initial user-operated run confirmed a 1920x1080 capture, `memories of the heart` category
+identity, positive top detection, approximately 378 px per 21-notch batch, 1,512 px across four
+batches, overlapping-row recognition/deduplication, and the required `Incomplete` result at the
+five-frame limit. It did not attempt or prove a full traversal to the real category bottom.
 
 Progress and the terminal report retain only bitmap-free evidence. They show the verified category
 signature, frame and batch counts, requested notches/logical wheel delta, confirmed wheel events
@@ -1367,6 +1374,69 @@ safe overlap, stabilization is adequate, category identity remains reliable, for
 behavior are safe, bottom completion proof works without false positives, and the behavior is
 calibrated across supported resolutions/categories. This diagnostic is an evidence-gathering gate,
 not a production Fast Scan feature.
+
+#### Phase 7B.3 full-category traversal verification (implemented; awaiting manual validation)
+
+The read-only bulk diagnostic now offers two explicit modes in its confirmation dialog. **Test
+Bulk Scrolling** preserves the existing five-frame/four-batch profile. **Verify Full Category
+Traversal** uses a separately named upper bound of 80 processed frames and 79 scroll batches. Both
+profiles retain the calibrated 21-notch batches, foreground checks, stabilization, bounded
+no-movement recovery, F8 cancellation, capture guard, and single-run ownership. The larger limits
+are safety ceilings, not estimates of category length.
+
+Both modes use the same `AchievementCategoryCrawler`. They require a positively detected top on
+the starting frame and a positively identified category signature on every processed frame. A
+missing, ambiguous, or changed category signature stops safely. Unsupported scrollbar resolutions
+continue to fail closed. Neither mode changes category, invokes exact-title search, claims rewards,
+imports prior progress, mutates trusted IDs, saves scanner state, or exports results.
+
+Traversal completeness and recognition coverage are separate outcomes. `Complete` still requires
+two consecutive calibrated bottom-position observations around a bounded downward batch, a stable
+post-scroll viewport, stable row layout, a recognizable final canonical row, and no contradictory
+motion or screen evidence. Recognition coverage is sufficient only when that traversal is complete
+and there are no unresolved observations, ambiguous title groups, conflicting canonical rows,
+partial/uncertain rows never recovered in a complete view, or movement intervals lacking verified
+canonical-row overlap. A complete traversal with imperfect recognition remains diagnostic evidence;
+it does not authorize hidden-absence inference.
+
+The terminal report names the selected mode and separately reports top evidence, bottom-position
+evidence, final viewport stability, traversal completeness, recognition coverage, requested input,
+confirmed wheel events, measured visual/row displacement, overlap, movement gaps, resolved and
+unresolved rows, ambiguity/conflict counts, partial recovery, elapsed time, and the stop reason.
+Progress remains bounded to the existing companion fields and raw screenshots are never retained.
+
+Manual full-category validation procedure (user-operated; not performed by automated work):
+
+1. Start Genshin manually in windowed Keyboard/Mouse mode and open the ordinary Achievements list.
+2. Select one category and scroll its right-hand list fully to the top; leave search and dialogs closed.
+3. In Inventory Kamera, select Achievements, click **Test Bulk Scrolling**, choose **Verify Full
+   Category Traversal**, review the longer-run/read-only warning, and start the diagnostic.
+4. Confirm the first reportable frame has verified top and category evidence. If not, stop and retain
+   the `Incomplete`/`Failed` diagnostics rather than retrying blindly.
+5. Observe that each batch requests 21 wheel events while measured viewport and row displacement are
+   reported separately. Confirm successive frames preserve recognizable overlapping rows.
+6. Allow the run to reach a terminal result, or press F8 during settling/between batches to verify a
+   `Cancelled` result with prior observations retained and no later input.
+7. For `Complete`, verify the report shows two-frame bottom-position evidence, a stable final
+   viewport, recognizable final-row evidence, and no category/movement contradiction.
+8. Review recognition coverage separately. Any unresolved, ambiguous, conflicting, unrecovered
+   partial, or movement-gap count must keep coverage insufficient even if traversal is complete.
+9. Confirm no achievement progress, import state, reward, GOOD file, or Toolkit export changed.
+
+Phase 7C remains blocked until the full traversal procedure is reviewed on representative short and
+long categories, cancellation/foreground failure is confirmed safe, overlap and bottom proof are
+consistent, recognition gaps are understood, and supported resolutions/categories have adequate
+live calibration. Fast Scan is not production-ready.
+
+The first 1920x1080 full-traversal attempt reached a stable final viewport after 20 frames and 19
+batches, but exposed a bottom-endpoint mapping defect: the high-confidence live thumb was
+y=854..966 while the 1919x1079 measured endpoint y=853..967 normalized to y=854..968. The earlier
+minimum predicate normalized its lower threshold to y=967 and rejected the observed lower edge by
+one pixel. Bottom classification now requires both thumb endpoints to remain within a bounded
+plus-or-minus two-pixel tolerance around the resolution-normalized measured endpoint. This admits
+the demonstrated rendering variation while rejecting nearby positions outside that endpoint box;
+confidence, plausible height, repeated bottom frames, stable post-scroll viewport/layout, final-row
+recognition, and category continuity remain mandatory. A repeat live run is still required.
 
 ### Later Phase 7 slices (not implemented)
 

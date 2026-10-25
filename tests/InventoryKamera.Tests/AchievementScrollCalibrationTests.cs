@@ -117,6 +117,82 @@ namespace InventoryKamera.Tests
         }
 
         [Theory]
+        [InlineData(1919, 1079, 853, 967, 853, 967)]
+        [InlineData(1920, 1080, 854, 968, 854, 968)]
+        public void ScrollbarEvidence_ExactCalibratedBottomNormalizesAtBothSupportedSizes(
+            int width, int height, int thumbTop, int thumbBottom,
+            int expectedTop, int expectedBottom)
+        {
+            using Bitmap frame = ScrollbarFrame(width, height, (thumbTop, thumbBottom));
+
+            AchievementScrollbarEvidence evidence =
+                AchievementCategoryFrameEvidenceDetector.AnalyzeScrollbar(frame);
+
+            Assert.True(evidence.Resolved, evidence.Diagnostics);
+            Assert.True(evidence.BottomAtExtent, evidence.Diagnostics);
+            Assert.Equal(1.0, evidence.NormalizedPosition);
+            Assert.Equal(expectedTop, evidence.ExpectedBottomTop);
+            Assert.Equal(expectedBottom, evidence.ExpectedBottomBottom);
+            Assert.Equal(2, evidence.BottomTolerance);
+            Assert.Contains($"bottomEndpointExpected={expectedTop}-{expectedBottom}",
+                evidence.Diagnostics);
+            Assert.Contains("bottomEndpointTolerance=2px", evidence.Diagnostics);
+        }
+
+        [Fact]
+        public void ScrollbarEvidence_Live854To966EndpointIsCalibratedBottom()
+        {
+            using Bitmap frame = ScrollbarFrame(1920, 1080, (854, 966));
+
+            AchievementScrollbarEvidence evidence =
+                AchievementCategoryFrameEvidenceDetector.AnalyzeScrollbar(frame);
+
+            Assert.True(evidence.Resolved, evidence.Diagnostics);
+            Assert.True(evidence.BottomAtExtent, evidence.Diagnostics);
+            Assert.InRange(evidence.NormalizedPosition.Value, 0.9970, 0.9974);
+            Assert.Equal("none", evidence.BottomRejection);
+            Assert.Contains("scrollbarThumb=854-966", evidence.Diagnostics);
+            Assert.Contains("bottomEndpointExpected=854-968", evidence.Diagnostics);
+        }
+
+        [Theory]
+        [InlineData(852, 966)]
+        [InlineData(854, 968)]
+        [InlineData(851, 965)]
+        [InlineData(855, 969)]
+        public void ScrollbarEvidence_OneAndTwoPixelBottomEndpointVariationIsAccepted(
+            int thumbTop, int thumbBottom)
+        {
+            using Bitmap frame = ScrollbarFrame(1919, 1079, (thumbTop, thumbBottom));
+
+            AchievementScrollbarEvidence evidence =
+                AchievementCategoryFrameEvidenceDetector.AnalyzeScrollbar(frame);
+
+            Assert.True(evidence.Resolved, evidence.Diagnostics);
+            Assert.True(evidence.BottomAtExtent, evidence.Diagnostics);
+        }
+
+        [Theory]
+        [InlineData(850, 964)]
+        [InlineData(850, 966)]
+        [InlineData(853, 964)]
+        [InlineData(849, 963)]
+        [InlineData(840, 954)]
+        public void ScrollbarEvidence_NearbyButUncalibratedPositionsAreNotBottom(
+            int thumbTop, int thumbBottom)
+        {
+            using Bitmap frame = ScrollbarFrame(1919, 1079, (thumbTop, thumbBottom));
+
+            AchievementScrollbarEvidence evidence =
+                AchievementCategoryFrameEvidenceDetector.AnalyzeScrollbar(frame);
+
+            Assert.True(evidence.Resolved, evidence.Diagnostics);
+            Assert.False(evidence.BottomAtExtent, evidence.Diagnostics);
+            Assert.Contains("thumb-not-at-calibrated-bottom", evidence.BottomRejection);
+            Assert.Contains("tolerance=2", evidence.BottomRejection);
+        }
+
+        [Theory]
         [InlineData(148, 262, true, false)]
         [InlineData(150, 264, true, false)]
         [InlineData(500, 614, false, false)]

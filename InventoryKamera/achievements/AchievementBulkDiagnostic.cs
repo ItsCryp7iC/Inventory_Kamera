@@ -9,28 +9,50 @@ using System.Threading;
 
 namespace InventoryKamera
 {
+    internal enum AchievementBulkDiagnosticMode
+    {
+        Short,
+        FullTraversal,
+    }
+
     internal sealed class AchievementBulkDiagnosticOptions
     {
         internal const int DefaultMaximumCapturedFrames = 5;
         internal const int DefaultMaximumScrollBatches = 4;
-        internal static AchievementBulkDiagnosticOptions Default { get; } = new();
+        internal const int FullTraversalMaximumCapturedFrames = 80;
+        internal const int FullTraversalMaximumScrollBatches = 79;
+        internal static AchievementBulkDiagnosticOptions ShortProfile { get; } = new(
+            AchievementBulkDiagnosticMode.Short,
+            DefaultMaximumCapturedFrames,
+            DefaultMaximumScrollBatches);
+        internal static AchievementBulkDiagnosticOptions FullTraversalProfile { get; } = new(
+            AchievementBulkDiagnosticMode.FullTraversal,
+            FullTraversalMaximumCapturedFrames,
+            FullTraversalMaximumScrollBatches);
+        internal static AchievementBulkDiagnosticOptions Default => ShortProfile;
 
         internal AchievementBulkDiagnosticOptions(
+            AchievementBulkDiagnosticMode mode = AchievementBulkDiagnosticMode.Short,
             int maximumCapturedFrames = DefaultMaximumCapturedFrames,
             int maximumScrollBatches = DefaultMaximumScrollBatches,
             int wheelNotchesPerBatch = 21)
         {
-            if (maximumCapturedFrames < 1 || maximumCapturedFrames > 6)
+            if (!Enum.IsDefined(mode))
+                throw new ArgumentOutOfRangeException(nameof(mode));
+            if (maximumCapturedFrames < 1 || maximumCapturedFrames > FullTraversalMaximumCapturedFrames)
                 throw new ArgumentOutOfRangeException(nameof(maximumCapturedFrames));
-            if (maximumScrollBatches < 1 || maximumScrollBatches > 5)
+            if (maximumScrollBatches < 1 || maximumScrollBatches > FullTraversalMaximumScrollBatches ||
+                maximumScrollBatches >= maximumCapturedFrames)
                 throw new ArgumentOutOfRangeException(nameof(maximumScrollBatches));
             if (wheelNotchesPerBatch < 1 || wheelNotchesPerBatch > 24)
                 throw new ArgumentOutOfRangeException(nameof(wheelNotchesPerBatch));
+            Mode = mode;
             MaximumCapturedFrames = maximumCapturedFrames;
             MaximumScrollBatches = maximumScrollBatches;
             WheelNotchesPerBatch = wheelNotchesPerBatch;
         }
 
+        internal AchievementBulkDiagnosticMode Mode { get; }
         internal int MaximumCapturedFrames { get; }
         internal int MaximumScrollBatches { get; }
         internal int WheelNotchesPerBatch { get; }
@@ -43,19 +65,24 @@ namespace InventoryKamera
 
     internal sealed class AchievementBulkDiagnosticResult
     {
-        internal AchievementBulkDiagnosticResult(AchievementCategoryCrawlResult crawlResult)
+        internal AchievementBulkDiagnosticResult(AchievementCategoryCrawlResult crawlResult,
+            AchievementBulkDiagnosticMode mode = AchievementBulkDiagnosticMode.Short)
         {
             CrawlResult = crawlResult ?? throw new ArgumentNullException(nameof(crawlResult));
+            Mode = mode;
             State = crawlResult.State;
             Reason = crawlResult.Reason;
         }
 
-        internal AchievementBulkDiagnosticResult(AchievementCategoryCrawlState state, string reason)
+        internal AchievementBulkDiagnosticResult(AchievementCategoryCrawlState state, string reason,
+            AchievementBulkDiagnosticMode mode = AchievementBulkDiagnosticMode.Short)
         {
+            Mode = mode;
             State = state;
             Reason = reason ?? string.Empty;
         }
 
+        internal AchievementBulkDiagnosticMode Mode { get; }
         internal AchievementCategoryCrawlResult CrawlResult { get; }
         internal AchievementCategoryCrawlState State { get; }
         internal string Reason { get; }
@@ -64,6 +91,10 @@ namespace InventoryKamera
             .Select(frame => frame.CategorySignature)
             .FirstOrDefault() ?? string.Empty;
         internal bool HasBottomProof => CrawlResult?.IsComplete == true;
+        internal bool HasBottomPositionEvidence => CrawlResult?.FrameObservations
+            .TakeLast(2).Count(frame => frame.BottomAtExtent) == 2;
+        internal bool RecognitionCoverageSufficient =>
+            CrawlResult?.RecognitionCoverageSufficient == true;
     }
 
     /// <summary>
@@ -74,14 +105,18 @@ namespace InventoryKamera
     {
         private readonly IGameScreenCapture screenCapture;
         private readonly IAchievementCategoryCrawler crawler;
+        private readonly AchievementBulkDiagnosticMode mode;
         private int active;
 
         internal AchievementBulkDiagnosticRunner(
             IGameScreenCapture screenCapture,
-            IAchievementCategoryCrawler crawler)
+            IAchievementCategoryCrawler crawler,
+            AchievementBulkDiagnosticMode mode = AchievementBulkDiagnosticMode.Short)
         {
             this.screenCapture = screenCapture ?? throw new ArgumentNullException(nameof(screenCapture));
             this.crawler = crawler ?? throw new ArgumentNullException(nameof(crawler));
+            if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+            this.mode = mode;
         }
 
         internal bool IsActive => Volatile.Read(ref active) != 0;
@@ -92,7 +127,7 @@ namespace InventoryKamera
         {
             if (Interlocked.CompareExchange(ref active, 1, 0) != 0)
                 return new AchievementBulkDiagnosticResult(AchievementCategoryCrawlState.Failed,
-                    "A bulk-scrolling diagnostic is already active.");
+                    "A bulk-scrolling diagnostic is already active.", mode);
 
             try
             {
@@ -102,7 +137,7 @@ namespace InventoryKamera
                 capture.Stop();
                 if (startingFrame == null)
                     return new AchievementBulkDiagnosticResult(AchievementCategoryCrawlState.Failed,
-                        "The initial Genshin capture returned no image.");
+                        "The initial Genshin capture returned no image.", mode);
                 cancellationToken.ThrowIfCancellationRequested();
 
                 AchievementCategoryCrawlResult result = crawler.Crawl(
@@ -113,17 +148,17 @@ namespace InventoryKamera
                     cancellationToken,
                     progress,
                     capture.Elapsed);
-                return new AchievementBulkDiagnosticResult(result);
+                return new AchievementBulkDiagnosticResult(result, mode);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return new AchievementBulkDiagnosticResult(AchievementCategoryCrawlState.Cancelled,
-                    "The bulk-scrolling diagnostic was cancelled before crawler evidence was available.");
+                    "The bulk-scrolling diagnostic was cancelled before crawler evidence was available.", mode);
             }
             catch (Exception ex)
             {
                 return new AchievementBulkDiagnosticResult(AchievementCategoryCrawlState.Failed,
-                    $"The bulk-scrolling diagnostic failed: {ex.GetType().Name}: {ex.Message}");
+                    $"The bulk-scrolling diagnostic failed: {ex.GetType().Name}: {ex.Message}", mode);
             }
             finally
             {
@@ -163,8 +198,10 @@ namespace InventoryKamera
                 : $"Scrollbar: top={frame.TopAtExtent}, bottom={frame.BottomAtExtent}";
             string detected = frame == null ? "unknown" : frame.DetectedRows.ToString(CultureInfo.InvariantCulture);
             return $"{input}\n{movement}\n{extent}\nDetected in current frame: {detected}\nRows: {progress.UniqueIdentifiedRows} unique, " +
-                $"{progress.UnresolvedObservations} unresolved, {progress.RepeatedObservations} repeated, " +
-                $"{progress.PartialRowsRecovered} partial recovered; state={progress.ScrollState}";
+                $"{progress.UnresolvedObservations} unresolved, {progress.AmbiguousGroups} ambiguous, " +
+                $"{progress.ConflictingRows} conflicting, {progress.RepeatedObservations} repeated, " +
+                $"{progress.PartialRowsRecovered} partial recovered, {progress.PartialRowsOutstanding} partial outstanding; " +
+                $"movement gaps={progress.UnobservedMovementGaps}; state={progress.ScrollState}";
         }
 
         internal static string BuildSummary(AchievementBulkDiagnosticResult diagnostic)
@@ -172,7 +209,8 @@ namespace InventoryKamera
             if (diagnostic == null) return "No bulk-scrolling diagnostic result is available.";
             AchievementCategoryCrawlResult result = diagnostic.CrawlResult;
             if (result == null)
-                return $"Category: not verified\nState: {diagnostic.State}\nReason: {diagnostic.Reason}";
+                return $"Diagnostic mode: {ModeName(diagnostic.Mode)}\nCategory: not verified\n" +
+                    $"State: {diagnostic.State}\nReason: {diagnostic.Reason}";
 
             int requestedNotches = result.ScrollObservations.Sum(value => value.RequestedNotches);
             int requestedDelta = result.ScrollObservations.Sum(value => value.RequestedLogicalWheelDelta);
@@ -185,6 +223,7 @@ namespace InventoryKamera
                 .Select(value => (int)Math.Round(value.ObservedRowDisplacementPixels.Value)));
             AchievementCategoryFrameObservation last = result.FrameObservations.LastOrDefault();
             var builder = new StringBuilder(720);
+            builder.AppendLine($"Diagnostic mode: {ModeName(diagnostic.Mode)}");
             builder.AppendLine($"Category: {(diagnostic.CategorySignature.Length > 0 ? diagnostic.CategorySignature : "not verified")}");
             builder.AppendLine($"State: {result.State}");
             builder.AppendLine($"Frames captured: {result.ProcessedFrames}");
@@ -195,9 +234,17 @@ namespace InventoryKamera
             builder.AppendLine($"Observed row displacement by batch: {rows}");
             builder.AppendLine($"Latest scrollbar evidence: top={last?.TopAtExtent == true}, bottom={last?.BottomAtExtent == true}");
             builder.AppendLine($"Latest frame evidence: {last?.EvidenceDiagnostics ?? "unavailable"}");
-            builder.AppendLine($"Bottom proof: {(result.IsComplete ? result.CompletenessEvidence : "not established")}");
-            builder.AppendLine($"Rows: {result.IdentifiedRows.Count} unique identified, {result.UnresolvedRows.Count} unresolved, {result.ConflictingRows.Count} conflicting");
-            builder.AppendLine($"Repeated observations: {result.RepeatedObservations}; partial rows recovered: {result.PartialRowsRecovered}");
+            builder.AppendLine($"Positive top evidence: {result.FrameObservations.FirstOrDefault()?.TopAtExtent == true}");
+            builder.AppendLine($"Positive bottom-position evidence: {diagnostic.HasBottomPositionEvidence}");
+            builder.AppendLine($"Stable final viewport: {result.ScrollObservations.LastOrDefault()?.ViewportStable == true}");
+            builder.AppendLine($"Traversal complete: {(result.IsComplete ? "yes" : "no")}" +
+                (result.IsComplete ? $" - {result.CompletenessEvidence}" : string.Empty));
+            builder.AppendLine($"Recognition coverage sufficient: {(result.RecognitionCoverageSufficient ? "yes" : "no")}");
+            builder.AppendLine($"Rows: {result.IdentifiedRows.Count} unique identified, {result.UnresolvedRows.Count} unresolved, " +
+                $"{result.AmbiguousGroupCount} ambiguous groups, {result.ConflictingRows.Count} conflicting");
+            builder.AppendLine($"Repeated observations: {result.RepeatedObservations}; partial rows recovered: {result.PartialRowsRecovered}; " +
+                $"partial rows outstanding: {result.PartialRowsOutstanding}");
+            builder.AppendLine($"Frame overlap: {result.OverlapVerifiedScrolls} batches verified; unobserved movement gaps: {result.UnobservedMovementGaps}");
             builder.AppendLine($"Traversal state: {result.FinalScrollState}");
             builder.AppendLine($"Elapsed: {result.Timing.Total.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture)} ms");
             builder.AppendLine($"Reason: {result.Reason}");
@@ -211,6 +258,11 @@ namespace InventoryKamera
                 ? "not measured"
                 : string.Join(", ", measurements.Select(value => value.ToString(CultureInfo.InvariantCulture) + "px"));
         }
+
+        internal static string ModeName(AchievementBulkDiagnosticMode mode) =>
+            mode == AchievementBulkDiagnosticMode.FullTraversal
+                ? "Verify Full Category Traversal"
+                : "Test Bulk Scrolling";
     }
 
     internal static class AchievementBulkDiagnosticUiPolicy

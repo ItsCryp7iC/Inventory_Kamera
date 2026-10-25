@@ -793,9 +793,11 @@ namespace InventoryKamera
                 return;
             }
 
+            AchievementBulkDiagnosticMode diagnosticMode;
             using (var dialog = new AchievementBulkDiagnosticStartForm())
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                diagnosticMode = dialog.SelectedMode;
             }
             if (!AchievementPreflightChecksPass()) return;
 
@@ -817,7 +819,7 @@ namespace InventoryKamera
             Navigation.CaptureOverlayGuard = scanOverlay;
             scanOverlay.ShowWaitingForAchievementScreen();
             scanOverlay.ShowAchievementProgress(
-                "Bulk diagnostic preparing",
+                AchievementBulkDiagnosticReportBuilder.ModeName(diagnosticMode),
                 "One selected category; no progress will be saved");
             scanViewModel.SetProgramStatus(AchievementBulkDiagnosticUiPolicy.RunningStatus);
 
@@ -853,13 +855,17 @@ namespace InventoryKamera
                         scanRun.Session.CancellationToken);
                     AchievementBulkDiagnosticRunner runner =
                         AchievementScannerProductionFactory.CreateBulkDiagnostic(
-                            achievementCatalogProvider, runtime);
+                            achievementCatalogProvider, runtime,
+                            diagnosticMode == AchievementBulkDiagnosticMode.FullTraversal
+                                ? AchievementBulkDiagnosticOptions.FullTraversalProfile
+                                : AchievementBulkDiagnosticOptions.ShortProfile);
                     diagnostic = runner.Run(
                         scanRun.Session.CancellationToken,
-                        new MainFormBulkDiagnosticProgressReporter(this));
+                        new MainFormBulkDiagnosticProgressReporter(this, diagnosticMode));
 
                     Logger.Info(
-                        "Achievement bulk diagnostic finished: state={0}; category={1}; reason={2}",
+                        "Achievement bulk diagnostic finished: mode={0}; state={1}; category={2}; reason={3}",
+                        diagnostic.Mode,
                         diagnostic.State,
                         diagnostic.CategorySignature.Length > 0
                             ? diagnostic.CategorySignature
@@ -921,10 +927,13 @@ namespace InventoryKamera
             IProgress<AchievementCategoryCrawlProgress>
         {
             private readonly MainForm form;
+            private readonly AchievementBulkDiagnosticMode mode;
 
-            internal MainFormBulkDiagnosticProgressReporter(MainForm form)
+            internal MainFormBulkDiagnosticProgressReporter(MainForm form,
+                AchievementBulkDiagnosticMode mode)
             {
                 this.form = form;
+                this.mode = mode;
             }
 
             public void Report(AchievementCategoryCrawlProgress progress)
@@ -932,6 +941,7 @@ namespace InventoryKamera
                 form.scanViewModel.SetProgramStatus(
                     AchievementBulkDiagnosticUiPolicy.RunningStatus);
                 form.scanOverlay.ShowAchievementProgress(
+                    AchievementBulkDiagnosticReportBuilder.ModeName(mode) + "\n" +
                     AchievementBulkDiagnosticReportBuilder.BuildProgress(progress),
                     AchievementBulkDiagnosticReportBuilder.BuildProgressDetails(progress));
             }

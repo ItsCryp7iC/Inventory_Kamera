@@ -317,15 +317,17 @@ namespace InventoryKamera
     internal sealed class AchievementViewportMotion
     {
         private AchievementViewportMotion(AchievementViewportComparison visual,
-            double? rowDisplacementPixels, bool contradictory)
+            double? rowDisplacementPixels, int sharedCanonicalRows, bool contradictory)
         {
             Visual = visual;
             RowDisplacementPixels = rowDisplacementPixels;
+            SharedCanonicalRows = sharedCanonicalRows;
             Contradictory = contradictory;
         }
 
         internal AchievementViewportComparison Visual { get; }
         internal double? RowDisplacementPixels { get; }
+        internal int SharedCanonicalRows { get; }
         internal bool Contradictory { get; }
         internal bool Stable => !Contradictory && Visual.Stable &&
             (!RowDisplacementPixels.HasValue || Math.Abs(RowDisplacementPixels.Value) <= 1.0);
@@ -363,14 +365,15 @@ namespace InventoryKamera
                  (visual.ReliableMovement &&
                   (Math.Sign(rowMovement.Value) != Math.Sign(visual.DisplacementPixels) ||
                    Math.Abs(rowMovement.Value - visual.DisplacementPixels) > 4.0)));
-            return new AchievementViewportMotion(visual, rowMovement, contradictory);
+            return new AchievementViewportMotion(
+                visual, rowMovement, rowMovements.Length, contradictory);
         }
 
         public override string ToString() =>
             $"visualShift={Visual.DisplacementPixels}px; visualAlignedDifference={Visual.AlignedMeanDifference:0.000}; " +
             $"visualZeroDifference={Visual.ZeroShiftMeanDifference:0.000}; rowShift=" +
             (RowDisplacementPixels.HasValue ? $"{RowDisplacementPixels.Value:0.0}px" : "unavailable") +
-            $"; contradictory={Contradictory}";
+            $"; sharedCanonicalRows={SharedCanonicalRows}; contradictory={Contradictory}";
     }
 
     internal sealed class AchievementRowFrameObservation
@@ -422,7 +425,9 @@ namespace InventoryKamera
     {
         internal AchievementCategoryCrawlProgress(int frameCount, int scrollActions,
             int uniqueIdentifiedRows, int unresolvedObservations,
+            int ambiguousGroups, int conflictingRows,
             int repeatedObservations, int partialRowsRecovered,
+            int partialRowsOutstanding, int unobservedMovementGaps,
             AchievementScrollProgressState scrollState,
             AchievementCategoryFrameObservation frameObservation = null,
             AchievementScrollObservation scrollObservation = null)
@@ -431,8 +436,12 @@ namespace InventoryKamera
             ScrollActions = scrollActions;
             UniqueIdentifiedRows = uniqueIdentifiedRows;
             UnresolvedObservations = unresolvedObservations;
+            AmbiguousGroups = ambiguousGroups;
+            ConflictingRows = conflictingRows;
             RepeatedObservations = repeatedObservations;
             PartialRowsRecovered = partialRowsRecovered;
+            PartialRowsOutstanding = partialRowsOutstanding;
+            UnobservedMovementGaps = unobservedMovementGaps;
             ScrollState = scrollState;
             FrameObservation = frameObservation;
             ScrollObservation = scrollObservation;
@@ -442,8 +451,12 @@ namespace InventoryKamera
         internal int ScrollActions { get; }
         internal int UniqueIdentifiedRows { get; }
         internal int UnresolvedObservations { get; }
+        internal int AmbiguousGroups { get; }
+        internal int ConflictingRows { get; }
         internal int RepeatedObservations { get; }
         internal int PartialRowsRecovered { get; }
+        internal int PartialRowsOutstanding { get; }
+        internal int UnobservedMovementGaps { get; }
         internal AchievementScrollProgressState ScrollState { get; }
         internal AchievementCategoryFrameObservation FrameObservation { get; }
         internal AchievementScrollObservation ScrollObservation { get; }
@@ -517,6 +530,9 @@ namespace InventoryKamera
             MovementVerified = motion?.Advanced == true;
             ViewportStable = motion?.Stable == true;
             Contradictory = motion?.Contradictory == true;
+            SharedCanonicalRows = motion?.SharedCanonicalRows ?? 0;
+            OverlapVerified = motion != null &&
+                (motion.Stable || motion.SharedCanonicalRows > 0);
             WheelEventsSent = command?.WheelEventsSent ?? 0;
             InputSucceeded = command?.Succeeded ?? true;
             InputCancelled = command?.Cancelled == true;
@@ -532,6 +548,8 @@ namespace InventoryKamera
         internal bool MovementVerified { get; }
         internal bool ViewportStable { get; }
         internal bool Contradictory { get; }
+        internal int SharedCanonicalRows { get; }
+        internal bool OverlapVerified { get; }
         internal int WheelEventsSent { get; }
         internal bool InputSucceeded { get; }
         internal bool InputCancelled { get; }
@@ -571,6 +589,14 @@ namespace InventoryKamera
                 .Where(row => !row.Resolved).ToArray());
             ConflictingRows = new ReadOnlyCollection<AchievementObservedRow>(ObservedRows
                 .Where(row => row.Conflicting).ToArray());
+            AmbiguousRows = new ReadOnlyCollection<AchievementObservedRow>(ObservedRows
+                .Where(row => row.Observations.Any(value =>
+                    value.Row.IdentityState == AchievementIdentityState.Ambiguous)).ToArray());
+            AmbiguousGroupCount = AmbiguousRows
+                .Select(row => AmbiguousGroupKey(row.SelectedObservation ??
+                    row.Observations.Select(value => value.Row).FirstOrDefault()))
+                .Distinct(StringComparer.Ordinal)
+                .Count();
             CompleteRowObservations = ObservedRows.Sum(row => row.Observations.Count(value =>
                 value.Row.Visibility == AchievementVisibleRowVisibility.Complete));
             PartialRowObservations = ObservedRows.Sum(row => row.Observations.Count(value =>
@@ -581,6 +607,12 @@ namespace InventoryKamera
                 .Sum(row => Math.Max(0, row.ObservationCount - 1));
             PartialRowsRecovered = ObservedRows.Count(row => row.Canonical && row.EverFullyVisible &&
                 row.Observations.Any(value => value.Row.Visibility != AchievementVisibleRowVisibility.Complete));
+            PartialRowsOutstanding = ObservedRows.Count(row => !row.EverFullyVisible &&
+                row.Observations.Any(value =>
+                    value.Row.Visibility != AchievementVisibleRowVisibility.Complete));
+            OverlapVerifiedScrolls = ScrollObservations.Count(value => value.OverlapVerified);
+            UnobservedMovementGaps = ScrollObservations.Count(value =>
+                value.MovementVerified && !value.OverlapVerified);
             FinalScrollState = finalScrollState;
             Reason = reason ?? string.Empty;
             Timing = timing ?? throw new ArgumentNullException(nameof(timing));
@@ -599,15 +631,28 @@ namespace InventoryKamera
         internal IReadOnlyList<AchievementObservedRow> IdentifiedRows { get; }
         internal IReadOnlyList<AchievementObservedRow> UnresolvedRows { get; }
         internal IReadOnlyList<AchievementObservedRow> ConflictingRows { get; }
+        internal IReadOnlyList<AchievementObservedRow> AmbiguousRows { get; }
+        internal int AmbiguousGroupCount { get; }
         internal int CompleteRowObservations { get; }
         internal int PartialRowObservations { get; }
         internal int UncertainRowObservations { get; }
         internal int RepeatedObservations { get; }
         internal int PartialRowsRecovered { get; }
+        internal int PartialRowsOutstanding { get; }
+        internal int OverlapVerifiedScrolls { get; }
+        internal int UnobservedMovementGaps { get; }
+        internal bool RecognitionCoverageSufficient => IsComplete &&
+            UnresolvedRows.Count == 0 && AmbiguousRows.Count == 0 &&
+            ConflictingRows.Count == 0 && PartialRowsOutstanding == 0 &&
+            UnobservedMovementGaps == 0;
         internal AchievementScrollProgressState FinalScrollState { get; }
         internal string Reason { get; }
         internal AchievementCategoryCrawlTiming Timing { get; }
         internal string Diagnostics { get; }
+
+        private static string AmbiguousGroupKey(AchievementVisibleRow row) => row == null
+            ? "unknown"
+            : row.NormalizedTitle + ":" + string.Join(",", row.CandidateIds.OrderBy(value => value));
     }
 
     internal interface IAchievementCategoryCrawler
@@ -694,7 +739,7 @@ namespace InventoryKamera
                         "The starting frame exceeded the uncertain-frame safety limit.",
                         "limit=consecutive-uncertain-frames");
                 progress?.Report(Progress(aggregate, frames, scrolls, scrollState,
-                    frameObservations[^1], null));
+                    frameObservations[^1], null, scrollObservations));
 
                 while (frames < options.MaximumCapturedFrames && scrolls < options.MaximumScrollActions)
                 {
@@ -800,7 +845,7 @@ namespace InventoryKamera
                         {
                             scrollState = AchievementScrollProgressState.ReachedBottom;
                             progress?.Report(Progress(aggregate, frames, scrolls, scrollState,
-                                frameObservations[^1], scrollObservation));
+                                frameObservations[^1], scrollObservation, scrollObservations));
                             return Finish(AchievementCategoryCrawlState.Complete,
                                 "The right-list bottom extent, stable viewport, stable row layout, and recognizable final-row evidence agreed after a bounded scroll.",
                                 $"bottomAtExtent=true; viewportStable=true; layoutStable=true; finalRowRecognized=true; fingerprint={current.Fingerprint}");
@@ -833,7 +878,7 @@ namespace InventoryKamera
                         previous = current;
                         cancellationToken.ThrowIfCancellationRequested();
                         progress?.Report(Progress(aggregate, frames, scrolls, scrollState,
-                            frameObservations[^1], scrollObservation));
+                            frameObservations[^1], scrollObservation, scrollObservations));
                     }
                     finally
                     {
@@ -873,6 +918,9 @@ namespace InventoryKamera
                     scrollingTime, settlingTime, deduplicationTime, total.Elapsed);
                 diagnostics.Add($"state={state}; frames={frames}; scrolls={scrolls}; uniqueIdentified={rows.Count(row => row.Resolved)}; " +
                     $"unresolved={rows.Count(row => !row.Resolved)}; repeated={rows.Where(row => row.Canonical).Sum(row => Math.Max(0, row.ObservationCount - 1))}; " +
+                    $"ambiguous={rows.Count(row => row.Observations.Any(value => value.Row.IdentityState == AchievementIdentityState.Ambiguous))}; " +
+                    $"conflicting={rows.Count(row => row.Conflicting)}; partialOutstanding={rows.Count(row => !row.EverFullyVisible && row.Observations.Any(value => value.Row.Visibility != AchievementVisibleRowVisibility.Complete))}; " +
+                    $"unobservedMovementGaps={scrollObservations.Count(value => value.MovementVerified && !value.OverlapVerified)}; " +
                     $"captureMs={captureTime.TotalMilliseconds:0.00}; processingMs={processingTime.TotalMilliseconds:0.00}; " +
                     $"scrollMs={scrollingTime.TotalMilliseconds:0.00}; settleMs={settlingTime.TotalMilliseconds:0.00}; " +
                     $"dedupMs={deduplicationTime.TotalMilliseconds:0.00}; totalMs={total.Elapsed.TotalMilliseconds:0.00}");
@@ -993,11 +1041,13 @@ namespace InventoryKamera
                     return false;
                 }
             }
-            else if (firstFrame && context.RequireVerifiedCategorySignature &&
+            else if (context.RequireVerifiedCategorySignature &&
                 !frame.Evidence.CategorySignatureVerified)
             {
                 state = AchievementCategoryCrawlState.Failed;
-                reason = "The selected Achievement category could not be positively verified in the starting frame.";
+                reason = firstFrame
+                    ? "The selected Achievement category could not be positively verified in the starting frame."
+                    : "The selected Achievement category could not be positively verified after scrolling.";
                 return false;
             }
             else if (frame.Evidence.CategorySignatureVerified)
@@ -1035,14 +1085,26 @@ namespace InventoryKamera
         private static AchievementCategoryCrawlProgress Progress(ObservationAccumulator aggregate,
             int frames, int scrolls, AchievementScrollProgressState state,
             AchievementCategoryFrameObservation frameObservation,
-            AchievementScrollObservation scrollObservation)
+            AchievementScrollObservation scrollObservation,
+            IEnumerable<AchievementScrollObservation> scrollObservations)
         {
             AchievementObservedRow[] rows = aggregate.Build();
+            AchievementScrollObservation[] movements =
+                (scrollObservations ?? Array.Empty<AchievementScrollObservation>()).ToArray();
             return new AchievementCategoryCrawlProgress(frames, scrolls,
                 rows.Count(row => row.Resolved), rows.Count(row => !row.Resolved),
+                rows.Where(row => row.Observations.Any(value =>
+                        value.Row.IdentityState == AchievementIdentityState.Ambiguous))
+                    .Select(row => (row.SelectedObservation ?? row.Observations[0].Row).NormalizedTitle + ":" +
+                        string.Join(",", (row.SelectedObservation ?? row.Observations[0].Row).CandidateIds.OrderBy(value => value)))
+                    .Distinct(StringComparer.Ordinal).Count(),
+                rows.Count(row => row.Conflicting),
                 rows.Where(row => row.Canonical).Sum(row => Math.Max(0, row.ObservationCount - 1)),
                 rows.Count(row => row.Canonical && row.EverFullyVisible &&
                     row.Observations.Any(value => value.Row.Visibility != AchievementVisibleRowVisibility.Complete)),
+                rows.Count(row => !row.EverFullyVisible && row.Observations.Any(value =>
+                    value.Row.Visibility != AchievementVisibleRowVisibility.Complete)),
+                movements.Count(value => value.MovementVerified && !value.OverlapVerified),
                 state, frameObservation, scrollObservation);
         }
 

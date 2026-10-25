@@ -101,7 +101,8 @@ namespace InventoryKamera
             return new AchievementBulkDiagnosticRunner(
                 runtime.ScreenCapture,
                 CreateCategoryCrawler(catalogProvider, runtime,
-                    diagnosticOptions.ToCrawlerOptions()));
+                    diagnosticOptions.ToCrawlerOptions()),
+                diagnosticOptions.Mode);
         }
 
         internal static AchievementScannerProductionComponents Create(

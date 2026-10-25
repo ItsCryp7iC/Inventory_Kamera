@@ -34,6 +34,9 @@ namespace InventoryKamera.Tests
             Assert.Equal(3, result.ProcessedFrames);
             Assert.Equal(2, result.ScrollActions);
             Assert.Contains("stable viewport", result.Reason);
+            Assert.True(result.RecognitionCoverageSufficient);
+            Assert.Equal(2, result.OverlapVerifiedScrolls);
+            Assert.Equal(0, result.UnobservedMovementGaps);
         }
 
         [Fact]
@@ -56,6 +59,8 @@ namespace InventoryKamera.Tests
             Assert.True(observed.EverFullyVisible);
             Assert.Equal(AchievementVisibleRowVisibility.Complete, observed.SelectedObservation.Visibility);
             Assert.Equal(1, result.PartialRowsRecovered);
+            Assert.Equal(0, result.PartialRowsOutstanding);
+            Assert.True(result.RecognitionCoverageSufficient);
         }
 
         [Fact]
@@ -74,6 +79,7 @@ namespace InventoryKamera.Tests
             Assert.Single(result.IdentifiedRows);
             Assert.Equal(2, result.UnresolvedRows.Count);
             Assert.Equal(3, result.IdentifiedRows[0].ObservationCount);
+            Assert.False(result.RecognitionCoverageSufficient);
         }
 
         [Fact]
@@ -118,6 +124,69 @@ namespace InventoryKamera.Tests
             Assert.Equal(2, result.IdentifiedRows.Count);
             Assert.Equal(4, result.UnresolvedRows.Count);
             Assert.DoesNotContain(result.IdentifiedRows, row => row.Key.Contains("let the wind lead"));
+            Assert.Equal(2, result.AmbiguousRows.Count);
+            Assert.Equal(1, result.AmbiguousGroupCount);
+            Assert.False(result.RecognitionCoverageSufficient);
+        }
+
+        [Fact]
+        public void CompleteTraversal_WithUnobservedMovementGap_ReportsCoverageInsufficient()
+        {
+            using Bitmap start = BandedImage(0);
+            using Bitmap moved = BandedImage(-60);
+            using Bitmap stable = BandedImage(-60);
+            AchievementCategoryCrawler crawler = Crawler(
+                new[] { Frame(Row(1)), Frame(Row(10)), Frame(Row(10)) },
+                new[] { moved, stable },
+                new[] { Evidence(top: true), Evidence(bottom: true), Evidence(bottom: true) });
+
+            AchievementCategoryCrawlResult result = crawler.Crawl(
+                Context(), start, CancellationToken.None);
+
+            Assert.Equal(AchievementCategoryCrawlState.Complete, result.State);
+            Assert.Equal(1, result.UnobservedMovementGaps);
+            Assert.False(result.ScrollObservations[0].OverlapVerified);
+            Assert.True(result.ScrollObservations[1].OverlapVerified);
+            Assert.False(result.RecognitionCoverageSufficient);
+        }
+
+        [Fact]
+        public void CompleteTraversal_WithPartialRowNeverRecovered_ReportsCoverageInsufficient()
+        {
+            AchievementVisibleRow partial = Row(10, AchievementVisibleRowVisibility.Partial);
+            using Bitmap start = Image(16);
+            using Bitmap stable = Image(16);
+            AchievementCategoryCrawler crawler = Crawler(
+                new[] { Frame(Row(1), partial, Row(20)), Frame(Row(1), partial, Row(20)) },
+                new[] { stable },
+                new[] { Evidence(top: true, bottom: true), Evidence(bottom: true) });
+
+            AchievementCategoryCrawlResult result = crawler.Crawl(
+                Context(), start, CancellationToken.None);
+
+            Assert.Equal(AchievementCategoryCrawlState.Complete, result.State);
+            Assert.Equal(1, result.PartialRowsOutstanding);
+            Assert.False(result.RecognitionCoverageSufficient);
+        }
+
+        [Fact]
+        public void BottomThumbWithoutStablePostScrollViewport_RemainsIncomplete()
+        {
+            using Bitmap start = BandedImage(0);
+            using Bitmap moved = BandedImage(-60);
+            AchievementCategoryCrawler crawler = Crawler(
+                new[] { Frame(Row(1)), Frame(Row(1, normalizedY: 0.15)) },
+                new[] { moved },
+                new[] { Evidence(top: true, bottom: true), Evidence(bottom: true) },
+                new AchievementCategoryCrawlOptions(maximumCapturedFrames: 2,
+                    scrollSettleMilliseconds: 0, maximumStabilizationCaptures: 1));
+
+            AchievementCategoryCrawlResult result = crawler.Crawl(
+                Context(), start, CancellationToken.None);
+
+            Assert.Equal(AchievementCategoryCrawlState.Incomplete, result.State);
+            Assert.False(Assert.Single(result.ScrollObservations).ViewportStable);
+            Assert.All(result.FrameObservations, frame => Assert.True(frame.BottomAtExtent));
         }
 
         [Fact]
@@ -153,6 +222,46 @@ namespace InventoryKamera.Tests
             Assert.Equal(AchievementCategoryCrawlState.Failed, result.State);
             Assert.Equal(AchievementScrollProgressState.LostScreen, result.FinalScrollState);
             Assert.Contains("signature", result.Reason);
+        }
+
+        [Fact]
+        public void RequiredCategorySignature_BecomingAmbiguousStopsTraversal()
+        {
+            using Bitmap start = Image(16);
+            using Bitmap moved = Image(64);
+            AchievementCategoryCrawler crawler = Crawler(
+                new[] { Frame(Row(1)), Frame(Row(1), Row(2)) },
+                new[] { moved },
+                new[] { Evidence(top: true, signature: "A"), Evidence() });
+
+            AchievementCategoryCrawlResult result = crawler.Crawl(
+                new AchievementCategoryCrawlContext("Category",
+                    requireVerifiedCategorySignature: true),
+                start,
+                CancellationToken.None);
+
+            Assert.Equal(AchievementCategoryCrawlState.Failed, result.State);
+            Assert.Equal(AchievementScrollProgressState.LostScreen, result.FinalScrollState);
+            Assert.Contains("could not be positively verified after scrolling", result.Reason);
+        }
+
+        [Fact]
+        public void RequiredCategorySignature_MissingAtStartStopsWithoutScrolling()
+        {
+            using Bitmap start = Image(16);
+            AchievementCategoryCrawler crawler = Crawler(
+                new[] { Frame(Row(1)) }, Array.Empty<Bitmap>(),
+                new[] { Evidence(top: true) });
+
+            AchievementCategoryCrawlResult result = crawler.Crawl(
+                new AchievementCategoryCrawlContext("Category",
+                    requireVerifiedCategorySignature: true),
+                start,
+                CancellationToken.None);
+
+            Assert.Equal(AchievementCategoryCrawlState.Failed, result.State);
+            Assert.Equal(0, result.ScrollActions);
+            Assert.Contains("starting frame", result.Reason);
         }
 
         [Theory]
@@ -276,6 +385,54 @@ namespace InventoryKamera.Tests
 
             Assert.Equal(AchievementCategoryCrawlState.Incomplete, result.State);
             Assert.Contains("limit", result.Reason);
+        }
+
+        [Fact]
+        public void FullTraversalProfile_LargeCategoryStopsAtEightyFrameLimit()
+        {
+            const int frameCount = AchievementBulkDiagnosticOptions.FullTraversalMaximumCapturedFrames;
+            var frames = Enumerable.Range(0, frameCount)
+                .Select(index => Frame(Row(1,
+                    normalizedY: (index & 1) == 0 ? 0.20 : 0.30)))
+                .ToArray();
+            var evidence = Enumerable.Range(0, frameCount)
+                .Select(index => Evidence(top: index == 0, signature: "A"))
+                .ToArray();
+            var captures = Enumerable.Range(1, frameCount - 1)
+                .Select(index => SmallImage((byte)((index & 1) == 0 ? 20 : 80)))
+                .ToArray();
+            using Bitmap start = SmallImage(20);
+            try
+            {
+                AchievementBulkDiagnosticOptions profile =
+                    AchievementBulkDiagnosticOptions.FullTraversalProfile;
+                var options = new AchievementCategoryCrawlOptions(
+                    maximumCapturedFrames: profile.MaximumCapturedFrames,
+                    maximumScrollActions: profile.MaximumScrollBatches,
+                    scrollSettleMilliseconds: 0,
+                    wheelNotchesPerBatch: profile.WheelNotchesPerBatch,
+                    maximumStabilizationCaptures: 1);
+                AchievementCategoryCrawler crawler = Crawler(
+                    frames,
+                    captures,
+                    evidence,
+                    options);
+
+                AchievementCategoryCrawlResult result = crawler.Crawl(
+                    new AchievementCategoryCrawlContext("Category",
+                        requireVerifiedCategorySignature: true),
+                    start,
+                    CancellationToken.None);
+
+                Assert.Equal(AchievementCategoryCrawlState.Incomplete, result.State);
+                Assert.Equal(80, result.ProcessedFrames);
+                Assert.Equal(79, result.ScrollActions);
+                Assert.Contains("maximum captured-frame limit", result.Reason);
+            }
+            finally
+            {
+                foreach (Bitmap capture in captures) capture.Dispose();
+            }
         }
 
         [Fact]
@@ -469,6 +626,31 @@ namespace InventoryKamera.Tests
         private static Bitmap Image(byte value)
         {
             var bitmap = new Bitmap(1919, 1079);
+            using Graphics graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.FromArgb(value, value, value));
+            return bitmap;
+        }
+
+        private static Bitmap BandedImage(int verticalOffset)
+        {
+            var bitmap = new Bitmap(1919, 1079);
+            using Graphics graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.Black);
+            Rectangle viewport = AchievementListRegions.For(bitmap.Size).RowViewport;
+            for (int y = viewport.Top - 200; y < viewport.Bottom + 200; y += 80)
+            {
+                using var brush = new SolidBrush(((y / 80) & 1) == 0
+                    ? Color.FromArgb(220, 220, 220)
+                    : Color.FromArgb(90, 90, 90));
+                graphics.FillRectangle(brush, viewport.Left, y + verticalOffset,
+                    viewport.Width, 24);
+            }
+            return bitmap;
+        }
+
+        private static Bitmap SmallImage(byte value)
+        {
+            var bitmap = new Bitmap(320, 180);
             using Graphics graphics = Graphics.FromImage(bitmap);
             graphics.Clear(Color.FromArgb(value, value, value));
             return bitmap;
