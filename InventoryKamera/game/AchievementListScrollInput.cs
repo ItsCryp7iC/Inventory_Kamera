@@ -47,6 +47,7 @@ namespace InventoryKamera.game
             AchievementListScrollRequest request,
             CancellationToken cancellationToken)
         {
+            int wheelEventsSent = 0;
             try
             {
                 if (request == null) throw new ArgumentNullException(nameof(request));
@@ -67,6 +68,7 @@ namespace InventoryKamera.game
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     pointerInput.ScrollWheel(request.WheelDeltaPerNotch, cancellationToken);
+                    wheelEventsSent++;
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 return new AchievementListScrollCommandResult(
@@ -76,15 +78,25 @@ namespace InventoryKamera.game
                     diagnostics: $"target=({targetX:0.000},{targetY:0.000}); " +
                         $"logicalNotches={request.NotchCount}; deltaPerNotch={request.WheelDeltaPerNotch}; " +
                         $"logicalDelta={request.LogicalWheelDelta}; provisionalTargetPixels={request.ProvisionalTargetDisplacementPixels}; " +
-                        "actualDisplacement=measured-from-post-scroll-frame");
+                        "actualDisplacement=measured-from-post-scroll-frame",
+                    wheelEventsSent: wheelEventsSent);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                throw;
+                var cancelled = new OperationCanceledException(
+                    "Achievement-list scrolling was cancelled.", cancellationToken);
+                cancelled.Data["AchievementWheelEventsSent"] = wheelEventsSent;
+                throw cancelled;
             }
             catch (Exception ex)
             {
-                return Failure($"Achievement-list scrolling failed: {ex.GetType().Name}: {ex.Message}");
+                string reason = $"Achievement-list scrolling failed: {ex.GetType().Name}: {ex.Message}";
+                return new AchievementListScrollCommandResult(
+                    succeeded: false,
+                    foregroundVerified: foregroundActivator.IsForeground,
+                    failureReason: reason,
+                    diagnostics: $"{reason}; wheelEventsSent={wheelEventsSent}",
+                    wheelEventsSent: wheelEventsSent);
             }
         }
 

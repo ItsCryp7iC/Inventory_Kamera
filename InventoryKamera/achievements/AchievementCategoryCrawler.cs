@@ -25,18 +25,21 @@ namespace InventoryKamera
         internal AchievementCategoryCrawlContext(
             string categoryName,
             string expectedCategorySignature = null,
-            bool knownTraversalOrigin = false)
+            bool knownTraversalOrigin = false,
+            bool requireVerifiedCategorySignature = false)
         {
             if (string.IsNullOrWhiteSpace(categoryName))
                 throw new ArgumentException("A category name is required.", nameof(categoryName));
             CategoryName = categoryName.Trim();
             ExpectedCategorySignature = expectedCategorySignature?.Trim() ?? string.Empty;
             KnownTraversalOrigin = knownTraversalOrigin;
+            RequireVerifiedCategorySignature = requireVerifiedCategorySignature;
         }
 
         internal string CategoryName { get; }
         internal string ExpectedCategorySignature { get; }
         internal bool KnownTraversalOrigin { get; }
+        internal bool RequireVerifiedCategorySignature { get; }
     }
 
     internal sealed class AchievementCategoryCrawlOptions
@@ -151,18 +154,24 @@ namespace InventoryKamera
             bool succeeded,
             bool foregroundVerified,
             string failureReason,
-            string diagnostics)
+            string diagnostics,
+            int wheelEventsSent = 0,
+            bool cancelled = false)
         {
             Succeeded = succeeded;
             ForegroundVerified = foregroundVerified;
             FailureReason = failureReason ?? string.Empty;
             Diagnostics = diagnostics ?? string.Empty;
+            WheelEventsSent = Math.Max(0, wheelEventsSent);
+            Cancelled = cancelled;
         }
 
         internal bool Succeeded { get; }
         internal bool ForegroundVerified { get; }
         internal string FailureReason { get; }
         internal string Diagnostics { get; }
+        internal int WheelEventsSent { get; }
+        internal bool Cancelled { get; }
     }
 
     internal sealed class AchievementListScrollRequest
@@ -413,20 +422,61 @@ namespace InventoryKamera
     {
         internal AchievementCategoryCrawlProgress(int frameCount, int scrollActions,
             int uniqueIdentifiedRows, int unresolvedObservations,
-            AchievementScrollProgressState scrollState)
+            int repeatedObservations, int partialRowsRecovered,
+            AchievementScrollProgressState scrollState,
+            AchievementCategoryFrameObservation frameObservation = null,
+            AchievementScrollObservation scrollObservation = null)
         {
             FrameCount = frameCount;
             ScrollActions = scrollActions;
             UniqueIdentifiedRows = uniqueIdentifiedRows;
             UnresolvedObservations = unresolvedObservations;
+            RepeatedObservations = repeatedObservations;
+            PartialRowsRecovered = partialRowsRecovered;
             ScrollState = scrollState;
+            FrameObservation = frameObservation;
+            ScrollObservation = scrollObservation;
         }
 
         internal int FrameCount { get; }
         internal int ScrollActions { get; }
         internal int UniqueIdentifiedRows { get; }
         internal int UnresolvedObservations { get; }
+        internal int RepeatedObservations { get; }
+        internal int PartialRowsRecovered { get; }
         internal AchievementScrollProgressState ScrollState { get; }
+        internal AchievementCategoryFrameObservation FrameObservation { get; }
+        internal AchievementScrollObservation ScrollObservation { get; }
+    }
+
+    /// <summary>
+    /// Bitmap-free evidence retained for diagnostic presentation. Raw captures never leave the
+    /// crawler's processing lifetime.
+    /// </summary>
+    internal sealed class AchievementCategoryFrameObservation
+    {
+        internal AchievementCategoryFrameObservation(int frameIndex,
+            AchievementScreenState screenState, int detectedRows,
+            AchievementCategoryFrameEvidence evidence)
+        {
+            FrameIndex = frameIndex;
+            ScreenState = screenState;
+            DetectedRows = detectedRows;
+            CategorySignature = evidence?.CategorySignature ?? string.Empty;
+            CategorySignatureVerified = evidence?.CategorySignatureVerified == true;
+            TopAtExtent = evidence?.TopAtExtent == true;
+            BottomAtExtent = evidence?.BottomAtExtent == true;
+            EvidenceDiagnostics = evidence?.Diagnostics ?? string.Empty;
+        }
+
+        internal int FrameIndex { get; }
+        internal AchievementScreenState ScreenState { get; }
+        internal int DetectedRows { get; }
+        internal string CategorySignature { get; }
+        internal bool CategorySignatureVerified { get; }
+        internal bool TopAtExtent { get; }
+        internal bool BottomAtExtent { get; }
+        internal string EvidenceDiagnostics { get; }
     }
 
     internal sealed class AchievementCategoryCrawlTiming
@@ -454,7 +504,8 @@ namespace InventoryKamera
     {
         internal AchievementScrollObservation(int batchIndex,
             AchievementListScrollRequest request,
-            AchievementViewportMotion motion)
+            AchievementViewportMotion motion,
+            AchievementListScrollCommandResult command = null)
         {
             BatchIndex = batchIndex;
             RequestedNotches = request?.NotchCount ?? 0;
@@ -466,6 +517,10 @@ namespace InventoryKamera
             MovementVerified = motion?.Advanced == true;
             ViewportStable = motion?.Stable == true;
             Contradictory = motion?.Contradictory == true;
+            WheelEventsSent = command?.WheelEventsSent ?? 0;
+            InputSucceeded = command?.Succeeded ?? true;
+            InputCancelled = command?.Cancelled == true;
+            InputFailureReason = command?.FailureReason ?? string.Empty;
         }
 
         internal int BatchIndex { get; }
@@ -477,6 +532,10 @@ namespace InventoryKamera
         internal bool MovementVerified { get; }
         internal bool ViewportStable { get; }
         internal bool Contradictory { get; }
+        internal int WheelEventsSent { get; }
+        internal bool InputSucceeded { get; }
+        internal bool InputCancelled { get; }
+        internal string InputFailureReason { get; }
     }
 
     internal sealed class AchievementCategoryCrawlResult
@@ -489,6 +548,7 @@ namespace InventoryKamera
             int scrollActions,
             IEnumerable<AchievementObservedRow> observedRows,
             IEnumerable<AchievementScrollObservation> scrollObservations,
+            IEnumerable<AchievementCategoryFrameObservation> frameObservations,
             AchievementScrollProgressState finalScrollState,
             string reason,
             AchievementCategoryCrawlTiming timing,
@@ -503,6 +563,8 @@ namespace InventoryKamera
                 (observedRows ?? Array.Empty<AchievementObservedRow>()).ToArray());
             ScrollObservations = new ReadOnlyCollection<AchievementScrollObservation>(
                 (scrollObservations ?? Array.Empty<AchievementScrollObservation>()).ToArray());
+            FrameObservations = new ReadOnlyCollection<AchievementCategoryFrameObservation>(
+                (frameObservations ?? Array.Empty<AchievementCategoryFrameObservation>()).ToArray());
             IdentifiedRows = new ReadOnlyCollection<AchievementObservedRow>(ObservedRows
                 .Where(row => row.Resolved).ToArray());
             UnresolvedRows = new ReadOnlyCollection<AchievementObservedRow>(ObservedRows
@@ -533,6 +595,7 @@ namespace InventoryKamera
         internal int ScrollActions { get; }
         internal IReadOnlyList<AchievementObservedRow> ObservedRows { get; }
         internal IReadOnlyList<AchievementScrollObservation> ScrollObservations { get; }
+        internal IReadOnlyList<AchievementCategoryFrameObservation> FrameObservations { get; }
         internal IReadOnlyList<AchievementObservedRow> IdentifiedRows { get; }
         internal IReadOnlyList<AchievementObservedRow> UnresolvedRows { get; }
         internal IReadOnlyList<AchievementObservedRow> ConflictingRows { get; }
@@ -547,7 +610,17 @@ namespace InventoryKamera
         internal string Diagnostics { get; }
     }
 
-    internal sealed class AchievementCategoryCrawler
+    internal interface IAchievementCategoryCrawler
+    {
+        AchievementCategoryCrawlResult Crawl(
+            AchievementCategoryCrawlContext context,
+            Bitmap startingFrame,
+            CancellationToken cancellationToken,
+            IProgress<AchievementCategoryCrawlProgress> progress = null,
+            TimeSpan? startingCaptureDuration = null);
+    }
+
+    internal sealed class AchievementCategoryCrawler : IAchievementCategoryCrawler
     {
         private readonly IAchievementListFrameReader frameReader;
         private readonly IGameScreenCapture screenCapture;
@@ -572,7 +645,7 @@ namespace InventoryKamera
             this.wait = wait ?? WaitWithCancellation;
         }
 
-        internal AchievementCategoryCrawlResult Crawl(
+        public AchievementCategoryCrawlResult Crawl(
             AchievementCategoryCrawlContext context,
             Bitmap startingFrame,
             CancellationToken cancellationToken,
@@ -590,6 +663,7 @@ namespace InventoryKamera
             TimeSpan deduplicationTime = TimeSpan.Zero;
             var aggregate = new ObservationAccumulator();
             var scrollObservations = new List<AchievementScrollObservation>();
+            var frameObservations = new List<AchievementCategoryFrameObservation>();
             var diagnostics = new List<string>();
             int frames = 0;
             int scrolls = 0;
@@ -603,6 +677,7 @@ namespace InventoryKamera
                 cancellationToken.ThrowIfCancellationRequested();
                 FrameSnapshot previous = ProcessFrame(startingFrame, 0, startingCaptureDuration ?? TimeSpan.Zero,
                     aggregate, ref processingTime, ref deduplicationTime);
+                frameObservations.Add(Observe(previous, 0));
                 frames = 1;
                 diagnostics.Add(previous.Diagnostics);
                 if (!TryValidateFrame(context, previous, ref stableCategorySignature, firstFrame: true,
@@ -618,22 +693,54 @@ namespace InventoryKamera
                     return Finish(AchievementCategoryCrawlState.Incomplete,
                         "The starting frame exceeded the uncertain-frame safety limit.",
                         "limit=consecutive-uncertain-frames");
-                progress?.Report(Progress(aggregate, frames, scrolls, scrollState));
+                progress?.Report(Progress(aggregate, frames, scrolls, scrollState,
+                    frameObservations[^1], null));
 
                 while (frames < options.MaximumCapturedFrames && scrolls < options.MaximumScrollActions)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     Stopwatch part = Stopwatch.StartNew();
-                    AchievementListScrollCommandResult command = scrollInput.Scroll(
-                        options.ScrollRequest, cancellationToken);
+                    AchievementListScrollCommandResult command;
+                    try
+                    {
+                        command = scrollInput.Scroll(options.ScrollRequest, cancellationToken);
+                    }
+                    catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+                    {
+                        part.Stop();
+                        scrollingTime += part.Elapsed;
+                        scrolls++;
+                        int wheelEventsSent = ex.Data["AchievementWheelEventsSent"] is int sent
+                            ? sent
+                            : 0;
+                        var cancelledCommand = new AchievementListScrollCommandResult(
+                            succeeded: false,
+                            foregroundVerified: false,
+                            failureReason: ex.Message,
+                            diagnostics: $"cancelled=true; wheelEventsSent={wheelEventsSent}",
+                            wheelEventsSent: wheelEventsSent,
+                            cancelled: true);
+                        scrollObservations.Add(new AchievementScrollObservation(
+                            scrolls, options.ScrollRequest, null, cancelledCommand));
+                        diagnostics.Add($"scroll={scrolls}; {cancelledCommand.Diagnostics}");
+                        throw;
+                    }
                     part.Stop();
                     scrollingTime += part.Elapsed;
                     scrolls++;
                     diagnostics.Add($"scroll={scrolls}; succeeded={command.Succeeded}; foregroundVerified={command.ForegroundVerified}; {command.Diagnostics}");
+                    scrollObservations.Add(new AchievementScrollObservation(
+                        scrolls, options.ScrollRequest, null, command));
+                    if (command.Cancelled || cancellationToken.IsCancellationRequested)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
                     if (!command.Succeeded || !command.ForegroundVerified)
+                    {
                         return Finish(AchievementCategoryCrawlState.Failed,
                             command.FailureReason.Length == 0 ? "Achievement-list scrolling was not safely performed." : command.FailureReason,
                             string.Empty);
+                    }
 
                     cancellationToken.ThrowIfCancellationRequested();
                     Bitmap captured = null;
@@ -655,6 +762,7 @@ namespace InventoryKamera
 
                         FrameSnapshot current = ProcessFrame(captured, frames, stabilized.FinalCaptureDuration,
                             aggregate, ref processingTime, ref deduplicationTime);
+                        frameObservations.Add(Observe(current, frames));
                         frames++;
                         diagnostics.Add(current.Diagnostics);
                         cancellationToken.ThrowIfCancellationRequested();
@@ -675,8 +783,9 @@ namespace InventoryKamera
                             previous.Result, previous.Fingerprint,
                             current.Result, current.Fingerprint,
                             captured.Height);
-                        scrollObservations.Add(new AchievementScrollObservation(
-                            scrolls, options.ScrollRequest, motion));
+                        var scrollObservation = new AchievementScrollObservation(
+                            scrolls, options.ScrollRequest, motion, command);
+                        scrollObservations[^1] = scrollObservation;
                         diagnostics.Add($"scroll={scrolls}; observedMotion: {motion}");
                         if (motion.Contradictory)
                             return Finish(AchievementCategoryCrawlState.Incomplete,
@@ -690,7 +799,8 @@ namespace InventoryKamera
                         if (bottomProof)
                         {
                             scrollState = AchievementScrollProgressState.ReachedBottom;
-                            progress?.Report(Progress(aggregate, frames, scrolls, scrollState));
+                            progress?.Report(Progress(aggregate, frames, scrolls, scrollState,
+                                frameObservations[^1], scrollObservation));
                             return Finish(AchievementCategoryCrawlState.Complete,
                                 "The right-list bottom extent, stable viewport, stable row layout, and recognizable final-row evidence agreed after a bounded scroll.",
                                 $"bottomAtExtent=true; viewportStable=true; layoutStable=true; finalRowRecognized=true; fingerprint={current.Fingerprint}");
@@ -722,7 +832,8 @@ namespace InventoryKamera
 
                         previous = current;
                         cancellationToken.ThrowIfCancellationRequested();
-                        progress?.Report(Progress(aggregate, frames, scrolls, scrollState));
+                        progress?.Report(Progress(aggregate, frames, scrolls, scrollState,
+                            frameObservations[^1], scrollObservation));
                     }
                     finally
                     {
@@ -766,7 +877,7 @@ namespace InventoryKamera
                     $"scrollMs={scrollingTime.TotalMilliseconds:0.00}; settleMs={settlingTime.TotalMilliseconds:0.00}; " +
                     $"dedupMs={deduplicationTime.TotalMilliseconds:0.00}; totalMs={total.Elapsed.TotalMilliseconds:0.00}");
                 return new AchievementCategoryCrawlResult(context, state, completenessEvidence,
-                    frames, scrolls, rows, scrollObservations, scrollState, reason, timing,
+                    frames, scrolls, rows, scrollObservations, frameObservations, scrollState, reason, timing,
                     string.Join(Environment.NewLine, diagnostics));
             }
         }
@@ -882,6 +993,13 @@ namespace InventoryKamera
                     return false;
                 }
             }
+            else if (firstFrame && context.RequireVerifiedCategorySignature &&
+                !frame.Evidence.CategorySignatureVerified)
+            {
+                state = AchievementCategoryCrawlState.Failed;
+                reason = "The selected Achievement category could not be positively verified in the starting frame.";
+                return false;
+            }
             else if (frame.Evidence.CategorySignatureVerified)
             {
                 if (stableSignature.Length == 0) stableSignature = frame.Evidence.CategorySignature;
@@ -911,12 +1029,21 @@ namespace InventoryKamera
             (row.IdentityState == AchievementIdentityState.Identified ||
              row.IdentityState == AchievementIdentityState.StageGroupIdentified);
 
+        private static AchievementCategoryFrameObservation Observe(FrameSnapshot frame, int frameIndex) =>
+            new(frameIndex, frame.Result.ScreenState, frame.Result.VisibleRows.Count, frame.Evidence);
+
         private static AchievementCategoryCrawlProgress Progress(ObservationAccumulator aggregate,
-            int frames, int scrolls, AchievementScrollProgressState state)
+            int frames, int scrolls, AchievementScrollProgressState state,
+            AchievementCategoryFrameObservation frameObservation,
+            AchievementScrollObservation scrollObservation)
         {
             AchievementObservedRow[] rows = aggregate.Build();
             return new AchievementCategoryCrawlProgress(frames, scrolls,
-                rows.Count(row => row.Resolved), rows.Count(row => !row.Resolved), state);
+                rows.Count(row => row.Resolved), rows.Count(row => !row.Resolved),
+                rows.Where(row => row.Canonical).Sum(row => Math.Max(0, row.ObservationCount - 1)),
+                rows.Count(row => row.Canonical && row.EverFullyVisible &&
+                    row.Observations.Any(value => value.Row.Visibility != AchievementVisibleRowVisibility.Complete)),
+                state, frameObservation, scrollObservation);
         }
 
         private static void WaitWithCancellation(int milliseconds, CancellationToken token)

@@ -140,4 +140,53 @@ namespace InventoryKamera.ui
             CancelButton = closeButton;
         }
     }
+
+    internal sealed class AchievementBulkDiagnosticStartForm : Form
+    {
+        internal AchievementBulkDiagnosticStartForm()
+        {
+            Text = "Test Bulk Scrolling";
+            AutoScaleMode = AutoScaleMode.Dpi;
+            ClientSize = new Size(570, 315);
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterParent;
+
+            var message = new Label
+            {
+                AutoSize = false,
+                Location = new Point(18, 18),
+                Size = new Size(534, 225),
+                Text = "This short, read-only diagnostic tests one manually selected Achievement category. " +
+                    "It scrolls the right-side list and collects recognition evidence; it does not save or export achievement progress.\n\n" +
+                    "Before continuing:\n" +
+                    "1. Use Keyboard/Mouse mode in Genshin.\n" +
+                    "2. Open Achievements and select the category to test.\n" +
+                    "3. Move that category's achievement list to the top.\n" +
+                    "4. Leave the ordinary category list visible with no search or dialog open.\n\n" +
+                    "The diagnostic captures at most 5 frames and requests at most 4 scroll batches. Press F8 to cancel.",
+            };
+            var startButton = new Button
+            {
+                DialogResult = DialogResult.OK,
+                Location = new Point(332, 260),
+                Size = new Size(105, 35),
+                Text = "Start Test",
+            };
+            var cancelButton = new Button
+            {
+                DialogResult = DialogResult.Cancel,
+                Location = new Point(447, 260),
+                Size = new Size(105, 35),
+                Text = "Cancel",
+            };
+            Controls.Add(message);
+            Controls.Add(startButton);
+            Controls.Add(cancelButton);
+            AcceptButton = startButton;
+            CancelButton = cancelButton;
+        }
+    }
 }

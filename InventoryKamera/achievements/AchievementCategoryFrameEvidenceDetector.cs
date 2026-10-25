@@ -1,14 +1,16 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Globalization;
 using Tesseract;
 
 namespace InventoryKamera
 {
     /// <summary>
     /// Phase 7B.1 evidence calibrated from the 1919x1079 Memories of the Heart scroll sequence.
-    /// Category identity is OCR-backed; scrollbar extent proof is deliberately restricted to the
-    /// only resolution for which real top and bottom pixels are currently available.
+    /// Category identity is OCR-backed; scrollbar extent proof is restricted to the calibrated
+    /// fixture size and the exact 1920x1080 Navigation capture size confirmed by live diagnostics.
     /// </summary>
     internal sealed class AchievementCategoryFrameEvidenceDetector :
         IAchievementCategoryFrameEvidenceDetector
@@ -16,6 +18,18 @@ namespace InventoryKamera
         internal const string MemoriesOfTheHeartSignature = "memories of the heart";
         private const int ReferenceWidth = 1919;
         private const int ReferenceHeight = 1079;
+        private const int ReferenceScrollbarX = 1838;
+        private const int ReferenceSearchTop = 145;
+        private const int ReferenceSearchBottom = 970;
+        private const int ReferenceTrackTop = 148;
+        private const int ReferenceTrackBottom = 967;
+        private const int ReferenceTopMaximum = 150;
+        private const int ReferenceTopBottomMaximum = 265;
+        private const int ReferenceBottomMinimum = 848;
+        private const int ReferenceBottomBottomMinimum = 966;
+        private const int ReferenceThumbHeight = 115;
+        private const int ReferenceMinimumThumbHeight = 105;
+        private const int ReferenceMaximumThumbHeight = 125;
         private readonly IOcrService ocrService;
         private readonly IImagePreprocessor imagePreprocessor;
 
@@ -33,29 +47,129 @@ namespace InventoryKamera
 
             bool categoryVerified = TryReadSelectedCategory(screenshot,
                 out string categorySignature, out string categoryDiagnostics);
-            bool top = false;
-            bool bottom = false;
-            string scrollbarDiagnostics;
-            if (screenshot.Width == ReferenceWidth && screenshot.Height == ReferenceHeight &&
-                TryFindScrollbarThumb(screenshot, out int thumbTop, out int thumbBottom))
-            {
-                top = thumbTop <= 149 && thumbBottom <= 265;
-                bottom = thumbTop >= 848 && thumbBottom >= 966;
-                scrollbarDiagnostics = $"scrollbarThumb={thumbTop}-{thumbBottom}; calibratedResolution=true";
-            }
-            else
-            {
-                scrollbarDiagnostics = screenshot.Width == ReferenceWidth && screenshot.Height == ReferenceHeight
-                    ? "scrollbarThumb=unresolved; calibratedResolution=true"
-                    : $"scrollbarThumb=unsupported-resolution; size={screenshot.Width}x{screenshot.Height}";
-            }
+            AchievementScrollbarEvidence scrollbar = AnalyzeScrollbar(screenshot);
 
             return new AchievementCategoryFrameEvidence(
-                top,
-                bottom,
+                scrollbar.TopAtExtent,
+                scrollbar.BottomAtExtent,
                 categorySignature,
                 categoryVerified,
-                $"{categoryDiagnostics}; {scrollbarDiagnostics}");
+                $"{categoryDiagnostics}; {scrollbar.Diagnostics}");
+        }
+
+        internal static AchievementScrollbarEvidence AnalyzeScrollbar(Bitmap screenshot)
+        {
+            if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
+            bool reference = screenshot.Width == ReferenceWidth && screenshot.Height == ReferenceHeight;
+            bool liveCapture = screenshot.Width == 1920 && screenshot.Height == 1080;
+            int x = ScaleX(ReferenceScrollbarX, screenshot.Width);
+            int searchTop = ScaleY(ReferenceSearchTop, screenshot.Height);
+            int searchBottom = ScaleY(ReferenceSearchBottom, screenshot.Height);
+            int trackTop = ScaleY(ReferenceTrackTop, screenshot.Height);
+            int trackBottom = ScaleY(ReferenceTrackBottom, screenshot.Height);
+            string calibration = reference ? "reference-1919x1079" :
+                liveCapture ? "mapped-live-1920x1080" : "unsupported";
+
+            if (!reference && !liveCapture)
+            {
+                return AchievementScrollbarEvidence.CreateUnresolved(
+                    x, searchTop, searchBottom, trackTop, trackBottom,
+                    calibration,
+                    screenshot.Size,
+                    "unsupported-capture-size",
+                    candidateCount: 0);
+            }
+
+            int minimumHeight = ScaleLengthY(ReferenceMinimumThumbHeight, screenshot.Height);
+            int maximumHeight = ScaleLengthY(ReferenceMaximumThumbHeight, screenshot.Height);
+            List<(int Top, int Bottom)> runs = null;
+            List<(int Top, int Bottom)> candidates = null;
+            int selectedX = x;
+            int[] xOffsets = { 0, -1, 1, -2, 2 };
+            foreach (int xOffset in xOffsets)
+            {
+                int candidateX = Math.Clamp(x + xOffset, 0, screenshot.Width - 1);
+                List<(int Top, int Bottom)> candidateRuns = FindBrightRuns(
+                    screenshot, candidateX, searchTop, searchBottom);
+                var candidateThumbs = new List<(int Top, int Bottom)>();
+                foreach ((int runStart, int runEnd) in candidateRuns)
+                {
+                    int height = runEnd - runStart + 1;
+                    if (height >= minimumHeight && height <= maximumHeight)
+                        candidateThumbs.Add((runStart, runEnd));
+                }
+
+                if (runs == null)
+                {
+                    runs = candidateRuns;
+                    candidates = candidateThumbs;
+                }
+                if (candidateThumbs.Count > 0)
+                {
+                    selectedX = candidateX;
+                    runs = candidateRuns;
+                    candidates = candidateThumbs;
+                    break;
+                }
+            }
+
+            if (candidates.Count != 1)
+            {
+                string reason = candidates.Count > 1
+                    ? "multiple-valid-thumb-candidates"
+                    : runs.Count == 0
+                        ? "no-bright-scrollbar-run"
+                        : "bright-runs-outside-thumb-height-range";
+                return AchievementScrollbarEvidence.CreateUnresolved(
+                    selectedX, searchTop, searchBottom, trackTop, trackBottom,
+                    calibration,
+                    screenshot.Size,
+                    reason,
+                    candidates.Count,
+                    DescribeRuns(runs));
+            }
+
+            (int thumbTop, int thumbBottom) = candidates[0];
+            int heightPixels = thumbBottom - thumbTop + 1;
+            int expectedHeight = ScaleLengthY(ReferenceThumbHeight, screenshot.Height);
+            double heightConfidence = Math.Max(0.0,
+                1.0 - Math.Abs(heightPixels - expectedHeight) /
+                (double)Math.Max(1, maximumHeight - minimumHeight));
+            double crossSectionSupport = MeasureCrossSectionSupport(
+                screenshot, selectedX, thumbTop, thumbBottom);
+            double confidence = 0.65 * heightConfidence + 0.35 * crossSectionSupport;
+            if (confidence < 0.75)
+            {
+                return AchievementScrollbarEvidence.CreateUnresolved(
+                    selectedX, searchTop, searchBottom, trackTop, trackBottom,
+                    calibration,
+                    screenshot.Size,
+                    "thumb-candidate-low-confidence",
+                    candidates.Count,
+                    DescribeRuns(runs),
+                    thumbTop,
+                    thumbBottom,
+                    confidence);
+            }
+
+            int maximumThumbTop = Math.Max(trackTop + 1, trackBottom - heightPixels + 1);
+            double normalizedPosition = Math.Clamp(
+                (thumbTop - trackTop) / (double)(maximumThumbTop - trackTop), 0.0, 1.0);
+            bool top = thumbTop <= ScaleY(ReferenceTopMaximum, screenshot.Height) &&
+                thumbBottom <= ScaleY(ReferenceTopBottomMaximum, screenshot.Height);
+            bool bottom = thumbTop >= ScaleY(ReferenceBottomMinimum, screenshot.Height) &&
+                thumbBottom >= ScaleY(ReferenceBottomBottomMinimum, screenshot.Height);
+            string topRejection = top ? "none" :
+                $"thumb-not-at-top(top>{ScaleY(ReferenceTopMaximum, screenshot.Height)}" +
+                $" or bottom>{ScaleY(ReferenceTopBottomMaximum, screenshot.Height)})";
+            string bottomRejection = bottom ? "none" :
+                $"thumb-not-at-bottom(top<{ScaleY(ReferenceBottomMinimum, screenshot.Height)}" +
+                $" or bottom<{ScaleY(ReferenceBottomBottomMinimum, screenshot.Height)})";
+            return AchievementScrollbarEvidence.CreateResolved(
+                selectedX, searchTop, searchBottom, trackTop, trackBottom,
+                calibration, screenshot.Size, thumbTop, thumbBottom,
+                normalizedPosition, confidence, top, bottom,
+                topRejection, bottomRejection, candidates.Count);
         }
 
         private bool TryReadSelectedCategory(Bitmap screenshot,
@@ -145,14 +259,10 @@ namespace InventoryKamera
             return bestTop >= 0;
         }
 
-        private static bool TryFindScrollbarThumb(Bitmap screenshot,
-            out int thumbTop, out int thumbBottom)
+        private static List<(int Top, int Bottom)> FindBrightRuns(Bitmap screenshot,
+            int x, int scanTop, int scanBottom)
         {
-            const int x = 1838;
-            const int scanTop = 145;
-            const int scanBottom = 970;
-            int bestTop = -1;
-            int bestBottom = -1;
+            var runs = new List<(int Top, int Bottom)>();
             int runTop = -1;
             for (int y = scanTop; y <= scanBottom; y++)
             {
@@ -162,20 +272,49 @@ namespace InventoryKamera
                 if ((!bright || y == scanBottom) && runTop >= 0)
                 {
                     int runBottom = bright && y == scanBottom ? y : y - 1;
-                    if (runBottom - runTop > bestBottom - bestTop)
-                    {
-                        bestTop = runTop;
-                        bestBottom = runBottom;
-                    }
+                    runs.Add((runTop, runBottom));
                     runTop = -1;
                 }
             }
-
-            thumbTop = bestTop;
-            thumbBottom = bestBottom;
-            int height = bestBottom - bestTop + 1;
-            return bestTop >= 0 && height >= 105 && height <= 125;
+            return runs;
         }
+
+        private static double MeasureCrossSectionSupport(Bitmap screenshot,
+            int centerX, int top, int bottom)
+        {
+            int supported = 0;
+            int samples = 0;
+            int[] ys = { top, top + (bottom - top) / 2, bottom };
+            foreach (int y in ys)
+            {
+                for (int x = Math.Max(0, centerX - 2);
+                    x <= Math.Min(screenshot.Width - 1, centerX + 2); x++)
+                {
+                    Color pixel = screenshot.GetPixel(x, y);
+                    if (IsScrollbarBright(pixel)) supported++;
+                    samples++;
+                }
+            }
+            return samples == 0 ? 0.0 : supported / (double)samples;
+        }
+
+        private static string DescribeRuns(IEnumerable<(int Top, int Bottom)> runs)
+        {
+            var descriptions = new List<string>();
+            foreach ((int top, int bottom) in runs)
+            {
+                if (descriptions.Count == 4)
+                {
+                    descriptions.Add("...");
+                    break;
+                }
+                descriptions.Add($"{top}-{bottom}");
+            }
+            return descriptions.Count == 0 ? "none" : string.Join(",", descriptions);
+        }
+
+        private static bool IsScrollbarBright(Color pixel) =>
+            pixel.R >= 235 && pixel.G >= 232 && pixel.B >= 228;
 
         private static int ScaleX(int value, int width) =>
             Math.Max(1, (int)Math.Round(value * width / (double)ReferenceWidth));
@@ -183,7 +322,88 @@ namespace InventoryKamera
         private static int ScaleY(int value, int height) =>
             Math.Max(1, (int)Math.Round(value * height / (double)ReferenceHeight));
 
+        private static int ScaleLengthY(int value, int height) =>
+            Math.Max(1, (int)Math.Round(value * height / (double)ReferenceHeight));
+
         private static int Luminance(Color pixel) =>
             ((54 * pixel.R) + (183 * pixel.G) + (19 * pixel.B)) >> 8;
+    }
+
+    internal sealed class AchievementScrollbarEvidence
+    {
+        private AchievementScrollbarEvidence(bool resolved, bool topAtExtent,
+            bool bottomAtExtent, int x, int searchTop, int searchBottom,
+            int trackTop, int trackBottom, int? thumbTop, int? thumbBottom,
+            double? normalizedPosition, double confidence, int candidateCount,
+            string calibration, Size captureSize, string rejectionReason,
+            string topRejection, string bottomRejection, string observedRuns)
+        {
+            Resolved = resolved;
+            TopAtExtent = topAtExtent;
+            BottomAtExtent = bottomAtExtent;
+            X = x;
+            SearchTop = searchTop;
+            SearchBottom = searchBottom;
+            TrackTop = trackTop;
+            TrackBottom = trackBottom;
+            ThumbTop = thumbTop;
+            ThumbBottom = thumbBottom;
+            NormalizedPosition = normalizedPosition;
+            Confidence = confidence;
+            CandidateCount = candidateCount;
+            Calibration = calibration ?? string.Empty;
+            CaptureSize = captureSize;
+            RejectionReason = rejectionReason ?? string.Empty;
+            TopRejection = topRejection ?? string.Empty;
+            BottomRejection = bottomRejection ?? string.Empty;
+            ObservedRuns = observedRuns ?? string.Empty;
+        }
+
+        internal bool Resolved { get; }
+        internal bool TopAtExtent { get; }
+        internal bool BottomAtExtent { get; }
+        internal int X { get; }
+        internal int SearchTop { get; }
+        internal int SearchBottom { get; }
+        internal int TrackTop { get; }
+        internal int TrackBottom { get; }
+        internal int? ThumbTop { get; }
+        internal int? ThumbBottom { get; }
+        internal double? NormalizedPosition { get; }
+        internal double Confidence { get; }
+        internal int CandidateCount { get; }
+        internal string Calibration { get; }
+        internal Size CaptureSize { get; }
+        internal string RejectionReason { get; }
+        internal string TopRejection { get; }
+        internal string BottomRejection { get; }
+        internal string ObservedRuns { get; }
+        internal string Diagnostics =>
+            $"scrollbarTrack=x{X},y{TrackTop}-{TrackBottom}; searchY={SearchTop}-{SearchBottom}; " +
+            $"scrollbarThumb={(ThumbTop.HasValue ? $"{ThumbTop}-{ThumbBottom}" : "unresolved")}; " +
+            $"normalizedPosition={(NormalizedPosition.HasValue ? NormalizedPosition.Value.ToString("0.0000", CultureInfo.InvariantCulture) : "unavailable")}; " +
+            $"confidence={Confidence.ToString("0.000", CultureInfo.InvariantCulture)}; candidates={CandidateCount}; " +
+            $"top={TopAtExtent}; bottom={BottomAtExtent}; rejectionReason={RejectionReason}; " +
+            $"topRejection={TopRejection}; bottomRejection={BottomRejection}; " +
+            $"observedRuns={ObservedRuns}; calibration={Calibration}; size={CaptureSize.Width}x{CaptureSize.Height}";
+
+        internal static AchievementScrollbarEvidence CreateResolved(
+            int x, int searchTop, int searchBottom, int trackTop, int trackBottom,
+            string calibration, Size captureSize, int thumbTop, int thumbBottom,
+            double normalizedPosition, double confidence, bool top, bool bottom,
+            string topRejection, string bottomRejection, int candidateCount) =>
+            new(true, top, bottom, x, searchTop, searchBottom, trackTop, trackBottom,
+                thumbTop, thumbBottom, normalizedPosition, confidence, candidateCount,
+                calibration, captureSize, "none", topRejection, bottomRejection,
+                $"{thumbTop}-{thumbBottom}");
+
+        internal static AchievementScrollbarEvidence CreateUnresolved(
+            int x, int searchTop, int searchBottom, int trackTop, int trackBottom,
+            string calibration, Size captureSize, string rejectionReason,
+            int candidateCount, string observedRuns = "none", int? thumbTop = null,
+            int? thumbBottom = null, double confidence = 0.0) =>
+            new(false, false, false, x, searchTop, searchBottom, trackTop, trackBottom,
+                thumbTop, thumbBottom, null, confidence, candidateCount, calibration,
+                captureSize, rejectionReason, rejectionReason, rejectionReason, observedRuns);
     }
 }

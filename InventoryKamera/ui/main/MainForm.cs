@@ -47,6 +47,9 @@ namespace InventoryKamera
         private AchievementResumeDataState achievementResumeData;
         private AchievementInteractiveScanResult lastAchievementScanResult;
         private bool applyingScanSelectionPolicy;
+        private AchievementBulkDiagnosticControl bulkDiagnosticControl;
+        private bool bulkDiagnosticUiActive;
+        private bool startScanEnabledBeforeBulkDiagnostic;
 
         public MainForm()
         {
@@ -72,6 +75,7 @@ namespace InventoryKamera
                 new AchievementToolkitImporter(achievementCatalogProvider));
 
             BindSettings();
+            InitializeBulkDiagnosticControl();
             WireScanSelectionPolicy();
             RefreshAchievementResumeUi();
 
@@ -107,6 +111,7 @@ namespace InventoryKamera
             UiTheme.RoundCorners(button1, 6);
             UiTheme.RoundCorners(ImportAchievementProgress_Button, 4);
             UiTheme.RoundCorners(ClearAchievementProgress_Button, 4);
+            UiTheme.RoundCorners(bulkDiagnosticControl.Button, 4);
             UiTheme.ApplyTheme(this);
 
             // Phase 3 §6c's controller-navigation debug tools (MODERNIZATION_PLAN.md §6c) are not
@@ -187,6 +192,19 @@ namespace InventoryKamera
                 ApplyScanSelection(initial);
         }
 
+        private void InitializeBulkDiagnosticControl()
+        {
+            bulkDiagnosticControl = AchievementBulkDiagnosticControl.Create(
+                this,
+                StartScan_Button,
+                ScannerCancelInstructions_Label,
+                ProgramStatus_Label,
+                EstimatedTimeRemaining_Label,
+                Navigation_Label,
+                Navigation_Image,
+                TestBulkScrolling_Click);
+        }
+
         private void ApplyScanSelection(AchievementScanSelection selection)
         {
             applyingScanSelectionPolicy = true;
@@ -211,6 +229,9 @@ namespace InventoryKamera
                 ImportAchievementProgress_Button.Visible = selection.AchievementImportEnabled;
                 ClearAchievementProgress_Button.Visible = selection.AchievementImportEnabled;
                 AchievementResumeStatus_Label.Visible = selection.AchievementImportEnabled;
+                bulkDiagnosticControl.ApplyState(
+                    selection.Achievements,
+                    bulkDiagnosticUiActive || scanRunOwner.HasActiveRun);
                 ImportAchievementProgressMenuItem.Enabled = selection.AchievementImportEnabled;
                 ClearAchievementProgressMenuItem.Enabled = selection.AchievementImportEnabled &&
                     (achievementResumeData.HasResumeSeed || achievementResumeData.HasBlockingError);
@@ -752,6 +773,170 @@ namespace InventoryKamera
             ExportAchievementProgressMenuItem.Enabled = enabled;
         }
 
+        private void SetBulkDiagnosticUiActive(bool active)
+        {
+            if (active && !bulkDiagnosticUiActive)
+                startScanEnabledBeforeBulkDiagnostic = StartScan_Button.Enabled;
+            bulkDiagnosticUiActive = active;
+            StartScan_Button.Enabled = active ? false : startScanEnabledBeforeBulkDiagnostic;
+            bulkDiagnosticControl.ApplyState(
+                Achievements_CheckBox.Checked,
+                active || scanRunOwner.HasActiveRun);
+            SetAchievementImportControlsEnabled(!active);
+        }
+
+        private void TestBulkScrolling_Click(object sender, EventArgs e)
+        {
+            if (scanRunOwner.HasActiveRun || bulkDiagnosticUiActive)
+            {
+                Logger.Debug("Bulk-scrolling diagnostic start ignored because a scan is already active.");
+                return;
+            }
+
+            using (var dialog = new AchievementBulkDiagnosticStartForm())
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            }
+            if (!AchievementPreflightChecksPass()) return;
+
+            GC.Collect();
+            scanViewModel.ResetAll();
+            if (scanOverlay != null)
+            {
+                if (ReferenceEquals(Navigation.CaptureOverlayGuard, scanOverlay))
+                    Navigation.CaptureOverlayGuard = null;
+                scanOverlay.Dispose();
+            }
+
+            scanOverlay = new ScanCompanionOverlay(
+                scanViewModel,
+                gameWindow: genshinWindowController,
+                beforeRecoveryHotkeys: RemoveHotkey,
+                onScanning: RegisterAchievementCancellationHotkey);
+            scanOverlay.ShowAttachedToGame();
+            Navigation.CaptureOverlayGuard = scanOverlay;
+            scanOverlay.ShowWaitingForAchievementScreen();
+            scanOverlay.ShowAchievementProgress(
+                "Bulk diagnostic preparing",
+                "One selected category; no progress will be saved");
+            scanViewModel.SetProgramStatus(AchievementBulkDiagnosticUiPolicy.RunningStatus);
+
+            if (!scanRunOwner.TryCreate(
+                    scanViewModel,
+                    out ScanRun scanRun,
+                    DeclaredInputMode.KeyboardMouse,
+                    scanOverlay))
+            {
+                if (ReferenceEquals(Navigation.CaptureOverlayGuard, scanOverlay))
+                    Navigation.CaptureOverlayGuard = null;
+                scanOverlay.Dispose();
+                scanOverlay = null;
+                RemoveHotkey();
+                return;
+            }
+
+            SetBulkDiagnosticUiActive(true);
+            scanRun.Start(() =>
+            {
+                AchievementBulkDiagnosticResult diagnostic = null;
+                try
+                {
+                    Navigation.Initialize();
+                    using var ocr = new OcrService();
+                    var imageProcessor = new ImageProcessor();
+                    var capture = new NavigationGameScreenCapture();
+                    var runtime = new AchievementScanRuntimeContext(
+                        ocr,
+                        imageProcessor,
+                        capture,
+                        new NavigationGameForegroundActivator(),
+                        scanRun.Session.CancellationToken);
+                    AchievementBulkDiagnosticRunner runner =
+                        AchievementScannerProductionFactory.CreateBulkDiagnostic(
+                            achievementCatalogProvider, runtime);
+                    diagnostic = runner.Run(
+                        scanRun.Session.CancellationToken,
+                        new MainFormBulkDiagnosticProgressReporter(this));
+
+                    Logger.Info(
+                        "Achievement bulk diagnostic finished: state={0}; category={1}; reason={2}",
+                        diagnostic.State,
+                        diagnostic.CategorySignature.Length > 0
+                            ? diagnostic.CategorySignature
+                            : "unverified",
+                        diagnostic.Reason);
+                    if (diagnostic.CrawlResult != null)
+                        Logger.Info("Achievement bulk diagnostic evidence:\n{0}",
+                            diagnostic.CrawlResult.Diagnostics);
+
+                    ResetUI();
+                    ShowBulkDiagnosticSummary(diagnostic);
+                    bool cancelled = diagnostic.State == AchievementCategoryCrawlState.Cancelled;
+                    scanViewModel.SetProgramStatus(
+                        cancelled ? AchievementBulkDiagnosticUiPolicy.CancelledStatus :
+                            AchievementBulkDiagnosticUiPolicy.FinishedStatus,
+                        diagnostic.State == AchievementCategoryCrawlState.Complete);
+                    scanOverlay.ShowCompleted(cancelled
+                        ? "Bulk-scrolling diagnostic cancelled. No achievement progress was saved."
+                        : "Bulk-scrolling diagnostic finished. No achievement progress was saved.");
+                }
+                catch (Exception ex)
+                {
+                    ResetUI();
+                    scanViewModel.AddError(ex.ToString());
+                    scanViewModel.SetProgramStatus(
+                        AchievementBulkDiagnosticUiPolicy.AbortedStatus, ok: false);
+                    scanOverlay.ShowError(ex.Message);
+                }
+                finally
+                {
+                    scanRunOwner.Complete(scanRun);
+                    ResetUI();
+                    BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
+                    {
+                        SetBulkDiagnosticUiActive(false);
+                        SetAchievementExportEnabled(
+                            lastAchievementScanResult?.TrustedCompletedIds.Count > 0);
+                    });
+                }
+            });
+        }
+
+        private void ShowBulkDiagnosticSummary(AchievementBulkDiagnosticResult result)
+        {
+            Invoke((System.Windows.Forms.MethodInvoker)delegate
+            {
+                MessageBox.Show(
+                    this,
+                    AchievementBulkDiagnosticReportBuilder.BuildSummary(result),
+                    "Achievement Bulk-Scrolling Diagnostic",
+                    MessageBoxButtons.OK,
+                    result.State == AchievementCategoryCrawlState.Failed
+                        ? MessageBoxIcon.Warning
+                        : MessageBoxIcon.Information);
+            });
+        }
+
+        private sealed class MainFormBulkDiagnosticProgressReporter :
+            IProgress<AchievementCategoryCrawlProgress>
+        {
+            private readonly MainForm form;
+
+            internal MainFormBulkDiagnosticProgressReporter(MainForm form)
+            {
+                this.form = form;
+            }
+
+            public void Report(AchievementCategoryCrawlProgress progress)
+            {
+                form.scanViewModel.SetProgramStatus(
+                    AchievementBulkDiagnosticUiPolicy.RunningStatus);
+                form.scanOverlay.ShowAchievementProgress(
+                    AchievementBulkDiagnosticReportBuilder.BuildProgress(progress),
+                    AchievementBulkDiagnosticReportBuilder.BuildProgressDetails(progress));
+            }
+        }
+
         private void RunAchievementStage(
             AchievementScanRuntimeContext runtime,
             AchievementResumeSeed resumeSeed,
@@ -1043,6 +1228,8 @@ namespace InventoryKamera
                     scanOverlay))
                 return;
 
+            bulkDiagnosticControl.ApplyState(
+                achievementModeSelected: true, activeRun: true);
             lastAchievementScanResult = null;
             SetAchievementImportControlsEnabled(false);
             SetAchievementExportEnabled(false);
@@ -1098,6 +1285,9 @@ namespace InventoryKamera
                     ResetUI();
                     BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
                     {
+                        bulkDiagnosticControl.ApplyState(
+                            Achievements_CheckBox.Checked,
+                            activeRun: scanRunOwner.HasActiveRun);
                         SetAchievementImportControlsEnabled(true);
                         SetAchievementExportEnabled(
                             lastAchievementScanResult?.TrustedCompletedIds.Count > 0);

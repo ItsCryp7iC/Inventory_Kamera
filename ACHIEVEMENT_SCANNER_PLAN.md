@@ -1306,15 +1306,67 @@ Conflicting or insufficient movement evidence fails incomplete.
 At 1919x1079, the right scrollbar thumb measured y=148..262 at top, y=151..264 and y=153..266
 after the two notches, and y=853..967 in both stationary bottom frames. Top proof is therefore
 restricted to the measured first endpoint and bottom proof to the repeated lower endpoint.
-Scrollbar proof returns unavailable at other resolutions. The selected light category row is
-detected independently and OCR'd; the real fixture verifies `Memories of the Heart`, not the
-neighboring `Wonders of the World` row.
+The controlled live diagnostic later confirmed that `Navigation.CaptureWindow()` produces
+1920x1080 for this same full-screen setup. Scrollbar coordinates are therefore normalized from the
+1919x1079 calibration to that exact capture size, with a bounded two-pixel horizontal search for
+the one-pixel source/capture edge difference. Other resolutions still fail closed. Diagnostics
+retain only coordinates, normalized position, confidence, and rejection reasons. The selected
+light category row is detected independently and OCR'd; the real fixture verifies `Memories of
+the Heart`, not the neighboring `Wonders of the World` row.
 
 Traversal completion still requires bottom proof on both sides of a bounded post-bottom batch,
 a stable viewport, stable row layout, and a recognizable final canonical row. The bottom pair is
 candidate evidence for that gate at the measured resolution, not a universal scrollbar detector.
 Live validation must still verify programmatic batching, animation timing, category recognition,
 and scrollbar behavior at every supported resolution before Phase 7C absence reasoning.
+
+#### Phase 7B.2 controlled live-crawler diagnostic (implemented; awaiting manual validation)
+
+The Achievements-only UI now exposes **Test Bulk Scrolling**, an explicitly started, short,
+read-only diagnostic for one category that the user has manually selected and moved to the top.
+It does not replace the exact-title scan button, navigate categories, save/import/export progress,
+claim rewards, update catalog state, reconcile missing achievements, or infer completion from
+absence. The entry is hidden outside Achievement mode and guarded by the existing single-run
+owner so it cannot overlap a legacy scan, exact-title scan, or second diagnostic.
+
+The diagnostic creates the production `AchievementCategoryCrawler` through
+`AchievementScannerProductionFactory`, using the standalone Keyboard/Mouse runtime, normalized
+right-panel wheel target, foreground verifier, and overlay-safe `Navigation.CaptureWindow` path.
+Its default boundary is five processed frames and four requested scroll batches, with the existing
+21-notch provisional batch and bounded settle/stabilization settings. Reaching either diagnostic
+limit without the independent bottom gate remains `Incomplete`.
+
+Progress and the terminal report retain only bitmap-free evidence. They show the verified category
+signature, frame and batch counts, requested notches/logical wheel delta, confirmed wheel events
+sent, separately measured visual/row displacement, top/bottom evidence, canonical/unresolved/
+repeated/recovered-partial counts, traversal state, elapsed time, and stop reason. Per-frame
+category and scrollbar observations are now immutable crawler result data; raw screenshots are
+disposed after processing and are not logged. Partial wheel batches attach their confirmed event
+count to cancellation diagnostics. F8 uses the existing Achievement cancellation registration,
+and all terminal paths release the single-run owner and restore the main controls.
+
+Manual validation checklist (user-operated; not performed by automated implementation work):
+
+1. Start Genshin manually in windowed Keyboard/Mouse mode and open Achievements.
+2. Select one category, move its right-side achievement list to the positively visible top, and
+   leave the ordinary list idle with no search or dialog open.
+3. In Inventory Kamera, select Achievements and choose **Test Bulk Scrolling**; confirm the dialog.
+4. Observe no more than five processed frames and four batches of 21 requested wheel notches.
+5. Record requested input separately from measured displacement and confirm several rows overlap
+   successive frames, with clipped/unresolved rows retained.
+6. Either allow the bounded test to exit or run it again and press F8 during settling/between
+   batches; verify no later batch is sent and the result is `Cancelled`.
+7. Confirm the category signature remains the selected category, and inspect the reported
+   top/bottom evidence and completeness reason. A limit exit without bottom proof must be
+   `Incomplete`.
+8. Verify imported/resume achievement state and any previously exportable results are unchanged;
+   the diagnostic offers no progress export.
+
+Phase 7C remains blocked on reviewed manual evidence that programmatic 21-notch batches produce
+safe overlap, stabilization is adequate, category identity remains reliable, foreground and F8
+behavior are safe, bottom completion proof works without false positives, and the behavior is
+calibrated across supported resolutions/categories. This diagnostic is an evidence-gathering gate,
+not a production Fast Scan feature.
 
 ### Later Phase 7 slices (not implemented)
 

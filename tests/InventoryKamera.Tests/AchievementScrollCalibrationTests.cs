@@ -98,6 +98,78 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
+        public void ScrollbarEvidence_MapsConfirmedLiveCaptureSizeToCalibratedTop()
+        {
+            using Bitmap frame = ScrollbarFrame(1920, 1080, (148, 262));
+
+            AchievementScrollbarEvidence evidence =
+                AchievementCategoryFrameEvidenceDetector.AnalyzeScrollbar(frame);
+
+            Assert.True(evidence.Resolved, evidence.Diagnostics);
+            Assert.True(evidence.TopAtExtent, evidence.Diagnostics);
+            Assert.False(evidence.BottomAtExtent);
+            Assert.Equal(1839, evidence.X);
+            Assert.Equal(148, evidence.TrackTop);
+            Assert.Equal(968, evidence.TrackBottom);
+            Assert.Equal(0.0, evidence.NormalizedPosition);
+            Assert.Contains("mapped-live-1920x1080", evidence.Diagnostics);
+            Assert.Contains("rejectionReason=none", evidence.Diagnostics);
+        }
+
+        [Theory]
+        [InlineData(148, 262, true, false)]
+        [InlineData(150, 264, true, false)]
+        [InlineData(500, 614, false, false)]
+        [InlineData(853, 967, false, true)]
+        public void ScrollbarEvidence_ClassifiesCalibratedPositionsWithoutPromotingMiddle(
+            int thumbTop, int thumbBottom, bool expectedTop, bool expectedBottom)
+        {
+            using Bitmap frame = ScrollbarFrame(1919, 1079, (thumbTop, thumbBottom));
+
+            AchievementScrollbarEvidence evidence =
+                AchievementCategoryFrameEvidenceDetector.AnalyzeScrollbar(frame);
+
+            Assert.True(evidence.Resolved, evidence.Diagnostics);
+            Assert.Equal(expectedTop, evidence.TopAtExtent);
+            Assert.Equal(expectedBottom, evidence.BottomAtExtent);
+            Assert.InRange(evidence.Confidence, 0.75, 1.0);
+            Assert.NotNull(evidence.NormalizedPosition);
+            Assert.Contains("scrollbarTrack=x1838,y148-967", evidence.Diagnostics);
+            Assert.Contains($"scrollbarThumb={thumbTop}-{thumbBottom}", evidence.Diagnostics);
+        }
+
+        [Fact]
+        public void ScrollbarEvidence_MissingThumbRemainsUnknown()
+        {
+            using Bitmap frame = ScrollbarFrame(1919, 1079);
+
+            AchievementScrollbarEvidence evidence =
+                AchievementCategoryFrameEvidenceDetector.AnalyzeScrollbar(frame);
+
+            Assert.False(evidence.Resolved);
+            Assert.False(evidence.TopAtExtent);
+            Assert.False(evidence.BottomAtExtent);
+            Assert.Equal("no-bright-scrollbar-run", evidence.RejectionReason);
+            Assert.Contains("normalizedPosition=unavailable", evidence.Diagnostics);
+        }
+
+        [Fact]
+        public void ScrollbarEvidence_MultiplePlausibleThumbsRemainAmbiguous()
+        {
+            using Bitmap frame = ScrollbarFrame(1919, 1079, (148, 262), (500, 614));
+
+            AchievementScrollbarEvidence evidence =
+                AchievementCategoryFrameEvidenceDetector.AnalyzeScrollbar(frame);
+
+            Assert.False(evidence.Resolved);
+            Assert.False(evidence.TopAtExtent);
+            Assert.False(evidence.BottomAtExtent);
+            Assert.Equal(2, evidence.CandidateCount);
+            Assert.Equal("multiple-valid-thumb-candidates", evidence.RejectionReason);
+            Assert.Contains("observedRuns=148-262,500-614", evidence.Diagnostics);
+        }
+
+        [Fact]
         public void StableViewportWithoutBottomEvidence_RemainsIncomplete()
         {
             using Bitmap start = SolidFrame(20);
@@ -182,6 +254,19 @@ namespace InventoryKamera.Tests
             var bitmap = new Bitmap(1919, 1079);
             using Graphics graphics = Graphics.FromImage(bitmap);
             graphics.Clear(Color.FromArgb(value, value, value));
+            return bitmap;
+        }
+
+        private static Bitmap ScrollbarFrame(int width, int height,
+            params (int Top, int Bottom)[] thumbs)
+        {
+            var bitmap = new Bitmap(width, height);
+            using Graphics graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.Black);
+            int x = (int)Math.Round(1838 * width / 1919.0);
+            using var brush = new SolidBrush(Color.FromArgb(245, 242, 238));
+            foreach ((int top, int bottom) in thumbs)
+                graphics.FillRectangle(brush, x - 2, top, 5, bottom - top + 1);
             return bitmap;
         }
 

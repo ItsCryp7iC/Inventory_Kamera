@@ -89,6 +89,21 @@ namespace InventoryKamera
                 options);
         }
 
+        internal static AchievementBulkDiagnosticRunner CreateBulkDiagnostic(
+            IAchievementCatalogProvider catalogProvider,
+            AchievementScanRuntimeContext runtime,
+            AchievementBulkDiagnosticOptions options = null)
+        {
+            if (catalogProvider == null) throw new ArgumentNullException(nameof(catalogProvider));
+            if (runtime == null) throw new ArgumentNullException(nameof(runtime));
+            AchievementBulkDiagnosticOptions diagnosticOptions =
+                options ?? AchievementBulkDiagnosticOptions.Default;
+            return new AchievementBulkDiagnosticRunner(
+                runtime.ScreenCapture,
+                CreateCategoryCrawler(catalogProvider, runtime,
+                    diagnosticOptions.ToCrawlerOptions()));
+        }
+
         internal static AchievementScannerProductionComponents Create(
             IAchievementCatalogProvider catalogProvider,
             AchievementScanRuntimeContext runtime)
