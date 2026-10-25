@@ -10,6 +10,25 @@ using Tesseract;
 
 namespace InventoryKamera
 {
+    internal sealed class AchievementOcrReadTiming
+    {
+        internal static AchievementOcrReadTiming Empty { get; } = new(
+            TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero);
+
+        internal AchievementOcrReadTiming(TimeSpan cropResize,
+            TimeSpan preprocessing, TimeSpan ocrEngine)
+        {
+            CropResize = cropResize;
+            Preprocessing = preprocessing;
+            OcrEngine = ocrEngine;
+        }
+
+        internal TimeSpan CropResize { get; }
+        internal TimeSpan Preprocessing { get; }
+        internal TimeSpan OcrEngine { get; }
+        internal TimeSpan Measured => CropResize + Preprocessing + OcrEngine;
+    }
+
     internal enum AchievementTitleOcrVariant
     {
         GrayscaleContrast,
@@ -52,14 +71,17 @@ namespace InventoryKamera
 
     internal sealed class AchievementResultTitleRead
     {
-        internal AchievementResultTitleRead(IEnumerable<AchievementTitleOcrAttempt> attempts)
+        internal AchievementResultTitleRead(IEnumerable<AchievementTitleOcrAttempt> attempts,
+            AchievementOcrReadTiming timing = null)
         {
             if (attempts == null) throw new ArgumentNullException(nameof(attempts));
             Attempts = new ReadOnlyCollection<AchievementTitleOcrAttempt>(
                 new List<AchievementTitleOcrAttempt>(attempts));
+            Timing = timing ?? AchievementOcrReadTiming.Empty;
         }
 
         internal IReadOnlyList<AchievementTitleOcrAttempt> Attempts { get; }
+        internal AchievementOcrReadTiming Timing { get; }
     }
 
     internal interface IAchievementResultTitleReader

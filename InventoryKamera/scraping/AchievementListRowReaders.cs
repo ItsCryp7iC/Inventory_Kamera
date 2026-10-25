@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Globalization;
@@ -49,27 +50,41 @@ namespace InventoryKamera
             if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
             if (row == null) throw new ArgumentNullException(nameof(row));
 
+            Stopwatch part = Stopwatch.StartNew();
             using Bitmap crop = screenshot.Clone(row.Title, PixelFormat.Format24bppRgb);
             using Bitmap resized = GenshinProcesor.ResizeImage(
                 crop,
                 Math.Max(1, crop.Width * 3),
                 Math.Max(1, crop.Height * 3));
+            part.Stop();
+            TimeSpan cropResize = part.Elapsed;
+            TimeSpan preprocessing = TimeSpan.Zero;
+            TimeSpan ocr = TimeSpan.Zero;
             var attempts = new List<AchievementTitleOcrAttempt>(3);
-            ReadTitleVariant(resized, AchievementTitleOcrVariant.GrayscaleThreshold, attempts);
+            ReadTitleVariant(resized, AchievementTitleOcrVariant.GrayscaleThreshold, attempts,
+                ref preprocessing, ref ocr);
             if (stopAfterAttempt?.Invoke(attempts[^1]) == true)
-                return new AchievementResultTitleRead(attempts);
-            ReadTitleVariant(resized, AchievementTitleOcrVariant.GrayscaleContrast, attempts);
+                return Result();
+            ReadTitleVariant(resized, AchievementTitleOcrVariant.GrayscaleContrast, attempts,
+                ref preprocessing, ref ocr);
             if (stopAfterAttempt?.Invoke(attempts[^1]) == true)
-                return new AchievementResultTitleRead(attempts);
-            ReadTitleVariant(resized, AchievementTitleOcrVariant.GrayscaleContrastInverted, attempts);
-            return new AchievementResultTitleRead(attempts);
+                return Result();
+            ReadTitleVariant(resized, AchievementTitleOcrVariant.GrayscaleContrastInverted, attempts,
+                ref preprocessing, ref ocr);
+            return Result();
+
+            AchievementResultTitleRead Result() => new(attempts,
+                new AchievementOcrReadTiming(cropResize, preprocessing, ocr));
         }
 
         private void ReadTitleVariant(
             Bitmap resized,
             AchievementTitleOcrVariant variant,
-            ICollection<AchievementTitleOcrAttempt> attempts)
+            ICollection<AchievementTitleOcrAttempt> attempts,
+            ref TimeSpan preprocessingTime,
+            ref TimeSpan ocrTime)
         {
+            Stopwatch part = Stopwatch.StartNew();
             Bitmap processed = imagePreprocessor.ConvertToGrayscale(resized);
             try
             {
@@ -81,10 +96,15 @@ namespace InventoryKamera
                     if (variant == AchievementTitleOcrVariant.GrayscaleContrastInverted)
                         imagePreprocessor.SetInvert(ref processed);
                 }
+                part.Stop();
+                preprocessingTime += part.Elapsed;
 
+                part.Restart();
                 (string text, float confidence) = ocrService.AnalyzeTextWithConfidence(
                     processed,
                     PageSegMode.SingleLine);
+                part.Stop();
+                ocrTime += part.Elapsed;
                 string raw = (text ?? string.Empty).Trim();
                 attempts.Add(new AchievementTitleOcrAttempt(
                     variant,
@@ -123,6 +143,9 @@ namespace InventoryKamera
             if (row == null) throw new ArgumentNullException(nameof(row));
 
             var attempts = new List<AchievementCompletionOcrAttempt>(6);
+            TimeSpan cropResize = TimeSpan.Zero;
+            TimeSpan preprocessing = TimeSpan.Zero;
+            TimeSpan ocr = TimeSpan.Zero;
             AchievementCompletionOcrVariant[] variants =
             {
                 AchievementCompletionOcrVariant.GrayscaleThreshold,
@@ -137,18 +160,21 @@ namespace InventoryKamera
                     AchievementCompletionOcrScope.StateLabel,
                     PageSegMode.SingleLine,
                     variant,
-                    attempts);
+                    attempts,
+                    ref cropResize, ref preprocessing, ref ocr);
                 ReadCompletionVariant(
                     screenshot,
                     row.CompletionState,
                     AchievementCompletionOcrScope.FullCompletionRegion,
                     PageSegMode.SparseText,
                     variant,
-                    attempts);
+                    attempts,
+                    ref cropResize, ref preprocessing, ref ocr);
                 if (stopAfterVariant?.Invoke(attempts) == true) break;
             }
 
-            return new AchievementCompletionRead(attempts);
+            return new AchievementCompletionRead(attempts,
+                new AchievementOcrReadTiming(cropResize, preprocessing, ocr));
         }
 
         private void ReadCompletionVariant(
@@ -157,13 +183,20 @@ namespace InventoryKamera
             AchievementCompletionOcrScope scope,
             PageSegMode pageMode,
             AchievementCompletionOcrVariant variant,
-            ICollection<AchievementCompletionOcrAttempt> attempts)
+            ICollection<AchievementCompletionOcrAttempt> attempts,
+            ref TimeSpan cropResizeTime,
+            ref TimeSpan preprocessingTime,
+            ref TimeSpan ocrTime)
         {
+            Stopwatch part = Stopwatch.StartNew();
             using Bitmap crop = screenshot.Clone(region, PixelFormat.Format24bppRgb);
             using Bitmap resized = GenshinProcesor.ResizeImage(
                 crop,
                 Math.Max(1, crop.Width * 3),
                 Math.Max(1, crop.Height * 3));
+            part.Stop();
+            cropResizeTime += part.Elapsed;
+            part.Restart();
             Bitmap processed = imagePreprocessor.ConvertToGrayscale(resized);
             try
             {
@@ -175,8 +208,13 @@ namespace InventoryKamera
                     if (variant == AchievementCompletionOcrVariant.GrayscaleContrastInverted)
                         imagePreprocessor.SetInvert(ref processed);
                 }
+                part.Stop();
+                preprocessingTime += part.Elapsed;
 
+                part.Restart();
                 (string text, float confidence) = ocrService.AnalyzeTextWithConfidence(processed, pageMode);
+                part.Stop();
+                ocrTime += part.Elapsed;
                 string raw = (text ?? string.Empty).Trim();
                 attempts.Add(new AchievementCompletionOcrAttempt(
                     variant,
@@ -208,25 +246,37 @@ namespace InventoryKamera
             if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
             if (row == null) throw new ArgumentNullException(nameof(row));
 
+            Stopwatch part = Stopwatch.StartNew();
             using Bitmap crop = screenshot.Clone(row.RewardValue, PixelFormat.Format24bppRgb);
             using Bitmap resized = GenshinProcesor.ResizeImage(
                 crop,
                 Math.Max(1, crop.Width * 5),
                 Math.Max(1, crop.Height * 5));
+            part.Stop();
+            TimeSpan cropResize = part.Elapsed;
+            TimeSpan preprocessing = TimeSpan.Zero;
+            TimeSpan ocr = TimeSpan.Zero;
             var attempts = new List<AchievementRewardOcrAttempt>(3);
-            ReadRewardVariant(resized, AchievementRewardOcrVariant.GrayscaleThreshold, attempts);
+            ReadRewardVariant(resized, AchievementRewardOcrVariant.GrayscaleThreshold, attempts,
+                ref preprocessing, ref ocr);
             if (!HasOneStrongValue(attempts))
-                ReadRewardVariant(resized, AchievementRewardOcrVariant.GrayscaleContrast, attempts);
+                ReadRewardVariant(resized, AchievementRewardOcrVariant.GrayscaleContrast, attempts,
+                    ref preprocessing, ref ocr);
             if (!HasOneStrongValue(attempts))
-                ReadRewardVariant(resized, AchievementRewardOcrVariant.GrayscaleContrastInverted, attempts);
-            return SelectReward(attempts);
+                ReadRewardVariant(resized, AchievementRewardOcrVariant.GrayscaleContrastInverted, attempts,
+                    ref preprocessing, ref ocr);
+            return SelectReward(attempts,
+                new AchievementOcrReadTiming(cropResize, preprocessing, ocr));
         }
 
         private void ReadRewardVariant(
             Bitmap resized,
             AchievementRewardOcrVariant variant,
-            ICollection<AchievementRewardOcrAttempt> attempts)
+            ICollection<AchievementRewardOcrAttempt> attempts,
+            ref TimeSpan preprocessingTime,
+            ref TimeSpan ocrTime)
         {
+            Stopwatch part = Stopwatch.StartNew();
             Bitmap processed = imagePreprocessor.ConvertToGrayscale(resized);
             try
             {
@@ -238,10 +288,15 @@ namespace InventoryKamera
                     if (variant == AchievementRewardOcrVariant.GrayscaleContrastInverted)
                         imagePreprocessor.SetInvert(ref processed);
                 }
+                part.Stop();
+                preprocessingTime += part.Elapsed;
+                part.Restart();
                 (string text, float confidence) = ocrService.AnalyzeTextWithConfidence(
                     processed,
                     PageSegMode.SingleLine,
                     numbersOnly: true);
+                part.Stop();
+                ocrTime += part.Elapsed;
                 attempts.Add(new AchievementRewardOcrAttempt(variant, (text ?? string.Empty).Trim(), confidence));
             }
             finally
@@ -254,7 +309,9 @@ namespace InventoryKamera
             attempts.Count(attempt => attempt.Confidence >= AchievementRewardReader.MinimumEvidenceConfidence &&
                 attempt.ParseResult.Accepted) == 1;
 
-        private static AchievementRewardResult SelectReward(IReadOnlyList<AchievementRewardOcrAttempt> attempts)
+        private static AchievementRewardResult SelectReward(
+            IReadOnlyList<AchievementRewardOcrAttempt> attempts,
+            AchievementOcrReadTiming timing)
         {
             AchievementRewardOcrAttempt[] strong = attempts
                 .Where(attempt => attempt.Confidence >= AchievementRewardReader.MinimumEvidenceConfidence &&
@@ -274,7 +331,8 @@ namespace InventoryKamera
             diagnostics.Append("rewardValue=").Append(value?.ToString(CultureInfo.InvariantCulture) ?? "(none)");
             diagnostics.Append("; attempts=").Append(attempts.Count.ToString(CultureInfo.InvariantCulture));
             diagnostics.Append("; reason=").Append(reason);
-            return new AchievementRewardResult(attempts, selected, value, reason, diagnostics.ToString());
+            return new AchievementRewardResult(attempts, selected, value, reason,
+                diagnostics.ToString(), timing);
         }
     }
 }

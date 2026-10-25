@@ -166,13 +166,16 @@ namespace InventoryKamera
 
     internal sealed class AchievementCompletionRead
     {
-        internal AchievementCompletionRead(IEnumerable<AchievementCompletionOcrAttempt> attempts)
+        internal AchievementCompletionRead(IEnumerable<AchievementCompletionOcrAttempt> attempts,
+            AchievementOcrReadTiming timing = null)
         {
             if (attempts == null) throw new ArgumentNullException(nameof(attempts));
             Attempts = new ReadOnlyCollection<AchievementCompletionOcrAttempt>(attempts.ToArray());
+            Timing = timing ?? AchievementOcrReadTiming.Empty;
         }
 
         internal IReadOnlyList<AchievementCompletionOcrAttempt> Attempts { get; }
+        internal AchievementOcrReadTiming Timing { get; }
     }
 
     internal interface IAchievementCompletionReader

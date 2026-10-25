@@ -109,7 +109,8 @@ namespace InventoryKamera
             AchievementRewardOcrAttempt selectedAttempt,
             int? rewardValue,
             string reason,
-            string diagnostics)
+            string diagnostics,
+            AchievementOcrReadTiming timing = null)
         {
             Attempts = new ReadOnlyCollection<AchievementRewardOcrAttempt>(
                 (attempts ?? Array.Empty<AchievementRewardOcrAttempt>()).ToArray());
@@ -117,6 +118,7 @@ namespace InventoryKamera
             RewardValue = rewardValue;
             Reason = reason ?? string.Empty;
             Diagnostics = diagnostics ?? string.Empty;
+            Timing = timing ?? AchievementOcrReadTiming.Empty;
         }
 
         internal IReadOnlyList<AchievementRewardOcrAttempt> Attempts { get; }
@@ -125,6 +127,7 @@ namespace InventoryKamera
         internal bool Succeeded => RewardValue.HasValue;
         internal string Reason { get; }
         internal string Diagnostics { get; }
+        internal AchievementOcrReadTiming Timing { get; }
 
         internal static AchievementRewardResult Unresolved(string reason) =>
             CreateUnresolved(reason);

@@ -282,6 +282,16 @@ namespace InventoryKamera.Tests
             Assert.Equal(TimeSpan.FromMilliseconds(6), result.Timing.TitleOcr);
             Assert.Equal(TimeSpan.FromMilliseconds(9), result.Timing.CompletionOcr);
             Assert.Equal(TimeSpan.FromMilliseconds(12), result.Timing.RewardOcr);
+            Assert.Equal(TimeSpan.FromMilliseconds(0.75), result.Timing.ScreenDetection);
+            Assert.Equal(TimeSpan.FromMilliseconds(0.75), result.Timing.CompletedTotal);
+            Assert.Equal(TimeSpan.FromMilliseconds(1.5), result.Timing.OcrCropResize);
+            Assert.Equal(TimeSpan.FromMilliseconds(3), result.Timing.OcrPreprocessing);
+            Assert.Equal(TimeSpan.FromMilliseconds(6), result.Timing.OcrEngine);
+            Assert.Equal(TimeSpan.FromMilliseconds(13.5), result.Timing.FrameReaderOther);
+            Assert.Equal(result.Timing.TitleOcr,
+                TimeSpan.FromTicks(result.FrameObservations.Sum(frame =>
+                    frame.Timing.ReaderTiming.TitleOcr.Ticks)));
+            Assert.Equal(result.ProcessedFrames, result.FrameObservations.Count);
         }
 
         [Fact]
@@ -839,7 +849,12 @@ namespace InventoryKamera.Tests
             new AchievementBulkFrameTiming(TimeSpan.Zero,
                 TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(2),
                 TimeSpan.FromMilliseconds(3), TimeSpan.FromMilliseconds(4),
-                TimeSpan.FromMilliseconds(15), rows.Length, rows.Length),
+                TimeSpan.FromMilliseconds(15), rows.Length, rows.Length,
+                screenDetection: TimeSpan.FromMilliseconds(0.25),
+                completedTotal: TimeSpan.FromMilliseconds(0.25),
+                ocrCropResize: TimeSpan.FromMilliseconds(0.5),
+                ocrPreprocessing: TimeSpan.FromMilliseconds(1),
+                ocrEngine: TimeSpan.FromMilliseconds(2)),
             "Synthetic timed frame.");
 
         private static AchievementVisibleRow Row(

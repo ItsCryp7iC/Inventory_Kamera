@@ -465,7 +465,7 @@ namespace InventoryKamera.Tests
             Assert.Contains("reconciled to identified rows:", report);
             Assert.Contains("distinct unresolved intervals:", report);
             Assert.Contains("identified groups lacking trusted completion evidence:", report);
-            Assert.Contains("title OCR=0 ms", report);
+            Assert.Contains("title pipeline=0 ms", report);
             Assert.Contains("Positive top evidence: True", report);
             Assert.Contains("Positive bottom-position evidence: True", report);
         }

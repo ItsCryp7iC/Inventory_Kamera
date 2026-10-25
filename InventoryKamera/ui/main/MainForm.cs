@@ -912,14 +912,10 @@ namespace InventoryKamera
         {
             Invoke((System.Windows.Forms.MethodInvoker)delegate
             {
-                MessageBox.Show(
-                    this,
+                using var dialog = new AchievementBulkDiagnosticResultForm(
                     AchievementBulkDiagnosticReportBuilder.BuildSummary(result),
-                    "Achievement Bulk-Scrolling Diagnostic",
-                    MessageBoxButtons.OK,
-                    result.State == AchievementCategoryCrawlState.Failed
-                        ? MessageBoxIcon.Warning
-                        : MessageBoxIcon.Information);
+                    AchievementBulkDiagnosticReportBuilder.BuildDiagnosticDetails(result));
+                dialog.ShowDialog(this);
             });
         }
 

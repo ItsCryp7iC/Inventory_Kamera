@@ -1482,6 +1482,53 @@ and review of every remaining unmatched interval, completion-trust limitation, c
 gap. Reconciliation is diagnostic accounting only and does not authorize catalog set difference,
 hidden-absence inference, exact-title fallback, progress mutation, or export.
 
+#### Phase 7B.5 recognition diagnostics and performance investigation (implemented; awaiting manual validation)
+
+Each reconciled row interval that still limits identity or trusted-completion coverage now has an
+immutable, bitmap-free diagnostic record. Stable numbering follows source frame, normalized row
+position, and interval key. Records retain source/related frames, row index and normalized bounds,
+visibility, a whitespace-normalized OCR excerpt capped at 80 characters, identity state and
+candidate count, completion state, geometric reconciliation status/rejection reason, verified
+movement/overlap flags, whether a canonical group was positively established, and whether a later
+exact-title check could be useful. They never print candidate IDs, retain screenshots, or invent
+identity/completion from geometry. Long digit sequences are redacted and copied diagnostic output
+is capped at 32 KiB.
+
+Evidence-based causes are classified as `TitleOcrUnresolved`, `CanonicalIdentityAmbiguous`,
+`CompletionEvidenceUnresolved`, `GeometryMatchAmbiguous`, `InsufficientMotionEvidence`,
+`UncertainRowBoundary`, `UnrecoveredPartial`, `ConflictingObservation`, or `OtherUnresolved`.
+The record names one deterministic primary cause and preserves additional observed limitations as
+secondary causes. Reconciled partial observations with later trusted evidence are excluded. An
+identified canonical title with unresolved completion remains sufficient for identity coverage but
+insufficient for trusted-completion coverage.
+
+The terminal dialog keeps a concise interval summary and adds a read-only **Copy Diagnostic
+Details** action. That action copies only bounded sanitized evidence and timing; it does not create
+a scan-result format, mutate progress, or write a file.
+
+Timing now distinguishes additive top-level exclusive stages (capture, input, settling,
+stabilization analysis, frame evidence, viewport fingerprint, frame reader, layout, observation
+collection, motion analysis, reconciliation, and progress reporting) from nested frame-reader and
+OCR breakdowns. Nested measurements identify screen detection, completed-total OCR, row detection,
+title/completion/reward pipelines, bitmap crop/resize, preprocessing, OCR-engine time, and residual
+reader work. Per-frame details are bounded to the crawler's 80-frame ceiling. Final reconciliation
+is included inside wall-clock total, and an unchanged accumulator result may be reused only when
+both observation count and the exact immutable scroll-evidence sequence are unchanged.
+
+The earlier 77.3-second live report's 23.4-second `other frame processing` value combined category
+evidence detection, viewport fingerprinting, screen/completed-total work, bitmap operations,
+formatting, and frame-reader overhead. It was therefore not an exclusive measured bottleneck and
+cannot support a speed claim. No OCR thresholds, serial OCR policy, settling delay, scroll distance,
+geometry tolerance, or trust gate changed in Phase 7B.5.
+
+Next manual validation must repeat **Verify Full Category Traversal** at the known 1920x1080 setup,
+copy the diagnostic details, and review all four outstanding intervals plus the exclusive/nested
+per-frame timing. Confirm that traversal remains complete, interval numbering and excerpts are
+useful and privacy-safe, identity coverage stays separate from completion coverage, and the
+exclusive accounted plus unattributed values reconcile with total wall time. No achievement data
+should be saved or exported. Phase 7C remains blocked pending that review, representative category
+and resolution evidence, and safe disposition of every outstanding interval.
+
 ### Later Phase 7 slices (not implemented)
 
 - Phase 7C: catalog reconciliation and hidden-set difference only after traversal completeness is

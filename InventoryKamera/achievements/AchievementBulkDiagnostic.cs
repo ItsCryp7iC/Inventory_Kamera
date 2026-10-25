@@ -169,6 +169,10 @@ namespace InventoryKamera
 
     internal static class AchievementBulkDiagnosticReportBuilder
     {
+        internal const int MaximumDiagnosticDetailCharacters = 32768;
+        internal const int MaximumDetailedIntervals = 128;
+        internal const int MaximumDetailedFrames = 80;
+
         internal static string BuildProgress(AchievementCategoryCrawlProgress progress)
         {
             if (progress == null) return "Preparing bulk-scrolling diagnostic";
@@ -253,15 +257,120 @@ namespace InventoryKamera
             builder.AppendLine($"Partial rows recovered: {result.PartialRowsRecovered}; partial rows outstanding: " +
                 $"{result.PartialRowsOutstanding}; reconciliation conflicts: {result.ReconciliationConflicts}; " +
                 $"identified groups lacking trusted completion evidence: {result.IdentifiedGroupsLackingTrustedCompletionEvidence}");
+            if (result.DiagnosticIntervals.Count > 0)
+            {
+                string intervalSummary = string.Join("; ", result.DiagnosticIntervals.Take(8)
+                    .Select(value => $"#{value.IntervalNumber} frame {value.SourceFrameIndex}: {value.PrimaryCause}"));
+                if (result.DiagnosticIntervals.Count > 8)
+                    intervalSummary += $"; +{result.DiagnosticIntervals.Count - 8} more";
+                builder.AppendLine($"Intervals needing review: {intervalSummary}");
+            }
             builder.AppendLine($"Frame overlap: {result.OverlapVerifiedScrolls} batches verified; unobserved movement gaps: {result.UnobservedMovementGaps}");
             builder.AppendLine($"Traversal state: {result.FinalScrollState}");
-            builder.AppendLine($"Timing: capture={Milliseconds(result.Timing.Capture)} ms; scrolling={Milliseconds(result.Timing.Scrolling)} ms; " +
-                $"settling={Milliseconds(result.Timing.Settling)} ms; row detection={Milliseconds(result.Timing.RowDetection)} ms; " +
-                $"title OCR={Milliseconds(result.Timing.TitleOcr)} ms; completion OCR={Milliseconds(result.Timing.CompletionOcr)} ms; " +
-                $"reward OCR={Milliseconds(result.Timing.RewardOcr)} ms; other frame processing={Milliseconds(result.Timing.OtherFrameProcessing)} ms");
+            TimeSpan crawlerAnalysis = result.Timing.StabilizationAnalysis +
+                result.Timing.FrameEvidenceDetection + result.Timing.ViewportFingerprinting +
+                result.Timing.LayoutProcessing + result.Timing.ObservationCollection +
+                result.Timing.MotionAnalysis + result.Timing.Reconciliation +
+                result.Timing.ProgressReporting + result.Timing.OtherFrameProcessing;
+            builder.AppendLine($"Top-level exclusive timing: capture={Milliseconds(result.Timing.Capture)} ms; scrolling={Milliseconds(result.Timing.Scrolling)} ms; " +
+                $"settling={Milliseconds(result.Timing.Settling)} ms; frame reader={Milliseconds(result.Timing.FrameReader)} ms; " +
+                $"crawler analysis={Milliseconds(crawlerAnalysis)} ms; " +
+                $"unattributed={Milliseconds(result.Timing.Unattributed)} ms");
+            builder.AppendLine($"Nested frame-reader timing (not additive): row detection={Milliseconds(result.Timing.RowDetection)} ms; " +
+                $"title pipeline={Milliseconds(result.Timing.TitleOcr)} ms; completion pipeline={Milliseconds(result.Timing.CompletionOcr)} ms; " +
+                $"reward pipeline={Milliseconds(result.Timing.RewardOcr)} ms; OCR engine={Milliseconds(result.Timing.OcrEngine)} ms");
             builder.AppendLine($"Elapsed: {result.Timing.Total.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture)} ms");
             builder.AppendLine($"Reason: {result.Reason}");
             return builder.ToString().TrimEnd();
+        }
+
+        internal static string BuildDiagnosticDetails(AchievementBulkDiagnosticResult diagnostic)
+        {
+            if (diagnostic == null)
+                return "Achievement bulk diagnostic\nresult=unavailable";
+            AchievementCategoryCrawlResult result = diagnostic.CrawlResult;
+            if (result == null)
+            {
+                return Bound($"Achievement bulk diagnostic\nmode={ModeName(diagnostic.Mode)}\n" +
+                    $"state={diagnostic.State}\nreason={Sanitize(diagnostic.Reason, 512)}");
+            }
+
+            var builder = new StringBuilder(4096);
+            builder.AppendLine("Achievement bulk diagnostic details (sanitized; no screenshots or canonical IDs)");
+            builder.AppendLine($"mode={ModeName(diagnostic.Mode)}; state={result.State}; traversalComplete={result.IsComplete}; " +
+                $"identityCoverage={result.RecognitionCoverageSufficient}; trustedCompletionCoverage={result.TrustedCompletionCoverageSufficient}");
+            builder.AppendLine($"frames={result.ProcessedFrames}; scrolls={result.ScrollActions}; diagnosticIntervals={result.DiagnosticIntervals.Count}; " +
+                $"identityOutstanding={result.OutstandingIntervals.Count}; completionLimited={result.CompletionLimitedIntervals.Count}");
+            builder.AppendLine($"reason={Sanitize(result.Reason, 512)}");
+            builder.AppendLine("timing-semantics: top-level fields below are exclusive and additive; frame-reader and OCR breakdowns are nested and must not be added again");
+            builder.AppendLine($"timing-exclusive-ms: capture={Milliseconds(result.Timing.Capture)}; scroll={Milliseconds(result.Timing.Scrolling)}; " +
+                $"settle={Milliseconds(result.Timing.Settling)}; stabilizationAnalysis={Milliseconds(result.Timing.StabilizationAnalysis)}; " +
+                $"frameEvidence={Milliseconds(result.Timing.FrameEvidenceDetection)}; viewportFingerprint={Milliseconds(result.Timing.ViewportFingerprinting)}; " +
+                $"frameReader={Milliseconds(result.Timing.FrameReader)}; layout={Milliseconds(result.Timing.LayoutProcessing)}; " +
+                $"observationCollection={Milliseconds(result.Timing.ObservationCollection)}; motion={Milliseconds(result.Timing.MotionAnalysis)}; " +
+                $"reconciliation={Milliseconds(result.Timing.Reconciliation)}; progressReporting={Milliseconds(result.Timing.ProgressReporting)}; " +
+                $"accounted={Milliseconds(result.Timing.AccountedExclusive)}; unattributed={Milliseconds(result.Timing.Unattributed)}; total={Milliseconds(result.Timing.Total)}");
+            builder.AppendLine($"timing-nested-frame-reader-ms: screenDetection={Milliseconds(result.Timing.ScreenDetection)}; " +
+                $"completedTotal={Milliseconds(result.Timing.CompletedTotal)}; rowDetection={Milliseconds(result.Timing.RowDetection)}; " +
+                $"titleOcr={Milliseconds(result.Timing.TitleOcr)}; completionOcr={Milliseconds(result.Timing.CompletionOcr)}; " +
+                $"rewardOcr={Milliseconds(result.Timing.RewardOcr)}; readerOther={Milliseconds(result.Timing.FrameReaderOther)}");
+            builder.AppendLine($"timing-nested-ocr-ms: cropResize={Milliseconds(result.Timing.OcrCropResize)}; " +
+                $"preprocessing={Milliseconds(result.Timing.OcrPreprocessing)}; engine={Milliseconds(result.Timing.OcrEngine)}");
+
+            builder.AppendLine("intervals:");
+            foreach (AchievementUnresolvedIntervalDiagnostic interval in
+                result.DiagnosticIntervals.Take(MaximumDetailedIntervals))
+            {
+                builder.AppendLine($"#{interval.IntervalNumber}: primary={interval.PrimaryCause}; secondary=" +
+                    $"{Join(interval.SecondaryCauses)}; identityOutstanding={interval.IdentityOutstanding}");
+                builder.AppendLine($"  sourceFrame={interval.SourceFrameIndex}; otherFrames={Join(interval.OtherFrameIndexes)}; " +
+                    $"row={interval.RowIndex}; bounds={interval.NormalizedBoundsText}; visibility={interval.Visibility}");
+                builder.AppendLine($"  ocrExcerpt={Quote(interval.OcrExcerpt)}; identity={interval.IdentityState}; " +
+                    $"candidateCount={interval.CandidateCount}; completion={interval.CompletionState}");
+                builder.AppendLine($"  geometry={interval.ReconciliationStatus}; rejection={Quote(interval.RejectionReason)}; " +
+                    $"movementVerified={interval.MovementVerified}; overlapVerified={interval.OverlapVerified}");
+                builder.AppendLine($"  canonicalGroupEstablished={interval.CandidateCanonicalGroupEstablished}; " +
+                    $"exactTitleVerificationUsefulLater={interval.ExactTitleVerificationUsefulLater}");
+            }
+            if (result.DiagnosticIntervals.Count > MaximumDetailedIntervals)
+                builder.AppendLine($"intervals-truncated={result.DiagnosticIntervals.Count - MaximumDetailedIntervals}");
+
+            builder.AppendLine("per-frame-timing-ms (exclusive crawler stages; reader breakdown nested; aggregate capture also includes discarded stabilization candidates):");
+            foreach (AchievementCategoryFrameObservation frame in result.FrameObservations.Take(MaximumDetailedFrames))
+            {
+                AchievementCategoryFrameTiming timing = frame.Timing;
+                AchievementBulkFrameTiming reader = timing.ReaderTiming;
+                builder.AppendLine($"frame={frame.FrameIndex}; rows={frame.DetectedRows}; capture={Milliseconds(timing.Capture)}; " +
+                    $"evidence={Milliseconds(timing.EvidenceDetection)}; fingerprint={Milliseconds(timing.ViewportFingerprint)}; " +
+                    $"reader={Milliseconds(timing.FrameReader)}; layout={Milliseconds(timing.LayoutProcessing)}; " +
+                    $"observation={Milliseconds(timing.ObservationCollection)}; other={Milliseconds(timing.ProcessingOther)}; " +
+                    $"readerRowDetection={Milliseconds(reader?.RowDetection ?? TimeSpan.Zero)}; " +
+                    $"readerTitleOcr={Milliseconds(reader?.TitleOcr ?? TimeSpan.Zero)}; " +
+                    $"readerCompletionOcr={Milliseconds(reader?.CompletionOcr ?? TimeSpan.Zero)}; " +
+                    $"readerOcrEngine={Milliseconds(reader?.OcrEngine ?? TimeSpan.Zero)}");
+            }
+            if (result.FrameObservations.Count > MaximumDetailedFrames)
+                builder.AppendLine($"frames-truncated={result.FrameObservations.Count - MaximumDetailedFrames}");
+            return Bound(builder.ToString().TrimEnd());
+        }
+
+        private static string Join<T>(System.Collections.Generic.IEnumerable<T> values)
+        {
+            string[] content = (values ?? Array.Empty<T>())
+                .Select(value => Convert.ToString(value, CultureInfo.InvariantCulture)).ToArray();
+            return content.Length == 0 ? "none" : string.Join(",", content);
+        }
+
+        private static string Quote(string value) => '"' + Sanitize(value, 512).Replace("\"", "'") + '"';
+
+        private static string Sanitize(string value, int maximumLength) =>
+            AchievementUnresolvedIntervalDiagnostic.Sanitize(value, maximumLength);
+
+        private static string Bound(string value)
+        {
+            if ((value ?? string.Empty).Length <= MaximumDiagnosticDetailCharacters) return value ?? string.Empty;
+            const string suffix = "\n[diagnostic details truncated at the fixed size limit]";
+            return value.Substring(0, MaximumDiagnosticDetailCharacters - suffix.Length) + suffix;
         }
 
         private static string JoinMeasurements(System.Collections.Generic.IEnumerable<int> values)

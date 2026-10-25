@@ -248,4 +248,87 @@ namespace InventoryKamera.ui
                   "It may stop before the category bottom. Press F8 to cancel; no progress is saved or exported.";
         }
     }
+
+    internal sealed class AchievementBulkDiagnosticResultForm : Form
+    {
+        private readonly Action<string> copyAction;
+        private readonly string diagnosticDetails;
+        private readonly TextBox summaryBox;
+        private readonly Button copyButton;
+
+        internal AchievementBulkDiagnosticResultForm(string summary, string diagnosticDetails,
+            Action<string> copyAction = null)
+        {
+            this.copyAction = copyAction ?? CopyToClipboard;
+            this.diagnosticDetails = diagnosticDetails ?? string.Empty;
+            Text = "Achievement Bulk-Scrolling Diagnostic";
+            AutoScaleMode = AutoScaleMode.Dpi;
+            ClientSize = new Size(760, 540);
+            MinimumSize = new Size(620, 420);
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterParent;
+
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2,
+                Padding = new Padding(12),
+            };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            summaryBox = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Both,
+                WordWrap = false,
+                Text = summary ?? string.Empty,
+            };
+            var buttons = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(0, 10, 0, 0),
+                WrapContents = false,
+            };
+            var closeButton = new Button
+            {
+                AutoSize = true,
+                DialogResult = DialogResult.OK,
+                MinimumSize = new Size(90, 34),
+                Text = "Close",
+            };
+            copyButton = new Button
+            {
+                AutoSize = true,
+                MinimumSize = new Size(160, 34),
+                Text = "Copy Diagnostic Details",
+            };
+            copyButton.Click += (_, _) => CopyDiagnosticDetails();
+            buttons.Controls.Add(closeButton);
+            buttons.Controls.Add(copyButton);
+            layout.Controls.Add(summaryBox, 0, 0);
+            layout.Controls.Add(buttons, 0, 1);
+            Controls.Add(layout);
+            AcceptButton = closeButton;
+            CancelButton = closeButton;
+        }
+
+        internal TextBox SummaryBox => summaryBox;
+        internal Button CopyButton => copyButton;
+        internal string DiagnosticDetails => diagnosticDetails;
+
+        internal void CopyDiagnosticDetails()
+        {
+            if (diagnosticDetails.Length > 0) copyAction(diagnosticDetails);
+        }
+
+        private static void CopyToClipboard(string value) => Clipboard.SetText(value);
+    }
 }

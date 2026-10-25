@@ -105,7 +105,12 @@ namespace InventoryKamera
             TimeSpan rewardOcr,
             TimeSpan total,
             int rowsProcessed,
-            int rowsResolved)
+            int rowsResolved,
+            TimeSpan screenDetection = default,
+            TimeSpan completedTotal = default,
+            TimeSpan ocrCropResize = default,
+            TimeSpan ocrPreprocessing = default,
+            TimeSpan ocrEngine = default)
         {
             Capture = capture;
             RowDetection = rowDetection;
@@ -115,6 +120,11 @@ namespace InventoryKamera
             Total = total;
             RowsProcessed = rowsProcessed;
             RowsResolved = rowsResolved;
+            ScreenDetection = screenDetection;
+            CompletedTotal = completedTotal;
+            OcrCropResize = ocrCropResize;
+            OcrPreprocessing = ocrPreprocessing;
+            OcrEngine = ocrEngine;
         }
 
         internal TimeSpan Capture { get; }
@@ -125,9 +135,21 @@ namespace InventoryKamera
         internal TimeSpan Total { get; }
         internal int RowsProcessed { get; }
         internal int RowsResolved { get; }
+        internal TimeSpan ScreenDetection { get; }
+        internal TimeSpan CompletedTotal { get; }
+        internal TimeSpan OcrCropResize { get; }
+        internal TimeSpan OcrPreprocessing { get; }
+        internal TimeSpan OcrEngine { get; }
+        internal TimeSpan FrameReaderOther => NonNegative(Total - ScreenDetection -
+            CompletedTotal - RowDetection - TitleOcr - CompletionOcr - RewardOcr);
+        internal TimeSpan OcrPipelineOther => NonNegative(TitleOcr + CompletionOcr +
+            RewardOcr - OcrCropResize - OcrPreprocessing - OcrEngine);
         internal double? MillisecondsPerResolvedRow => RowsResolved == 0
             ? null
             : Total.TotalMilliseconds / RowsResolved;
+
+        private static TimeSpan NonNegative(TimeSpan value) =>
+            value > TimeSpan.Zero ? value : TimeSpan.Zero;
     }
 
     internal sealed class AchievementBulkFrameResult
@@ -502,8 +524,14 @@ namespace InventoryKamera
             if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
 
             Stopwatch total = Stopwatch.StartNew();
+            Stopwatch part = Stopwatch.StartNew();
             AchievementScreenDetection screen = screenDetector.Detect(screenshot);
+            part.Stop();
+            TimeSpan screenDetectionTime = part.Elapsed;
+            part.Restart();
             AchievementCompletedTotalResult completedTotal = completedTotalReader.Read(screenshot);
+            part.Stop();
+            TimeSpan completedTotalTime = part.Elapsed;
             if (screen.ScreenState != AchievementScreenState.Idle)
             {
                 total.Stop();
@@ -515,7 +543,9 @@ namespace InventoryKamera
                     TimeSpan.Zero,
                     total.Elapsed,
                     0,
-                    0);
+                    0,
+                    screenDetectionTime,
+                    completedTotalTime);
                 return new AchievementBulkFrameResult(
                     screen.ScreenState,
                     Array.Empty<AchievementVisibleRow>(),
@@ -525,13 +555,16 @@ namespace InventoryKamera
                     screen.IsKeyboardMouseIdle);
             }
 
-            Stopwatch part = Stopwatch.StartNew();
+            part.Restart();
             AchievementVisibleRowDetection detected = rowDetector.Detect(screenshot);
             part.Stop();
             TimeSpan rowDetectionTime = part.Elapsed;
             TimeSpan titleTime = TimeSpan.Zero;
             TimeSpan completionTime = TimeSpan.Zero;
             TimeSpan rewardTime = TimeSpan.Zero;
+            TimeSpan ocrCropResizeTime = TimeSpan.Zero;
+            TimeSpan ocrPreprocessingTime = TimeSpan.Zero;
+            TimeSpan ocrEngineTime = TimeSpan.Zero;
             var rows = new List<AchievementVisibleRow>(detected.VisibleRows.Count);
 
             // Deliberately serial: IOcrService exposes no thread-safety contract and production uses
@@ -555,6 +588,9 @@ namespace InventoryKamera
                 AchievementIdentityResult identity = identityResolver.Resolve(titleRead);
                 part.Stop();
                 titleTime += part.Elapsed;
+                ocrCropResizeTime += titleRead.Timing.CropResize;
+                ocrPreprocessingTime += titleRead.Timing.Preprocessing;
+                ocrEngineTime += titleRead.Timing.OcrEngine;
 
                 AchievementCompletionResult completion;
                 if (identity.State == AchievementIdentityState.Identified ||
@@ -568,6 +604,9 @@ namespace InventoryKamera
                     completion = AchievementVisibleRowCompletionResolver.Resolve(identity, completionRead.Attempts);
                     part.Stop();
                     completionTime += part.Elapsed;
+                    ocrCropResizeTime += completionRead.Timing.CropResize;
+                    ocrPreprocessingTime += completionRead.Timing.Preprocessing;
+                    ocrEngineTime += completionRead.Timing.OcrEngine;
                 }
                 else
                 {
@@ -593,6 +632,9 @@ namespace InventoryKamera
                             reward = rewardReader.Read(screenshot, geometry);
                             part.Stop();
                             rewardTime += part.Elapsed;
+                            ocrCropResizeTime += reward.Timing.CropResize;
+                            ocrPreprocessingTime += reward.Timing.Preprocessing;
+                            ocrEngineTime += reward.Timing.OcrEngine;
                         }
                         stageProgress = stageResolver.Resolve(identity, completion, reward, group);
                     }
@@ -652,7 +694,12 @@ namespace InventoryKamera
                 rewardTime,
                 total.Elapsed,
                 rows.Count,
-                resolved);
+                resolved,
+                screenDetectionTime,
+                completedTotalTime,
+                ocrCropResizeTime,
+                ocrPreprocessingTime,
+                ocrEngineTime);
             var frameDiagnostics = new StringBuilder();
             frameDiagnostics.AppendLine($"screenState={screen.ScreenState}; completedTotal={completedTotal.CompletedTotal?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}");
             frameDiagnostics.AppendLine(detected.Diagnostics);
@@ -660,6 +707,9 @@ namespace InventoryKamera
                 $"rowsProcessed={rows.Count}; rowsResolved={resolved}; rowDetectionMs={timing.RowDetection.TotalMilliseconds:0.00}; " +
                 $"titleOcrMs={timing.TitleOcr.TotalMilliseconds:0.00}; completionOcrMs={timing.CompletionOcr.TotalMilliseconds:0.00}; " +
                 $"rewardOcrMs={timing.RewardOcr.TotalMilliseconds:0.00}; totalFrameMs={timing.Total.TotalMilliseconds:0.00}; " +
+                $"screenDetectionMs={timing.ScreenDetection.TotalMilliseconds:0.00}; completedTotalMs={timing.CompletedTotal.TotalMilliseconds:0.00}; " +
+                $"ocrCropResizeMs={timing.OcrCropResize.TotalMilliseconds:0.00}; ocrPreprocessingMs={timing.OcrPreprocessing.TotalMilliseconds:0.00}; " +
+                $"ocrEngineMs={timing.OcrEngine.TotalMilliseconds:0.00}; frameReaderOtherMs={timing.FrameReaderOther.TotalMilliseconds:0.00}; " +
                 $"msPerResolvedRow={timing.MillisecondsPerResolvedRow?.ToString("0.00", CultureInfo.InvariantCulture) ?? "(none)"}");
             return new AchievementBulkFrameResult(
                 screen.ScreenState,
