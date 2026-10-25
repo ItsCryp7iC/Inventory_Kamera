@@ -4,8 +4,9 @@ using System.Threading;
 namespace InventoryKamera.game
 {
     /// <summary>
-    /// Sends one bounded wheel step over the right-side Achievement list. Coordinates are relative
-    /// to the active Genshin client and deliberately avoid the left category scrollbar.
+    /// Sends one bounded batch of standard wheel notches over the right-side Achievement list.
+    /// Coordinates are relative to the active Genshin client and deliberately avoid the left
+    /// category scrollbar.
     /// </summary>
     internal sealed class AchievementWindowsListScrollInput : IAchievementListScrollInput
     {
@@ -43,11 +44,12 @@ namespace InventoryKamera.game
         }
 
         public AchievementListScrollCommandResult Scroll(
-            int wheelDelta,
+            AchievementListScrollRequest request,
             CancellationToken cancellationToken)
         {
             try
             {
+                if (request == null) throw new ArgumentNullException(nameof(request));
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!inputAllowed())
                     return Failure("Achievement-list input is blocked while an interactive dialog is open.");
@@ -61,13 +63,20 @@ namespace InventoryKamera.game
 
                 pointerInput.MoveNormalized(targetX, targetY, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
-                pointerInput.ScrollWheel(wheelDelta, cancellationToken);
+                for (int notch = 0; notch < request.NotchCount; notch++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    pointerInput.ScrollWheel(request.WheelDeltaPerNotch, cancellationToken);
+                }
                 cancellationToken.ThrowIfCancellationRequested();
                 return new AchievementListScrollCommandResult(
                     succeeded: true,
                     foregroundVerified: true,
                     failureReason: null,
-                    diagnostics: $"target=({targetX:0.000},{targetY:0.000}); wheelDelta={wheelDelta}");
+                    diagnostics: $"target=({targetX:0.000},{targetY:0.000}); " +
+                        $"logicalNotches={request.NotchCount}; deltaPerNotch={request.WheelDeltaPerNotch}; " +
+                        $"logicalDelta={request.LogicalWheelDelta}; provisionalTargetPixels={request.ProvisionalTargetDisplacementPixels}; " +
+                        "actualDisplacement=measured-from-post-scroll-frame");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

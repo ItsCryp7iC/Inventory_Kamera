@@ -41,6 +41,8 @@ namespace InventoryKamera
 
     internal sealed class AchievementCategoryCrawlOptions
     {
+        internal const int MeasuredPixelsPerPhysicalNotch = 18;
+        internal const int ProvisionalTargetDisplacementPixels = 378;
         internal static AchievementCategoryCrawlOptions Default { get; } = new();
 
         internal AchievementCategoryCrawlOptions(
@@ -49,7 +51,10 @@ namespace InventoryKamera
             int maximumConsecutiveUncertainFrames = 3,
             int maximumNoMovementRecoveryAttempts = 1,
             int scrollSettleMilliseconds = 350,
-            int wheelDelta = -360)
+            int wheelDeltaPerNotch = -120,
+            int wheelNotchesPerBatch = 21,
+            int stabilizationPollMilliseconds = 75,
+            int maximumStabilizationCaptures = 4)
         {
             MaximumCapturedFrames = Positive(maximumCapturedFrames, nameof(maximumCapturedFrames));
             MaximumScrollActions = Positive(maximumScrollActions, nameof(maximumScrollActions));
@@ -59,10 +64,18 @@ namespace InventoryKamera
                 maximumNoMovementRecoveryAttempts, nameof(maximumNoMovementRecoveryAttempts));
             ScrollSettleMilliseconds = NonNegative(
                 scrollSettleMilliseconds, nameof(scrollSettleMilliseconds));
-            if (wheelDelta > -120 || wheelDelta < -1200 || wheelDelta % 120 != 0)
-                throw new ArgumentOutOfRangeException(nameof(wheelDelta),
-                    "The downward wheel delta must be a bounded multiple of 120.");
-            WheelDelta = wheelDelta;
+            if (wheelDeltaPerNotch != -120)
+                throw new ArgumentOutOfRangeException(nameof(wheelDeltaPerNotch),
+                    "Each downward wheel event must remain one standard -120 notch.");
+            if (wheelNotchesPerBatch < 1 || wheelNotchesPerBatch > 24)
+                throw new ArgumentOutOfRangeException(nameof(wheelNotchesPerBatch));
+            WheelDeltaPerNotch = wheelDeltaPerNotch;
+            WheelNotchesPerBatch = wheelNotchesPerBatch;
+            StabilizationPollMilliseconds = NonNegative(
+                stabilizationPollMilliseconds, nameof(stabilizationPollMilliseconds));
+            if (maximumStabilizationCaptures < 1 || maximumStabilizationCaptures > 8)
+                throw new ArgumentOutOfRangeException(nameof(maximumStabilizationCaptures));
+            MaximumStabilizationCaptures = maximumStabilizationCaptures;
         }
 
         internal int MaximumCapturedFrames { get; }
@@ -70,7 +83,14 @@ namespace InventoryKamera
         internal int MaximumConsecutiveUncertainFrames { get; }
         internal int MaximumNoMovementRecoveryAttempts { get; }
         internal int ScrollSettleMilliseconds { get; }
-        internal int WheelDelta { get; }
+        internal int WheelDeltaPerNotch { get; }
+        internal int WheelNotchesPerBatch { get; }
+        internal int StabilizationPollMilliseconds { get; }
+        internal int MaximumStabilizationCaptures { get; }
+        internal AchievementListScrollRequest ScrollRequest => new(
+            WheelDeltaPerNotch,
+            WheelNotchesPerBatch,
+            MeasuredPixelsPerPhysicalNotch * WheelNotchesPerBatch);
 
         private static int Positive(int value, string name) =>
             value > 0 ? value : throw new ArgumentOutOfRangeException(name);
@@ -107,8 +127,8 @@ namespace InventoryKamera
     }
 
     /// <summary>
-    /// The Phase 7A.1 fixtures contain no verified bottom example. Production therefore returns
-    /// no positional proof until a later live-calibration phase supplies safe scrollbar evidence.
+    /// Fail-closed fallback for callers that do not have a calibrated frame-evidence detector.
+    /// It intentionally supplies no positional or category proof.
     /// </summary>
     internal sealed class UncalibratedAchievementCategoryFrameEvidenceDetector :
         IAchievementCategoryFrameEvidenceDetector
@@ -145,14 +165,45 @@ namespace InventoryKamera
         internal string Diagnostics { get; }
     }
 
+    internal sealed class AchievementListScrollRequest
+    {
+        internal AchievementListScrollRequest(
+            int wheelDeltaPerNotch,
+            int notchCount,
+            int provisionalTargetDisplacementPixels)
+        {
+            if (wheelDeltaPerNotch != -120)
+                throw new ArgumentOutOfRangeException(nameof(wheelDeltaPerNotch));
+            if (notchCount < 1 || notchCount > 24)
+                throw new ArgumentOutOfRangeException(nameof(notchCount));
+            WheelDeltaPerNotch = wheelDeltaPerNotch;
+            NotchCount = notchCount;
+            ProvisionalTargetDisplacementPixels = provisionalTargetDisplacementPixels;
+        }
+
+        internal int WheelDeltaPerNotch { get; }
+        internal int NotchCount { get; }
+        internal int LogicalWheelDelta => WheelDeltaPerNotch * NotchCount;
+        internal int ProvisionalTargetDisplacementPixels { get; }
+    }
+
     internal interface IAchievementListScrollInput
     {
-        AchievementListScrollCommandResult Scroll(int wheelDelta, CancellationToken cancellationToken);
+        AchievementListScrollCommandResult Scroll(
+            AchievementListScrollRequest request,
+            CancellationToken cancellationToken);
     }
 
     internal readonly struct AchievementViewportFingerprint : IEquatable<AchievementViewportFingerprint>
     {
-        internal AchievementViewportFingerprint(ulong value) => Value = value;
+        private readonly byte[] rowProfile;
+
+        private AchievementViewportFingerprint(ulong value, byte[] rowProfile)
+        {
+            Value = value;
+            this.rowProfile = rowProfile;
+        }
+
         internal ulong Value { get; }
 
         internal static AchievementViewportFingerprint Create(Bitmap screenshot)
@@ -161,28 +212,156 @@ namespace InventoryKamera
             Rectangle viewport = AchievementListRegions.For(screenshot.Size).RowViewport;
             int cursorX = (int)Math.Round((screenshot.Width - 1) * AchievementWindowsListScrollInput.ScrollTargetX);
             int cursorY = (int)Math.Round((screenshot.Height - 1) * AchievementWindowsListScrollInput.ScrollTargetY);
+            var profile = new byte[viewport.Height];
             const ulong offset = 14695981039346656037UL;
             const ulong prime = 1099511628211UL;
             ulong hash = offset;
-            for (int y = viewport.Top; y < viewport.Bottom; y += 12)
+            for (int y = viewport.Top; y < viewport.Bottom; y++)
             {
+                int total = 0;
+                int samples = 0;
                 for (int x = viewport.Left; x < viewport.Right; x += 12)
                 {
                     if (Math.Abs(x - cursorX) <= 36 && Math.Abs(y - cursorY) <= 36) continue;
                     Color pixel = screenshot.GetPixel(x, y);
-                    int luminance = ((54 * pixel.R) + (183 * pixel.G) + (19 * pixel.B)) >> 8;
-                    byte quantized = (byte)(luminance >> 4);
-                    hash ^= quantized;
-                    hash *= prime;
+                    total += ((54 * pixel.R) + (183 * pixel.G) + (19 * pixel.B)) >> 8;
+                    samples++;
+                }
+                byte average = (byte)(samples == 0 ? 0 : total / samples);
+                profile[y - viewport.Top] = average;
+                hash ^= average;
+                hash *= prime;
+            }
+            return new AchievementViewportFingerprint(hash, profile);
+        }
+
+        internal AchievementViewportComparison CompareTo(
+            AchievementViewportFingerprint other,
+            int maximumDisplacementPixels = 500)
+        {
+            if (rowProfile == null || other.rowProfile == null || rowProfile.Length != other.rowProfile.Length)
+                return AchievementViewportComparison.Unavailable;
+            int maximum = Math.Min(maximumDisplacementPixels, rowProfile.Length / 2);
+            int bestDisplacement = 0;
+            double zeroDifference = Difference(rowProfile, other.rowProfile, 0);
+            double bestDifference = zeroDifference;
+            for (int displacement = -maximum; displacement <= maximum; displacement++)
+            {
+                if (displacement == 0) continue;
+                double difference = Difference(rowProfile, other.rowProfile, displacement);
+                if (difference + 0.0001 < bestDifference)
+                {
+                    bestDifference = difference;
+                    bestDisplacement = displacement;
                 }
             }
-            return new AchievementViewportFingerprint(hash);
+            return new AchievementViewportComparison(
+                available: true,
+                displacementPixels: bestDisplacement,
+                alignedMeanDifference: bestDifference,
+                zeroShiftMeanDifference: zeroDifference);
+        }
+
+        private static double Difference(byte[] left, byte[] right, int displacement)
+        {
+            long difference = 0;
+            int samples = 0;
+            for (int index = 0; index < left.Length; index++)
+            {
+                int other = index + displacement;
+                if (other < 0 || other >= right.Length) continue;
+                difference += Math.Abs(left[index] - right[other]);
+                samples++;
+            }
+            return samples == 0 ? double.MaxValue : difference / (double)samples;
         }
 
         public bool Equals(AchievementViewportFingerprint other) => Value == other.Value;
         public override bool Equals(object obj) => obj is AchievementViewportFingerprint other && Equals(other);
         public override int GetHashCode() => Value.GetHashCode();
         public override string ToString() => Value.ToString("X16", CultureInfo.InvariantCulture);
+    }
+
+    internal readonly struct AchievementViewportComparison
+    {
+        internal static AchievementViewportComparison Unavailable { get; } =
+            new(false, 0, double.MaxValue, double.MaxValue);
+
+        internal AchievementViewportComparison(bool available, int displacementPixels,
+            double alignedMeanDifference, double zeroShiftMeanDifference)
+        {
+            Available = available;
+            DisplacementPixels = displacementPixels;
+            AlignedMeanDifference = alignedMeanDifference;
+            ZeroShiftMeanDifference = zeroShiftMeanDifference;
+        }
+
+        internal bool Available { get; }
+        internal int DisplacementPixels { get; }
+        internal double AlignedMeanDifference { get; }
+        internal double ZeroShiftMeanDifference { get; }
+        internal bool Stable => Available && Math.Abs(DisplacementPixels) <= 1 && ZeroShiftMeanDifference <= 1.0;
+        internal bool ReliableMovement => Available && Math.Abs(DisplacementPixels) >= 2 &&
+            AlignedMeanDifference <= 2.0 && ZeroShiftMeanDifference - AlignedMeanDifference >= 1.0;
+    }
+
+    internal sealed class AchievementViewportMotion
+    {
+        private AchievementViewportMotion(AchievementViewportComparison visual,
+            double? rowDisplacementPixels, bool contradictory)
+        {
+            Visual = visual;
+            RowDisplacementPixels = rowDisplacementPixels;
+            Contradictory = contradictory;
+        }
+
+        internal AchievementViewportComparison Visual { get; }
+        internal double? RowDisplacementPixels { get; }
+        internal bool Contradictory { get; }
+        internal bool Stable => !Contradictory && Visual.Stable &&
+            (!RowDisplacementPixels.HasValue || Math.Abs(RowDisplacementPixels.Value) <= 1.0);
+        internal bool Advanced => !Contradictory &&
+            ((RowDisplacementPixels.HasValue && Math.Abs(RowDisplacementPixels.Value) >= 2.0) ||
+             Visual.ReliableMovement);
+
+        internal static AchievementViewportMotion Compare(
+            AchievementBulkFrameResult previous,
+            AchievementViewportFingerprint previousFingerprint,
+            AchievementBulkFrameResult current,
+            AchievementViewportFingerprint currentFingerprint,
+            int captureHeight)
+        {
+            AchievementViewportComparison visual = previousFingerprint.CompareTo(currentFingerprint);
+            Dictionary<string, double> priorPositions = previous.VisibleRows
+                .Where(row => row.Fingerprint.SuitableForDeduplication)
+                .GroupBy(row => row.Fingerprint.Value, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key,
+                    group => group.First().NormalizedVerticalPosition,
+                    StringComparer.Ordinal);
+            double[] rowMovements = current.VisibleRows
+                .Where(row => row.Fingerprint.SuitableForDeduplication &&
+                    priorPositions.ContainsKey(row.Fingerprint.Value))
+                .Select(row => (row.NormalizedVerticalPosition -
+                    priorPositions[row.Fingerprint.Value]) * captureHeight)
+                .OrderBy(value => value)
+                .ToArray();
+            double? rowMovement = rowMovements.Length == 0
+                ? null
+                : rowMovements[rowMovements.Length / 2];
+            bool rowMoved = rowMovement.HasValue && Math.Abs(rowMovement.Value) >= 2.0;
+            bool contradictory = rowMovement.HasValue &&
+                ((rowMoved && visual.Stable) ||
+                 (visual.ReliableMovement &&
+                  (Math.Sign(rowMovement.Value) != Math.Sign(visual.DisplacementPixels) ||
+                   Math.Abs(rowMovement.Value - visual.DisplacementPixels) > 4.0)));
+            return new AchievementViewportMotion(visual, rowMovement, contradictory);
+        }
+
+        public override string ToString() =>
+            $"visualShift={Visual.DisplacementPixels}px; visualAlignedDifference={Visual.AlignedMeanDifference:0.000}; " +
+            $"visualZeroDifference={Visual.ZeroShiftMeanDifference:0.000}; rowShift=" +
+            (RowDisplacementPixels.HasValue ? $"{RowDisplacementPixels.Value:0.0}px" : "unavailable") +
+            $"; contradictory={Contradictory}";
     }
 
     internal sealed class AchievementRowFrameObservation
@@ -271,6 +450,35 @@ namespace InventoryKamera
         internal TimeSpan Total { get; }
     }
 
+    internal sealed class AchievementScrollObservation
+    {
+        internal AchievementScrollObservation(int batchIndex,
+            AchievementListScrollRequest request,
+            AchievementViewportMotion motion)
+        {
+            BatchIndex = batchIndex;
+            RequestedNotches = request?.NotchCount ?? 0;
+            RequestedLogicalWheelDelta = request?.LogicalWheelDelta ?? 0;
+            ProvisionalTargetDisplacementPixels =
+                request?.ProvisionalTargetDisplacementPixels ?? 0;
+            ObservedVisualDisplacementPixels = motion?.Visual.DisplacementPixels;
+            ObservedRowDisplacementPixels = motion?.RowDisplacementPixels;
+            MovementVerified = motion?.Advanced == true;
+            ViewportStable = motion?.Stable == true;
+            Contradictory = motion?.Contradictory == true;
+        }
+
+        internal int BatchIndex { get; }
+        internal int RequestedNotches { get; }
+        internal int RequestedLogicalWheelDelta { get; }
+        internal int ProvisionalTargetDisplacementPixels { get; }
+        internal int? ObservedVisualDisplacementPixels { get; }
+        internal double? ObservedRowDisplacementPixels { get; }
+        internal bool MovementVerified { get; }
+        internal bool ViewportStable { get; }
+        internal bool Contradictory { get; }
+    }
+
     internal sealed class AchievementCategoryCrawlResult
     {
         internal AchievementCategoryCrawlResult(
@@ -280,6 +488,7 @@ namespace InventoryKamera
             int processedFrames,
             int scrollActions,
             IEnumerable<AchievementObservedRow> observedRows,
+            IEnumerable<AchievementScrollObservation> scrollObservations,
             AchievementScrollProgressState finalScrollState,
             string reason,
             AchievementCategoryCrawlTiming timing,
@@ -292,6 +501,8 @@ namespace InventoryKamera
             ScrollActions = scrollActions;
             ObservedRows = new ReadOnlyCollection<AchievementObservedRow>(
                 (observedRows ?? Array.Empty<AchievementObservedRow>()).ToArray());
+            ScrollObservations = new ReadOnlyCollection<AchievementScrollObservation>(
+                (scrollObservations ?? Array.Empty<AchievementScrollObservation>()).ToArray());
             IdentifiedRows = new ReadOnlyCollection<AchievementObservedRow>(ObservedRows
                 .Where(row => row.Resolved).ToArray());
             UnresolvedRows = new ReadOnlyCollection<AchievementObservedRow>(ObservedRows
@@ -321,6 +532,7 @@ namespace InventoryKamera
         internal int ProcessedFrames { get; }
         internal int ScrollActions { get; }
         internal IReadOnlyList<AchievementObservedRow> ObservedRows { get; }
+        internal IReadOnlyList<AchievementScrollObservation> ScrollObservations { get; }
         internal IReadOnlyList<AchievementObservedRow> IdentifiedRows { get; }
         internal IReadOnlyList<AchievementObservedRow> UnresolvedRows { get; }
         internal IReadOnlyList<AchievementObservedRow> ConflictingRows { get; }
@@ -377,6 +589,7 @@ namespace InventoryKamera
             TimeSpan settlingTime = TimeSpan.Zero;
             TimeSpan deduplicationTime = TimeSpan.Zero;
             var aggregate = new ObservationAccumulator();
+            var scrollObservations = new List<AchievementScrollObservation>();
             var diagnostics = new List<string>();
             int frames = 0;
             int scrolls = 0;
@@ -411,7 +624,8 @@ namespace InventoryKamera
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     Stopwatch part = Stopwatch.StartNew();
-                    AchievementListScrollCommandResult command = scrollInput.Scroll(options.WheelDelta, cancellationToken);
+                    AchievementListScrollCommandResult command = scrollInput.Scroll(
+                        options.ScrollRequest, cancellationToken);
                     part.Stop();
                     scrollingTime += part.Elapsed;
                     scrolls++;
@@ -422,21 +636,24 @@ namespace InventoryKamera
                             string.Empty);
 
                     cancellationToken.ThrowIfCancellationRequested();
-                    part.Restart();
-                    wait(options.ScrollSettleMilliseconds, cancellationToken);
-                    part.Stop();
-                    settlingTime += part.Elapsed;
-                    cancellationToken.ThrowIfCancellationRequested();
-
                     Bitmap captured = null;
                     try
                     {
                         part.Restart();
-                        captured = screenCapture.CaptureWindow();
+                        wait(options.ScrollSettleMilliseconds, cancellationToken);
                         part.Stop();
-                        captureTime += part.Elapsed;
+                        settlingTime += part.Elapsed;
                         cancellationToken.ThrowIfCancellationRequested();
-                        FrameSnapshot current = ProcessFrame(captured, frames, part.Elapsed,
+                        StabilizedCapture stabilized = CaptureStabilizedFrame(
+                            cancellationToken, ref captureTime, ref settlingTime);
+                        captured = stabilized.Frame;
+                        diagnostics.Add($"scroll={scrolls}; {stabilized.Diagnostics}");
+                        if (!stabilized.Stable)
+                            return Finish(AchievementCategoryCrawlState.Incomplete,
+                                "The post-scroll viewport did not stabilize within the bounded capture limit.",
+                                "stabilization=unresolved");
+
+                        FrameSnapshot current = ProcessFrame(captured, frames, stabilized.FinalCaptureDuration,
                             aggregate, ref processingTime, ref deduplicationTime);
                         frames++;
                         diagnostics.Add(current.Diagnostics);
@@ -454,7 +671,18 @@ namespace InventoryKamera
                                 "The maximum consecutive uncertain-frame limit was reached.",
                                 "limit=consecutive-uncertain-frames");
 
-                        bool viewportStable = current.Fingerprint.Equals(previous.Fingerprint);
+                        AchievementViewportMotion motion = AchievementViewportMotion.Compare(
+                            previous.Result, previous.Fingerprint,
+                            current.Result, current.Fingerprint,
+                            captured.Height);
+                        scrollObservations.Add(new AchievementScrollObservation(
+                            scrolls, options.ScrollRequest, motion));
+                        diagnostics.Add($"scroll={scrolls}; observedMotion: {motion}");
+                        if (motion.Contradictory)
+                            return Finish(AchievementCategoryCrawlState.Incomplete,
+                                "Visual and canonical-row displacement evidence contradicted each other.",
+                                "movementEvidence=contradictory");
+                        bool viewportStable = motion.Stable;
                         bool layoutStable = StringComparer.Ordinal.Equals(current.LayoutFingerprint, previous.LayoutFingerprint);
                         bool recognizableFinalRow = HasRecognizableFinalRow(current.Result);
                         bool bottomProof = viewportStable && layoutStable && recognizableFinalRow &&
@@ -477,10 +705,19 @@ namespace InventoryKamera
                                     "The viewport did not move and independent bottom proof was unavailable.",
                                     "noMovementWithoutBottomProof=true");
                         }
-                        else
+                        else if (motion.Advanced)
                         {
                             scrollState = AchievementScrollProgressState.ScrollAdvanced;
                             noMovementAttempts = 0;
+                        }
+                        else
+                        {
+                            scrollState = AchievementScrollProgressState.NoMovementUnknown;
+                            noMovementAttempts++;
+                            if (noMovementAttempts > options.MaximumNoMovementRecoveryAttempts)
+                                return Finish(AchievementCategoryCrawlState.Incomplete,
+                                    "Actual viewport displacement could not be verified after the logical scroll request.",
+                                    "movementEvidence=insufficient");
                         }
 
                         previous = current;
@@ -529,8 +766,74 @@ namespace InventoryKamera
                     $"scrollMs={scrollingTime.TotalMilliseconds:0.00}; settleMs={settlingTime.TotalMilliseconds:0.00}; " +
                     $"dedupMs={deduplicationTime.TotalMilliseconds:0.00}; totalMs={total.Elapsed.TotalMilliseconds:0.00}");
                 return new AchievementCategoryCrawlResult(context, state, completenessEvidence,
-                    frames, scrolls, rows, scrollState, reason, timing,
+                    frames, scrolls, rows, scrollObservations, scrollState, reason, timing,
                     string.Join(Environment.NewLine, diagnostics));
+            }
+        }
+
+        private StabilizedCapture CaptureStabilizedFrame(
+            CancellationToken cancellationToken,
+            ref TimeSpan captureTime,
+            ref TimeSpan settlingTime)
+        {
+            Bitmap previous = null;
+            TimeSpan finalCaptureDuration = TimeSpan.Zero;
+            try
+            {
+                for (int attempt = 1; attempt <= options.MaximumStabilizationCaptures; attempt++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (attempt > 1)
+                    {
+                        Stopwatch settling = Stopwatch.StartNew();
+                        wait(options.StabilizationPollMilliseconds, cancellationToken);
+                        settling.Stop();
+                        settlingTime += settling.Elapsed;
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+
+                    Stopwatch capture = Stopwatch.StartNew();
+                    Bitmap current = screenCapture.CaptureWindow();
+                    capture.Stop();
+                    captureTime += capture.Elapsed;
+                    finalCaptureDuration = capture.Elapsed;
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        current.Dispose();
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+
+                    if (previous == null && options.MaximumStabilizationCaptures == 1)
+                        return new StabilizedCapture(current, true, finalCaptureDuration,
+                            "stabilizationCaptures=1; stabilizationCheck=configured-bypass");
+                    if (previous != null)
+                    {
+                        AchievementViewportComparison comparison =
+                            AchievementViewportFingerprint.Create(previous).CompareTo(
+                                AchievementViewportFingerprint.Create(current),
+                                maximumDisplacementPixels: 48);
+                        if (comparison.Stable)
+                        {
+                            previous.Dispose();
+                            previous = null;
+                            return new StabilizedCapture(current, true, finalCaptureDuration,
+                                $"stabilizationCaptures={attempt}; stable=true; displacement={comparison.DisplacementPixels}px; difference={comparison.ZeroShiftMeanDifference:0.000}");
+                        }
+                    }
+
+                    previous?.Dispose();
+                    previous = current;
+                }
+
+                Bitmap last = previous;
+                previous = null;
+                return new StabilizedCapture(last, false, finalCaptureDuration,
+                    $"stabilizationCaptures={options.MaximumStabilizationCaptures}; stable=false");
+            }
+            catch
+            {
+                previous?.Dispose();
+                throw;
             }
         }
 
@@ -620,6 +923,23 @@ namespace InventoryKamera
         {
             if (milliseconds <= 0) { token.ThrowIfCancellationRequested(); return; }
             if (token.WaitHandle.WaitOne(milliseconds)) token.ThrowIfCancellationRequested();
+        }
+
+        private sealed class StabilizedCapture
+        {
+            internal StabilizedCapture(Bitmap frame, bool stable,
+                TimeSpan finalCaptureDuration, string diagnostics)
+            {
+                Frame = frame;
+                Stable = stable;
+                FinalCaptureDuration = finalCaptureDuration;
+                Diagnostics = diagnostics ?? string.Empty;
+            }
+
+            internal Bitmap Frame { get; }
+            internal bool Stable { get; }
+            internal TimeSpan FinalCaptureDuration { get; }
+            internal string Diagnostics { get; }
         }
 
         private sealed class FrameSnapshot

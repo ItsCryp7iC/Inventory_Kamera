@@ -233,7 +233,7 @@ namespace InventoryKamera.Tests
                 new[] { duplicate1, duplicate2 },
                 new[] { Evidence(top: true), Evidence(), Evidence() },
                 new AchievementCategoryCrawlOptions(maximumNoMovementRecoveryAttempts: 1,
-                    scrollSettleMilliseconds: 0));
+                    scrollSettleMilliseconds: 0, maximumStabilizationCaptures: 1));
 
             AchievementCategoryCrawlResult result = crawler.Crawl(Context(), start, CancellationToken.None);
 
@@ -249,11 +249,11 @@ namespace InventoryKamera.Tests
             using Bitmap start = Image(16);
             using Bitmap moved = Image(64);
             AchievementCategoryCrawler crawler = Crawler(
-                new[] { Frame(Row(1)), Frame(Row(1)) },
+                new[] { Frame(Row(1, normalizedY: 0.20)), Frame(Row(1, normalizedY: 0.18)) },
                 new[] { moved },
                 new[] { Evidence(top: true), Evidence() },
                 new AchievementCategoryCrawlOptions(maximumCapturedFrames: 2,
-                    scrollSettleMilliseconds: 0));
+                    scrollSettleMilliseconds: 0, maximumStabilizationCaptures: 1));
 
             AchievementCategoryCrawlResult result = crawler.Crawl(Context(), start, CancellationToken.None);
 
@@ -270,7 +270,7 @@ namespace InventoryKamera.Tests
                 new[] { Frame(Row(1)), Frame(Row(2)) }, new[] { moved },
                 new[] { Evidence(top: true), Evidence() },
                 new AchievementCategoryCrawlOptions(maximumCapturedFrames: 2,
-                    scrollSettleMilliseconds: 0));
+                    scrollSettleMilliseconds: 0, maximumStabilizationCaptures: 1));
 
             AchievementCategoryCrawlResult result = crawler.Crawl(Context(), start, CancellationToken.None);
 
@@ -305,7 +305,8 @@ namespace InventoryKamera.Tests
                 new SequenceFrameReader(new[] { Frame(Row(1)) }), capture,
                 new RecordingScrollInput(),
                 new SequenceEvidenceDetector(new[] { Evidence(top: true) }),
-                new AchievementCategoryCrawlOptions(scrollSettleMilliseconds: 1),
+                new AchievementCategoryCrawlOptions(scrollSettleMilliseconds: 1,
+                    maximumStabilizationCaptures: 1),
                 (_, token) => { cancellation.Cancel(); token.ThrowIfCancellationRequested(); });
 
             AchievementCategoryCrawlResult result = crawler.Crawl(Context(), start, cancellation.Token);
@@ -329,7 +330,8 @@ namespace InventoryKamera.Tests
             var crawler = new AchievementCategoryCrawler(
                 new SequenceFrameReader(new[] { Frame(Row(1)) }), capture, scroll,
                 new SequenceEvidenceDetector(new[] { Evidence(top: true) }),
-                new AchievementCategoryCrawlOptions(scrollSettleMilliseconds: 0));
+                new AchievementCategoryCrawlOptions(scrollSettleMilliseconds: 0,
+                    maximumStabilizationCaptures: 1));
 
             AchievementCategoryCrawlResult result = crawler.Crawl(Context(), start, CancellationToken.None);
 
@@ -346,12 +348,13 @@ namespace InventoryKamera.Tests
                 new AchievementWindowsListScrollInput(pointer, foreground, targetX: 0.20));
             var input = new AchievementWindowsListScrollInput(pointer, foreground);
 
-            AchievementListScrollCommandResult result = input.Scroll(-360, CancellationToken.None);
+            var request = new AchievementListScrollRequest(-120, 3, 54);
+            AchievementListScrollCommandResult result = input.Scroll(request, CancellationToken.None);
 
             Assert.True(result.Succeeded);
             Assert.Equal((AchievementWindowsListScrollInput.ScrollTargetX,
                 AchievementWindowsListScrollInput.ScrollTargetY), pointer.Position);
-            Assert.Equal(-360, pointer.WheelDelta);
+            Assert.Equal(new[] { -120, -120, -120 }, pointer.WheelDeltas);
         }
 
         [Fact]
@@ -362,10 +365,11 @@ namespace InventoryKamera.Tests
             var input = new AchievementWindowsListScrollInput(
                 pointer, foreground, inputAllowed: () => false);
 
-            AchievementListScrollCommandResult result = input.Scroll(-360, CancellationToken.None);
+            AchievementListScrollCommandResult result = input.Scroll(
+                new AchievementListScrollRequest(-120, 3, 54), CancellationToken.None);
 
             Assert.False(result.Succeeded);
-            Assert.Equal(0, pointer.WheelDelta);
+            Assert.Empty(pointer.WheelDeltas);
             Assert.Contains("dialog", result.FailureReason);
         }
 
@@ -389,7 +393,7 @@ namespace InventoryKamera.Tests
         }
 
         [Fact]
-        public void UncalibratedProductionEvidence_NeverClaimsTopOrBottom()
+        public void UncalibratedFallbackEvidence_NeverClaimsTopOrBottom()
         {
             using Bitmap screenshot = Image(32);
             AchievementCategoryFrameEvidence evidence =
@@ -409,7 +413,8 @@ namespace InventoryKamera.Tests
                 new SequenceCapture(captures),
                 new RecordingScrollInput(),
                 new SequenceEvidenceDetector(evidence),
-                options ?? new AchievementCategoryCrawlOptions(scrollSettleMilliseconds: 0),
+                options ?? new AchievementCategoryCrawlOptions(scrollSettleMilliseconds: 0,
+                    maximumStabilizationCaptures: 1),
                 (_, token) => token.ThrowIfCancellationRequested());
 
         private static AchievementCategoryCrawlContext Context() =>
@@ -437,11 +442,13 @@ namespace InventoryKamera.Tests
             AchievementIdentityState identity = AchievementIdentityState.Identified,
             int? stageGroupId = null,
             bool canonical = true,
-            string fingerprint = null)
+            string fingerprint = null,
+            double? normalizedY = null)
         {
             int[] ids = (candidateIds ?? new[] { id }).ToArray();
             return new AchievementVisibleRow(
-                id, new NormalizedRectangle(0.38, Math.Min(0.8, id / 100.0), 0.56, 0.1),
+                id, new NormalizedRectangle(0.38,
+                    normalizedY ?? Math.Min(0.8, id / 100.0), 0.56, 0.1),
                 visibility, "Title " + id, "title " + id, identity, ids, stageGroupId,
                 completion, completion == AchievementCompletionState.Incomplete ? 0 : null,
                 completion == AchievementCompletionState.Incomplete ? 1 : null,
@@ -501,7 +508,9 @@ namespace InventoryKamera.Tests
         {
             private readonly bool fail;
             internal RecordingScrollInput(bool fail = false) => this.fail = fail;
-            public AchievementListScrollCommandResult Scroll(int wheelDelta, CancellationToken cancellationToken)
+            public AchievementListScrollCommandResult Scroll(
+                AchievementListScrollRequest request,
+                CancellationToken cancellationToken)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 return new AchievementListScrollCommandResult(!fail, !fail,
@@ -512,11 +521,11 @@ namespace InventoryKamera.Tests
         private sealed class RecordingPointer : IAchievementPointerInput
         {
             internal (double X, double Y) Position { get; private set; }
-            internal int WheelDelta { get; private set; }
+            internal List<int> WheelDeltas { get; } = new();
             public void MoveNormalized(double x, double y, CancellationToken cancellationToken) => Position = (x, y);
             public bool IsAtNormalized(double x, double y) => Position == (x, y);
             public void Click(CancellationToken cancellationToken) { }
-            public void ScrollWheel(int delta, CancellationToken cancellationToken) => WheelDelta = delta;
+            public void ScrollWheel(int delta, CancellationToken cancellationToken) => WheelDeltas.Add(delta);
         }
 
         private sealed class ForegroundActivator : IGameForegroundActivator

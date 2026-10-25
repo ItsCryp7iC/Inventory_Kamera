@@ -83,7 +83,9 @@ namespace InventoryKamera
                 CreateBulkFrameReader(catalogProvider, runtime),
                 runtime.ScreenCapture,
                 new AchievementWindowsListScrollInput(pointer, runtime.ForegroundActivator),
-                new UncalibratedAchievementCategoryFrameEvidenceDetector(),
+                new AchievementCategoryFrameEvidenceDetector(
+                    runtime.OcrService,
+                    runtime.ImagePreprocessor),
                 options);
         }
 

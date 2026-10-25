@@ -1264,12 +1264,10 @@ coordinator has already selected. It does not change categories, reconcile the f
 hidden absence, or invoke exact-title fallback. The crawler requires an ordinary Idle Achievement
 list and either positive top-of-list evidence or an explicitly supported known traversal origin.
 
-Each bounded mouse-wheel action targets normalized client coordinates `(0.75, 0.50)` inside the
-right achievement panel. The default provisional step is `-360`, chosen to preserve overlap and
-kept configurable because no real consecutive wheel sequence is available. Foreground state is
-verified before input, capture continues through the existing overlay-safe capture path, settling
-is cancellable, and frame, scroll, uncertain-frame, and no-movement recovery limits all terminate
-as incomplete rather than complete.
+Each bounded mouse-wheel batch targets normalized client coordinates `(0.75, 0.50)` inside the
+right achievement panel. Foreground state is verified before input, capture continues through the
+existing overlay-safe capture path, settling is cancellable, and frame, scroll, uncertain-frame,
+stabilization, and no-movement recovery limits all terminate as incomplete rather than complete.
 
 Rows from the Phase 7A reader are merged only by positive canonical title-group fingerprints.
 Provenance records first/last frame, observation count, all source observations, and whether a row
@@ -1281,10 +1279,7 @@ Completion of traversal requires independent bottom-at-extent evidence on both s
 scroll attempt, an unchanged cursor-excluded right-viewport fingerprint, an unchanged row-layout
 fingerprint, and a recognizable final complete canonical row, with no category or screen
 contradiction. Repeated frames or absence of new IDs alone never prove completion. The available
-Phase 7A.1 fixtures show a plausible narrow right-side scrollbar but contain neither a verified
-bottom state nor a trustworthy consecutive scroll sequence. Production scrollbar/category
-evidence therefore remains explicitly uncalibrated and returns no top/bottom proof; such endings
-remain incomplete until Phase 7F live calibration supplies safe thresholds and wheel behavior.
+Phase 7A.1 fixtures alone do not prove traversal or bottom behavior.
 
 The immutable result reports complete, incomplete, cancelled, or failed traversal; bounded
 diagnostics; complete/partial/uncertain observations; canonical, unresolved, and conflicting rows;
@@ -1292,6 +1287,34 @@ frame and input counts; repeated and recovered-partial counts; and capture, proc
 settling, deduplication, and total timing. It retains no screenshots. A complete traversal still
 does not authorize absence-based conclusions; Phase 7C must separately define and validate any
 catalog reconciliation rules after real category, top, bottom, and overlap evidence exists.
+
+#### Phase 7B.1 real-scroll calibration (implemented; automated gate only)
+
+Five consecutive 1919x1079 `Memories of the Heart` captures establish measured movement of -18 px
+for each of two physical downward wheel notches, -36 px across both notches, and 0 px between a
+bottom frame and a further downward notch. With the measured 125 px row pitch, a provisional batch
+of 21 independent -120 wheel events targets about 378 px, leaving about 477 px (nearly four rows)
+of viewport overlap. This is a batching proposal, not proof that programmatic -2520 input produces
+378 px: every batch records its logical request separately from visual and canonical-row
+displacement measured from the captured frames.
+
+After the initial 350 ms settle, capture stabilization compares lightweight row-luminance profiles
+at bounded 75 ms intervals and OCRs only the final stable frame. Visual correlation detects
+sub-row movement and is cross-checked against median positions of repeated canonical rows.
+Conflicting or insufficient movement evidence fails incomplete.
+
+At 1919x1079, the right scrollbar thumb measured y=148..262 at top, y=151..264 and y=153..266
+after the two notches, and y=853..967 in both stationary bottom frames. Top proof is therefore
+restricted to the measured first endpoint and bottom proof to the repeated lower endpoint.
+Scrollbar proof returns unavailable at other resolutions. The selected light category row is
+detected independently and OCR'd; the real fixture verifies `Memories of the Heart`, not the
+neighboring `Wonders of the World` row.
+
+Traversal completion still requires bottom proof on both sides of a bounded post-bottom batch,
+a stable viewport, stable row layout, and a recognizable final canonical row. The bottom pair is
+candidate evidence for that gate at the measured resolution, not a universal scrollbar detector.
+Live validation must still verify programmatic batching, animation timing, category recognition,
+and scrollbar behavior at every supported resolution before Phase 7C absence reasoning.
 
 ### Later Phase 7 slices (not implemented)
 
