@@ -68,7 +68,8 @@ namespace InventoryKamera
                 new AchievementListRowCompletionReader(runtime.OcrService, runtime.ImagePreprocessor),
                 new AchievementListRowRewardReader(runtime.OcrService, runtime.ImagePreprocessor),
                 new AchievementCompletedTotalReader(runtime.OcrService, runtime.ImagePreprocessor),
-                new AchievementStageProgressResolver());
+                new AchievementStageProgressResolver(),
+                screenDetector);
         }
 
         internal static AchievementCategoryCrawler CreateCategoryCrawler(

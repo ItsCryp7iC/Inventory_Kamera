@@ -110,7 +110,14 @@ namespace InventoryKamera
             TimeSpan completedTotal = default,
             TimeSpan ocrCropResize = default,
             TimeSpan ocrPreprocessing = default,
-            TimeSpan ocrEngine = default)
+            TimeSpan ocrEngine = default,
+            TimeSpan fastScreenValidation = default,
+            TimeSpan fullScreenValidation = default,
+            int fastScreenValidationCount = 0,
+            int fullScreenValidationCount = 0,
+            int fullScreenFallbackCount = 0,
+            int completedTotalOcrExecutions = 0,
+            int completedTotalReuseCount = 0)
         {
             Capture = capture;
             RowDetection = rowDetection;
@@ -125,6 +132,13 @@ namespace InventoryKamera
             OcrCropResize = ocrCropResize;
             OcrPreprocessing = ocrPreprocessing;
             OcrEngine = ocrEngine;
+            FastScreenValidation = fastScreenValidation;
+            FullScreenValidation = fullScreenValidation;
+            FastScreenValidationCount = fastScreenValidationCount;
+            FullScreenValidationCount = fullScreenValidationCount;
+            FullScreenFallbackCount = fullScreenFallbackCount;
+            CompletedTotalOcrExecutions = completedTotalOcrExecutions;
+            CompletedTotalReuseCount = completedTotalReuseCount;
         }
 
         internal TimeSpan Capture { get; }
@@ -140,6 +154,13 @@ namespace InventoryKamera
         internal TimeSpan OcrCropResize { get; }
         internal TimeSpan OcrPreprocessing { get; }
         internal TimeSpan OcrEngine { get; }
+        internal TimeSpan FastScreenValidation { get; }
+        internal TimeSpan FullScreenValidation { get; }
+        internal int FastScreenValidationCount { get; }
+        internal int FullScreenValidationCount { get; }
+        internal int FullScreenFallbackCount { get; }
+        internal int CompletedTotalOcrExecutions { get; }
+        internal int CompletedTotalReuseCount { get; }
         internal TimeSpan FrameReaderOther => NonNegative(Total - ScreenDetection -
             CompletedTotal - RowDetection - TitleOcr - CompletionOcr - RewardOcr);
         internal TimeSpan OcrPipelineOther => NonNegative(TitleOcr + CompletionOcr +
@@ -160,7 +181,11 @@ namespace InventoryKamera
             int? completedTotal,
             AchievementBulkFrameTiming timing,
             string diagnostics,
-            bool isKeyboardMouseIdle = true)
+            bool isKeyboardMouseIdle = true,
+            AchievementCompletedTotalFrameEvidence completedTotalEvidence = null,
+            AchievementBulkScreenValidationPath screenValidationPath =
+                AchievementBulkScreenValidationPath.Full,
+            string screenValidationFallbackReason = null)
         {
             ScreenState = screenState;
             VisibleRows = new ReadOnlyCollection<AchievementVisibleRow>(
@@ -180,6 +205,10 @@ namespace InventoryKamera
             Timing = timing ?? throw new ArgumentNullException(nameof(timing));
             Diagnostics = diagnostics ?? string.Empty;
             IsKeyboardMouseIdle = isKeyboardMouseIdle;
+            CompletedTotalEvidence = completedTotalEvidence ??
+                AchievementCompletedTotalFrameEvidence.Legacy(completedTotal);
+            ScreenValidationPath = screenValidationPath;
+            ScreenValidationFallbackReason = screenValidationFallbackReason ?? string.Empty;
         }
 
         internal AchievementScreenState ScreenState { get; }
@@ -190,11 +219,124 @@ namespace InventoryKamera
         internal AchievementBulkFrameTiming Timing { get; }
         internal string Diagnostics { get; }
         internal bool IsKeyboardMouseIdle { get; }
+        internal AchievementCompletedTotalFrameEvidence CompletedTotalEvidence { get; }
+        internal AchievementBulkScreenValidationPath ScreenValidationPath { get; }
+        internal string ScreenValidationFallbackReason { get; }
     }
 
     internal interface IAchievementListFrameReader
     {
         AchievementBulkFrameResult Read(Bitmap screenshot, TimeSpan? captureDuration = null);
+    }
+
+    internal interface IContextualAchievementListFrameReader : IAchievementListFrameReader
+    {
+        AchievementBulkFrameResult Read(Bitmap screenshot,
+            AchievementBulkFrameReadContext context,
+            TimeSpan? captureDuration = null);
+    }
+
+    internal enum AchievementBulkScreenValidationPath
+    {
+        Full,
+        Fast,
+        FullFallback,
+    }
+
+    internal sealed class AchievementBulkContinuationScreenValidation
+    {
+        internal AchievementBulkContinuationScreenValidation(bool accepted,
+            AchievementScreenState screenState, bool isKeyboardMouseIdle, string reason)
+        {
+            Accepted = accepted;
+            ScreenState = screenState;
+            IsKeyboardMouseIdle = isKeyboardMouseIdle;
+            Reason = reason ?? string.Empty;
+        }
+
+        internal bool Accepted { get; }
+        internal AchievementScreenState ScreenState { get; }
+        internal bool IsKeyboardMouseIdle { get; }
+        internal string Reason { get; }
+    }
+
+    internal interface IAchievementBulkContinuationScreenValidator
+    {
+        AchievementBulkContinuationScreenValidation Validate(Bitmap screenshot,
+            AchievementBulkFrameReadContext context);
+    }
+
+    internal sealed class AchievementBulkFrameReadContext
+    {
+        internal AchievementBulkFrameReadContext(int frameIndex, Size traversalCaptureSize,
+            AchievementCategoryFrameEvidence frameEvidence, string expectedCategorySignature,
+            bool forceFullScreenValidation, bool observeCompletedTotal,
+            int? contextualCompletedTotal = null,
+            int? contextualCompletedTotalObservationFrame = null)
+        {
+            if (frameIndex < 0) throw new ArgumentOutOfRangeException(nameof(frameIndex));
+            FrameIndex = frameIndex;
+            TraversalCaptureSize = traversalCaptureSize;
+            FrameEvidence = frameEvidence ?? throw new ArgumentNullException(nameof(frameEvidence));
+            ExpectedCategorySignature = expectedCategorySignature?.Trim() ?? string.Empty;
+            ForceFullScreenValidation = forceFullScreenValidation;
+            ObserveCompletedTotal = observeCompletedTotal;
+            ContextualCompletedTotal = contextualCompletedTotal;
+            ContextualCompletedTotalObservationFrame = contextualCompletedTotalObservationFrame;
+        }
+
+        internal int FrameIndex { get; }
+        internal Size TraversalCaptureSize { get; }
+        internal AchievementCategoryFrameEvidence FrameEvidence { get; }
+        internal string ExpectedCategorySignature { get; }
+        internal bool ForceFullScreenValidation { get; }
+        internal bool ObserveCompletedTotal { get; }
+        internal int? ContextualCompletedTotal { get; }
+        internal int? ContextualCompletedTotalObservationFrame { get; }
+    }
+
+    internal enum AchievementCompletedTotalEvidenceSource
+    {
+        None,
+        FullScreenDetection,
+        DedicatedOcr,
+        ContextReuse,
+        LegacyResult,
+    }
+
+    internal sealed class AchievementCompletedTotalFrameEvidence
+    {
+        internal static AchievementCompletedTotalFrameEvidence Empty { get; } = new(
+            null, false, false, false, null,
+            AchievementCompletedTotalEvidenceSource.None, "No completed-total evidence was requested.");
+
+        internal AchievementCompletedTotalFrameEvidence(int? value,
+            bool positivelyObserved, bool dedicatedOcrExecuted, bool reused,
+            int? observationFrameIndex, AchievementCompletedTotalEvidenceSource source,
+            string reason)
+        {
+            Value = value;
+            PositivelyObserved = positivelyObserved;
+            DedicatedOcrExecuted = dedicatedOcrExecuted;
+            Reused = reused;
+            ObservationFrameIndex = observationFrameIndex;
+            Source = source;
+            Reason = reason ?? string.Empty;
+        }
+
+        internal int? Value { get; }
+        internal bool PositivelyObserved { get; }
+        internal bool DedicatedOcrExecuted { get; }
+        internal bool Reused { get; }
+        internal int? ObservationFrameIndex { get; }
+        internal AchievementCompletedTotalEvidenceSource Source { get; }
+        internal string Reason { get; }
+
+        internal static AchievementCompletedTotalFrameEvidence Legacy(int? value) => new(
+            value, value.HasValue, false, false, value.HasValue ? -1 : null,
+            AchievementCompletedTotalEvidenceSource.LegacyResult,
+            value.HasValue ? "Legacy frame result supplied a completed total." :
+                "Legacy frame result supplied no completed total.");
     }
 
     internal sealed class AchievementVisibleRowIdentityResolver
@@ -484,7 +626,7 @@ namespace InventoryKamera
         }
     }
 
-    internal sealed class AchievementListFrameReader : IAchievementListFrameReader
+    internal sealed class AchievementListFrameReader : IContextualAchievementListFrameReader
     {
         private readonly AchievementCatalog catalog;
         private readonly IAchievementScreenDetector screenDetector;
@@ -495,6 +637,7 @@ namespace InventoryKamera
         private readonly IAchievementCompletedTotalReader completedTotalReader;
         private readonly AchievementVisibleRowIdentityResolver identityResolver;
         private readonly AchievementStageProgressResolver stageResolver;
+        private readonly IAchievementBulkContinuationScreenValidator continuationScreenValidator;
 
         internal AchievementListFrameReader(
             IAchievementCatalogProvider catalogProvider,
@@ -504,7 +647,8 @@ namespace InventoryKamera
             IAchievementListRowCompletionReader completionReader,
             IAchievementListRowRewardReader rewardReader,
             IAchievementCompletedTotalReader completedTotalReader,
-            AchievementStageProgressResolver stageResolver)
+            AchievementStageProgressResolver stageResolver,
+            IAchievementBulkContinuationScreenValidator continuationScreenValidator = null)
         {
             if (catalogProvider == null) throw new ArgumentNullException(nameof(catalogProvider));
             catalog = catalogProvider.Catalog ?? throw new ArgumentException(
@@ -516,23 +660,89 @@ namespace InventoryKamera
             this.rewardReader = rewardReader ?? throw new ArgumentNullException(nameof(rewardReader));
             this.completedTotalReader = completedTotalReader ?? throw new ArgumentNullException(nameof(completedTotalReader));
             this.stageResolver = stageResolver ?? throw new ArgumentNullException(nameof(stageResolver));
+            this.continuationScreenValidator = continuationScreenValidator;
             identityResolver = new AchievementVisibleRowIdentityResolver(catalogProvider);
         }
 
-        public AchievementBulkFrameResult Read(Bitmap screenshot, TimeSpan? captureDuration = null)
+        public AchievementBulkFrameResult Read(Bitmap screenshot, TimeSpan? captureDuration = null) =>
+            ReadCore(screenshot, null, captureDuration);
+
+        public AchievementBulkFrameResult Read(Bitmap screenshot,
+            AchievementBulkFrameReadContext context,
+            TimeSpan? captureDuration = null)
+        {
+            if (context == null) throw new ArgumentNullException(nameof(context));
+            return ReadCore(screenshot, context, captureDuration);
+        }
+
+        private AchievementBulkFrameResult ReadCore(Bitmap screenshot,
+            AchievementBulkFrameReadContext context,
+            TimeSpan? captureDuration)
         {
             if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
 
             Stopwatch total = Stopwatch.StartNew();
             Stopwatch part = Stopwatch.StartNew();
-            AchievementScreenDetection screen = screenDetector.Detect(screenshot);
-            part.Stop();
-            TimeSpan screenDetectionTime = part.Elapsed;
-            part.Restart();
-            AchievementCompletedTotalResult completedTotal = completedTotalReader.Read(screenshot);
-            part.Stop();
-            TimeSpan completedTotalTime = part.Elapsed;
-            if (screen.ScreenState != AchievementScreenState.Idle)
+            AchievementScreenDetection screen = null;
+            AchievementBulkContinuationScreenValidation fastValidation = null;
+            AchievementBulkScreenValidationPath validationPath =
+                AchievementBulkScreenValidationPath.Full;
+            string fallbackReason = string.Empty;
+            TimeSpan fastScreenValidationTime = TimeSpan.Zero;
+            TimeSpan fullScreenValidationTime = TimeSpan.Zero;
+            int fastValidationCount = 0;
+            int fullValidationCount = 0;
+            int fallbackCount = 0;
+
+            if (context != null && !context.ForceFullScreenValidation &&
+                continuationScreenValidator != null)
+            {
+                try
+                {
+                    fastValidation = continuationScreenValidator.Validate(screenshot, context);
+                }
+                catch (Exception ex)
+                {
+                    fastValidation = new AchievementBulkContinuationScreenValidation(false,
+                        AchievementScreenState.Unknown, false,
+                        $"Fast validation failed with {ex.GetType().Name}; full validation was required.");
+                }
+                part.Stop();
+                fastScreenValidationTime = part.Elapsed;
+                fastValidationCount = 1;
+                if (fastValidation.Accepted)
+                {
+                    validationPath = AchievementBulkScreenValidationPath.Fast;
+                }
+                else
+                {
+                    fallbackReason = fastValidation.Reason;
+                    part.Restart();
+                    screen = screenDetector.Detect(screenshot);
+                    part.Stop();
+                    fullScreenValidationTime = part.Elapsed;
+                    fullValidationCount = 1;
+                    fallbackCount = 1;
+                    validationPath = AchievementBulkScreenValidationPath.FullFallback;
+                }
+            }
+            else
+            {
+                screen = screenDetector.Detect(screenshot);
+                part.Stop();
+                fullScreenValidationTime = part.Elapsed;
+                fullValidationCount = 1;
+            }
+
+            TimeSpan screenDetectionTime = fastScreenValidationTime + fullScreenValidationTime;
+            AchievementScreenState screenState = screen?.ScreenState ?? fastValidation.ScreenState;
+            bool isKeyboardMouseIdle = screen?.IsKeyboardMouseIdle ??
+                fastValidation.IsKeyboardMouseIdle;
+            AchievementCompletedTotalFrameEvidence completedTotalEvidence =
+                ReadCompletedTotalEvidence(screenshot, context, screen, screenState,
+                    out TimeSpan completedTotalTime);
+
+            if (screenState != AchievementScreenState.Idle)
             {
                 total.Stop();
                 var emptyTiming = new AchievementBulkFrameTiming(
@@ -545,14 +755,24 @@ namespace InventoryKamera
                     0,
                     0,
                     screenDetectionTime,
-                    completedTotalTime);
+                    completedTotalTime,
+                    fastScreenValidation: fastScreenValidationTime,
+                    fullScreenValidation: fullScreenValidationTime,
+                    fastScreenValidationCount: fastValidationCount,
+                    fullScreenValidationCount: fullValidationCount,
+                    fullScreenFallbackCount: fallbackCount,
+                    completedTotalOcrExecutions: completedTotalEvidence.DedicatedOcrExecuted ? 1 : 0,
+                    completedTotalReuseCount: completedTotalEvidence.Reused ? 1 : 0);
                 return new AchievementBulkFrameResult(
-                    screen.ScreenState,
+                    screenState,
                     Array.Empty<AchievementVisibleRow>(),
-                    completedTotal.CompletedTotal,
+                    completedTotalEvidence.Value,
                     emptyTiming,
                     "Bulk row parsing requires a positively detected ordinary Idle Achievement list.",
-                    screen.IsKeyboardMouseIdle);
+                    isKeyboardMouseIdle,
+                    completedTotalEvidence,
+                    validationPath,
+                    fallbackReason);
             }
 
             part.Restart();
@@ -699,9 +919,19 @@ namespace InventoryKamera
                 completedTotalTime,
                 ocrCropResizeTime,
                 ocrPreprocessingTime,
-                ocrEngineTime);
+                ocrEngineTime,
+                fastScreenValidationTime,
+                fullScreenValidationTime,
+                fastValidationCount,
+                fullValidationCount,
+                fallbackCount,
+                completedTotalEvidence.DedicatedOcrExecuted ? 1 : 0,
+                completedTotalEvidence.Reused ? 1 : 0);
             var frameDiagnostics = new StringBuilder();
-            frameDiagnostics.AppendLine($"screenState={screen.ScreenState}; completedTotal={completedTotal.CompletedTotal?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}");
+            frameDiagnostics.AppendLine($"screenState={screenState}; validationPath={validationPath}; " +
+                $"validationFallback={fallbackReason}; completedTotal={completedTotalEvidence.Value?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}; " +
+                $"completedTotalSource={completedTotalEvidence.Source}; completedTotalObserved={completedTotalEvidence.PositivelyObserved}; " +
+                $"completedTotalReused={completedTotalEvidence.Reused}; completedTotalObservationFrame={completedTotalEvidence.ObservationFrameIndex?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}");
             frameDiagnostics.AppendLine(detected.Diagnostics);
             frameDiagnostics.Append(
                 $"rowsProcessed={rows.Count}; rowsResolved={resolved}; rowDetectionMs={timing.RowDetection.TotalMilliseconds:0.00}; " +
@@ -710,14 +940,81 @@ namespace InventoryKamera
                 $"screenDetectionMs={timing.ScreenDetection.TotalMilliseconds:0.00}; completedTotalMs={timing.CompletedTotal.TotalMilliseconds:0.00}; " +
                 $"ocrCropResizeMs={timing.OcrCropResize.TotalMilliseconds:0.00}; ocrPreprocessingMs={timing.OcrPreprocessing.TotalMilliseconds:0.00}; " +
                 $"ocrEngineMs={timing.OcrEngine.TotalMilliseconds:0.00}; frameReaderOtherMs={timing.FrameReaderOther.TotalMilliseconds:0.00}; " +
+                $"fastScreenValidationMs={timing.FastScreenValidation.TotalMilliseconds:0.00}; fullScreenValidationMs={timing.FullScreenValidation.TotalMilliseconds:0.00}; " +
+                $"fastScreenValidations={timing.FastScreenValidationCount}; fullScreenValidations={timing.FullScreenValidationCount}; " +
+                $"screenValidationFallbacks={timing.FullScreenFallbackCount}; completedTotalOcrExecutions={timing.CompletedTotalOcrExecutions}; " +
+                $"completedTotalReuses={timing.CompletedTotalReuseCount}; " +
                 $"msPerResolvedRow={timing.MillisecondsPerResolvedRow?.ToString("0.00", CultureInfo.InvariantCulture) ?? "(none)"}");
             return new AchievementBulkFrameResult(
-                screen.ScreenState,
+                screenState,
                 rows,
-                completedTotal.CompletedTotal,
+                completedTotalEvidence.Value,
                 timing,
                 frameDiagnostics.ToString(),
-                screen.IsKeyboardMouseIdle);
+                isKeyboardMouseIdle,
+                completedTotalEvidence,
+                validationPath,
+                fallbackReason);
+        }
+
+        private AchievementCompletedTotalFrameEvidence ReadCompletedTotalEvidence(
+            Bitmap screenshot,
+            AchievementBulkFrameReadContext context,
+            AchievementScreenDetection screen,
+            AchievementScreenState screenState,
+            out TimeSpan elapsed)
+        {
+            elapsed = TimeSpan.Zero;
+            int? screenValue = screen != null && screen.CompletedCount.Accepted &&
+                screen.CompletedCount.Confidence >= AchievementTitleMatcher.MinimumOcrConfidence
+                    ? AchievementCompletedTotalParser.Parse(screen.CompletedCount.RawText)
+                    : null;
+            if (screenValue.HasValue)
+            {
+                return new AchievementCompletedTotalFrameEvidence(screenValue, true, false, false,
+                    context?.FrameIndex,
+                    AchievementCompletedTotalEvidenceSource.FullScreenDetection,
+                    "The full screen detector positively recognized an exact completed total.");
+            }
+
+            bool executeDedicated = context == null ||
+                context.ObserveCompletedTotal && screenState == AchievementScreenState.Idle;
+            if (executeDedicated)
+            {
+                Stopwatch timer = Stopwatch.StartNew();
+                AchievementCompletedTotalResult result = completedTotalReader.Read(screenshot);
+                timer.Stop();
+                elapsed = timer.Elapsed;
+                if (result.CompletedTotal.HasValue)
+                {
+                    return new AchievementCompletedTotalFrameEvidence(result.CompletedTotal,
+                        true, true, false, context?.FrameIndex,
+                        AchievementCompletedTotalEvidenceSource.DedicatedOcr, result.Reason);
+                }
+
+                if (context?.ContextualCompletedTotal is int cached)
+                {
+                    return new AchievementCompletedTotalFrameEvidence(cached,
+                        false, true, true,
+                        context.ContextualCompletedTotalObservationFrame,
+                        AchievementCompletedTotalEvidenceSource.ContextReuse,
+                        $"{result.Reason} The last positive contextual observation was retained.");
+                }
+                return new AchievementCompletedTotalFrameEvidence(null,
+                    false, true, false, null,
+                    AchievementCompletedTotalEvidenceSource.DedicatedOcr, result.Reason);
+            }
+
+            if (context?.ContextualCompletedTotal is int contextual)
+            {
+                return new AchievementCompletedTotalFrameEvidence(contextual,
+                    false, false, true,
+                    context.ContextualCompletedTotalObservationFrame,
+                    AchievementCompletedTotalEvidenceSource.ContextReuse,
+                    "Completed-total OCR was not scheduled for this frame; the last positive observation was retained contextually.");
+            }
+
+            return AchievementCompletedTotalFrameEvidence.Empty;
         }
 
         private static AchievementVisibleRow CreateFailedRow(

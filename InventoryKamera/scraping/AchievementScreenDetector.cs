@@ -263,7 +263,8 @@ namespace InventoryKamera
     /// OCR signals. Missing evidence never implies a state, and contradictory strong evidence is
     /// returned as Unknown.
     /// </summary>
-    internal sealed class AchievementScreenDetector : IAchievementScreenDetector
+    internal sealed class AchievementScreenDetector : IAchievementScreenDetector,
+        IAchievementBulkContinuationScreenValidator
     {
         private const float FuzzyMinimumConfidence = 0.35f;
         private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
@@ -353,6 +354,52 @@ namespace InventoryKamera
             Logger.Debug(detection.Diagnostics);
             return detection;
         }
+
+        public AchievementBulkContinuationScreenValidation Validate(
+            Bitmap screenshot,
+            AchievementBulkFrameReadContext context)
+        {
+            if (screenshot == null) throw new ArgumentNullException(nameof(screenshot));
+            if (context == null) throw new ArgumentNullException(nameof(context));
+
+            AchievementCategoryFrameEvidence evidence = context.FrameEvidence;
+            if (context.TraversalCaptureSize != screenshot.Size)
+                return Reject("The capture size changed during traversal.");
+            if (evidence.CaptureSize != screenshot.Size)
+                return Reject("The category evidence was not measured from this capture size.");
+            if (!evidence.CategorySignatureVerified)
+                return Reject("The current frame has no positive selected-category signature.");
+            if (context.ExpectedCategorySignature.Length == 0 ||
+                !string.Equals(evidence.CategorySignature,
+                    context.ExpectedCategorySignature, StringComparison.Ordinal))
+                return Reject("The current selected-category signature differs from the traversal category.");
+            if (!evidence.ScrollbarResolved)
+                return Reject("The current frame scrollbar evidence is unresolved.");
+
+            AchievementScreenRegions regions = AchievementScreenRegions.For(screenshot.Size);
+            AchievementTextEvidence heading = ReadSemanticRegion(
+                screenshot, regions.Heading, PageSegMode.SingleLine, EvaluateHeading);
+            AchievementTextEvidence searchText = ReadSemanticRegion(
+                screenshot, regions.SearchField, PageSegMode.SingleLine, EvaluateSearchField);
+            AchievementSearchFieldEvidence search = AnalyzeSearchField(searchText);
+            if (!heading.Accepted)
+                return Reject("The current frame Achievements heading was not positively recognized.");
+            if (!search.IdlePlaceholderAccepted)
+            {
+                AchievementScreenState state = search.ActiveControlsAccepted
+                    ? AchievementScreenState.SearchActive
+                    : AchievementScreenState.Unknown;
+                return new AchievementBulkContinuationScreenValidation(false, state, false,
+                    "The current frame keyboard/mouse idle Search placeholder was not positively recognized.");
+            }
+
+            return new AchievementBulkContinuationScreenValidation(true,
+                AchievementScreenState.Idle, true,
+                "Current-frame heading, keyboard/mouse idle Search placeholder, selected category, and scrollbar were positively recognized.");
+        }
+
+        private static AchievementBulkContinuationScreenValidation Reject(string reason) => new(
+            false, AchievementScreenState.Unknown, false, reason);
 
         internal static AchievementScreenDetection Classify(
             Size captureSize,

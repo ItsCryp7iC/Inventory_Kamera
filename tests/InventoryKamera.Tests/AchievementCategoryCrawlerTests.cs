@@ -792,6 +792,76 @@ namespace InventoryKamera.Tests
             Assert.False(evidence.CategorySignatureVerified);
         }
 
+        [Fact]
+        public void ContextualReader_SamplesInitialCheckpointAndBottomFramesOnly()
+        {
+            var reader = new RecordingContextFrameReader(new[]
+            {
+                FrameWithTotal(17, observed: true, observationFrame: 0, rowId: 1),
+                FrameWithTotal(17, observed: false, observationFrame: 0, rowId: 2),
+                FrameWithTotal(17, observed: true, observationFrame: 2, rowId: 3),
+                FrameWithTotal(17, observed: true, observationFrame: 2, rowId: 3),
+            });
+            using Bitmap start = BandedImage(0);
+            using Bitmap moved = BandedImage(-20);
+            using Bitmap bottom = BandedImage(-40);
+            using Bitmap stable = BandedImage(-40);
+            var crawler = new AchievementCategoryCrawler(reader,
+                new SequenceCapture(new[] { moved, bottom, stable }),
+                new RecordingScrollInput(),
+                new SequenceEvidenceDetector(new[]
+                {
+                    Evidence(top: true), Evidence(), Evidence(bottom: true), Evidence(bottom: true),
+                }),
+                new AchievementCategoryCrawlOptions(scrollSettleMilliseconds: 0,
+                    maximumStabilizationCaptures: 1,
+                    completedTotalCheckpointInterval: 5),
+                (_, token) => token.ThrowIfCancellationRequested());
+
+            AchievementCategoryCrawlResult result = crawler.Crawl(
+                Context(), start, CancellationToken.None);
+
+            Assert.Equal(new[] { true, false, true, true },
+                reader.Contexts.Select(value => value.ObserveCompletedTotal));
+            Assert.True(reader.Contexts[0].ForceFullScreenValidation);
+            Assert.All(reader.Contexts.Skip(1), value =>
+                Assert.False(value.ForceFullScreenValidation));
+            Assert.Equal(3, result.CompletedTotalObservations.Count);
+            Assert.Equal(17, result.LastObservedCompletedTotal);
+            Assert.Equal(3, result.LastObservedCompletedTotalFrame);
+            Assert.False(result.CompletedTotalInconsistent);
+        }
+
+        [Fact]
+        public void CompletedTotalChanges_AreReportedWithoutChangingTraversalCompletion()
+        {
+            var reader = new RecordingContextFrameReader(new[]
+            {
+                FrameWithTotal(17, observed: true, observationFrame: 0),
+                FrameWithTotal(18, observed: true, observationFrame: 1),
+            });
+            using Bitmap start = Image(16);
+            using Bitmap stable = Image(16);
+            var crawler = new AchievementCategoryCrawler(reader,
+                new SequenceCapture(new[] { stable }), new RecordingScrollInput(),
+                new SequenceEvidenceDetector(new[]
+                {
+                    Evidence(top: true, bottom: true), Evidence(bottom: true),
+                }),
+                new AchievementCategoryCrawlOptions(scrollSettleMilliseconds: 0,
+                    maximumStabilizationCaptures: 1,
+                    completedTotalCheckpointInterval: 1),
+                (_, token) => token.ThrowIfCancellationRequested());
+
+            AchievementCategoryCrawlResult result = crawler.Crawl(
+                Context(), start, CancellationToken.None);
+
+            Assert.Equal(AchievementCategoryCrawlState.Complete, result.State);
+            Assert.True(result.CompletedTotalInconsistent);
+            Assert.Equal(18, result.LastObservedCompletedTotal);
+            Assert.Contains("completedTotalInconsistent=True", result.Diagnostics);
+        }
+
         private static AchievementCategoryCrawler Crawler(
             IEnumerable<AchievementBulkFrameResult> frames,
             IEnumerable<Bitmap> captures,
@@ -856,6 +926,27 @@ namespace InventoryKamera.Tests
                 ocrPreprocessing: TimeSpan.FromMilliseconds(1),
                 ocrEngine: TimeSpan.FromMilliseconds(2)),
             "Synthetic timed frame.");
+
+        private static AchievementBulkFrameResult FrameWithTotal(int value,
+            bool observed, int observationFrame, int rowId = 1)
+        {
+            AchievementVisibleRow row = Row(rowId);
+            var evidence = new AchievementCompletedTotalFrameEvidence(value,
+                observed, observed, !observed, observationFrame,
+                observed ? AchievementCompletedTotalEvidenceSource.DedicatedOcr :
+                    AchievementCompletedTotalEvidenceSource.ContextReuse,
+                "Synthetic completed-total evidence.");
+            return new AchievementBulkFrameResult(AchievementScreenState.Idle,
+                new[] { row }, value,
+                new AchievementBulkFrameTiming(TimeSpan.Zero, TimeSpan.Zero,
+                    TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+                    1, 1, completedTotalOcrExecutions: observed ? 1 : 0,
+                    completedTotalReuseCount: observed ? 0 : 1),
+                "Synthetic contextual frame.", completedTotalEvidence: evidence,
+                screenValidationPath: observationFrame == 0
+                    ? AchievementBulkScreenValidationPath.Full
+                    : AchievementBulkScreenValidationPath.Fast);
+        }
 
         private static AchievementVisibleRow Row(
             int id,
@@ -930,6 +1021,23 @@ namespace InventoryKamera.Tests
             internal SequenceFrameReader(IEnumerable<AchievementBulkFrameResult> frames) =>
                 this.frames = new Queue<AchievementBulkFrameResult>(frames);
             public AchievementBulkFrameResult Read(Bitmap screenshot, TimeSpan? captureDuration = null) => frames.Dequeue();
+        }
+
+        private sealed class RecordingContextFrameReader : IContextualAchievementListFrameReader
+        {
+            private readonly Queue<AchievementBulkFrameResult> frames;
+            internal RecordingContextFrameReader(IEnumerable<AchievementBulkFrameResult> frames) =>
+                this.frames = new Queue<AchievementBulkFrameResult>(frames);
+            internal List<AchievementBulkFrameReadContext> Contexts { get; } = new();
+            public AchievementBulkFrameResult Read(Bitmap screenshot,
+                TimeSpan? captureDuration = null) => frames.Dequeue();
+            public AchievementBulkFrameResult Read(Bitmap screenshot,
+                AchievementBulkFrameReadContext context,
+                TimeSpan? captureDuration = null)
+            {
+                Contexts.Add(context);
+                return frames.Dequeue();
+            }
         }
 
         private sealed class SequenceCapture : IGameScreenCapture

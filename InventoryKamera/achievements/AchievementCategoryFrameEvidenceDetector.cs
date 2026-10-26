@@ -55,7 +55,9 @@ namespace InventoryKamera
                 scrollbar.BottomAtExtent,
                 categorySignature,
                 categoryVerified,
-                $"{categoryDiagnostics}; {scrollbar.Diagnostics}");
+                $"{categoryDiagnostics}; {scrollbar.Diagnostics}",
+                screenshot.Size,
+                scrollbar.Resolved);
         }
 
         internal static AchievementScrollbarEvidence AnalyzeScrollbar(Bitmap screenshot)

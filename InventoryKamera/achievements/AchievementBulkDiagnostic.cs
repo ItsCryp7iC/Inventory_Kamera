@@ -245,6 +245,13 @@ namespace InventoryKamera
                 (result.IsComplete ? $" - {result.CompletenessEvidence}" : string.Empty));
             builder.AppendLine($"Recognition coverage sufficient: {(result.RecognitionCoverageSufficient ? "yes" : "no")}");
             builder.AppendLine($"Trusted completion coverage sufficient: {(result.TrustedCompletionCoverageSufficient ? "yes" : "no")}");
+            builder.AppendLine($"Screen validation: {result.Timing.FastScreenValidationCount} fast, " +
+                $"{result.Timing.FullScreenValidationCount} full, {result.Timing.FullScreenFallbackCount} fallback");
+            builder.AppendLine($"Completed-total evidence: {result.CompletedTotalObservations.Count} positive observations; " +
+                $"last={result.LastObservedCompletedTotal?.ToString(CultureInfo.InvariantCulture) ?? "unresolved"} " +
+                $"at frame {result.LastObservedCompletedTotalFrame?.ToString(CultureInfo.InvariantCulture) ?? "none"}; " +
+                $"inconsistent={result.CompletedTotalInconsistent}; dedicated OCR={result.Timing.CompletedTotalOcrExecutions}; " +
+                $"context reuse={result.Timing.CompletedTotalReuseCount}");
             builder.AppendLine($"Rows: {result.IdentifiedRows.Count} unique identified, {result.UnresolvedRows.Count} unresolved, " +
                 $"{result.AmbiguousGroupCount} ambiguous groups, {result.ConflictingRows.Count} conflicting");
             builder.AppendLine($"Raw observations: {result.TotalRawObservations}; raw unresolved: {result.RawUnresolvedObservations}; " +
@@ -311,9 +318,16 @@ namespace InventoryKamera
                 $"reconciliation={Milliseconds(result.Timing.Reconciliation)}; progressReporting={Milliseconds(result.Timing.ProgressReporting)}; " +
                 $"accounted={Milliseconds(result.Timing.AccountedExclusive)}; unattributed={Milliseconds(result.Timing.Unattributed)}; total={Milliseconds(result.Timing.Total)}");
             builder.AppendLine($"timing-nested-frame-reader-ms: screenDetection={Milliseconds(result.Timing.ScreenDetection)}; " +
+                $"fastScreenValidation={Milliseconds(result.Timing.FastScreenValidation)}; fullScreenValidation={Milliseconds(result.Timing.FullScreenValidation)}; " +
                 $"completedTotal={Milliseconds(result.Timing.CompletedTotal)}; rowDetection={Milliseconds(result.Timing.RowDetection)}; " +
                 $"titleOcr={Milliseconds(result.Timing.TitleOcr)}; completionOcr={Milliseconds(result.Timing.CompletionOcr)}; " +
                 $"rewardOcr={Milliseconds(result.Timing.RewardOcr)}; readerOther={Milliseconds(result.Timing.FrameReaderOther)}");
+            builder.AppendLine($"validation-counts: fast={result.Timing.FastScreenValidationCount}; full={result.Timing.FullScreenValidationCount}; " +
+                $"fallback={result.Timing.FullScreenFallbackCount}; completedTotalOcr={result.Timing.CompletedTotalOcrExecutions}; " +
+                $"completedTotalReuse={result.Timing.CompletedTotalReuseCount}; positiveCompletedTotals={result.CompletedTotalObservations.Count}; " +
+                $"lastCompletedTotal={result.LastObservedCompletedTotal?.ToString(CultureInfo.InvariantCulture) ?? "none"}; " +
+                $"lastCompletedTotalFrame={result.LastObservedCompletedTotalFrame?.ToString(CultureInfo.InvariantCulture) ?? "none"}; " +
+                $"completedTotalInconsistent={result.CompletedTotalInconsistent}");
             builder.AppendLine($"timing-nested-ocr-ms: cropResize={Milliseconds(result.Timing.OcrCropResize)}; " +
                 $"preprocessing={Milliseconds(result.Timing.OcrPreprocessing)}; engine={Milliseconds(result.Timing.OcrEngine)}");
 
@@ -347,7 +361,10 @@ namespace InventoryKamera
                     $"readerRowDetection={Milliseconds(reader?.RowDetection ?? TimeSpan.Zero)}; " +
                     $"readerTitleOcr={Milliseconds(reader?.TitleOcr ?? TimeSpan.Zero)}; " +
                     $"readerCompletionOcr={Milliseconds(reader?.CompletionOcr ?? TimeSpan.Zero)}; " +
-                    $"readerOcrEngine={Milliseconds(reader?.OcrEngine ?? TimeSpan.Zero)}");
+                    $"readerOcrEngine={Milliseconds(reader?.OcrEngine ?? TimeSpan.Zero)}; " +
+                    $"screenValidation={frame.ScreenValidationPath}; fallback={Quote(frame.ScreenValidationFallbackReason)}; " +
+                    $"completedTotalSource={frame.CompletedTotalEvidence.Source}; completedTotalObserved={frame.CompletedTotalEvidence.PositivelyObserved}; " +
+                    $"completedTotalReused={frame.CompletedTotalEvidence.Reused}; completedTotalObservationFrame={frame.CompletedTotalEvidence.ObservationFrameIndex?.ToString(CultureInfo.InvariantCulture) ?? "none"}");
             }
             if (result.FrameObservations.Count > MaximumDetailedFrames)
                 builder.AppendLine($"frames-truncated={result.FrameObservations.Count - MaximumDetailedFrames}");

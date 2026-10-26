@@ -1529,6 +1529,47 @@ exclusive accounted plus unattributed values reconcile with total wall time. No 
 should be saved or exported. Phase 7C remains blocked pending that review, representative category
 and resolution evidence, and safe disposition of every outstanding interval.
 
+#### Phase 7B.6 safe bulk-frame performance optimization (implemented; automated gate only)
+
+The crawler now has a contextual continuation-frame path while the standalone frame reader retains
+its original full-screen behavior. Frame zero always uses the full Achievement-screen detector.
+Continuation frames may use a smaller positive check only when the current capture size is unchanged,
+the category-evidence detector positively recognizes the same selected category, calibrated
+scrollbar evidence is resolved, and current-frame OCR positively recognizes both the Achievements
+heading and the keyboard/mouse idle Search placeholder. No bitmap or OCR result is reused across
+frames. Any missing, contradictory, controller, search-active, wrong-category, wrong-size, or
+ambiguous evidence immediately falls back to the full detector; the full result remains authoritative.
+
+The global completed count is independently observed on the initial frame, every fifth frame, the
+configured maximum final frame, and every frame with bottom-position evidence. An exact count
+already produced by full-screen detection is reused within that same frame instead of OCRing the
+same region twice. Between checkpoints, only the last positively observed value and its source frame
+are carried as contextual evidence. An unreadable sample remains unresolved and never becomes zero.
+Distinct positive values are retained and reported as an inconsistency; they do not alter row
+identity, completion trust, traversal completeness, or progress.
+
+Diagnostics separate fast validation, full validation, fallbacks, dedicated completed-total OCR,
+and contextual reuse, including per-frame paths and aggregate timings/counts. The full reader remains
+available for exact-title scanning and non-crawler callers. No row geometry, OCR threshold, serial OCR
+policy, overlap rule, scroll batching, bottom proof, foreground check, cancellation behavior, or trust
+gate changed in this slice.
+
+Deterministic coverage includes fast/full/fallback, size/category/scrollbar/search,
+checkpoint/reuse/inconsistency, null-total, bitmap-ownership, traversal, cancellation, collision,
+staged-reward, pending-claim, and regression tests. Automated timing is instrumentation evidence only;
+it is not a live speed claim. A repeat user-operated 1920x1080 traversal is still required to compare
+wall time and OCR counts against the Phase 7B.5 baseline and to verify unchanged recognition coverage.
+Phase 7C remains blocked on that live evidence and the existing recognition-coverage gates.
+
+For that comparison, use the same 1920x1080 game/window setup and `Memories of the Heart` category,
+manually return the right list to its positively detected top, run **Verify Full Category Traversal**
+once without interacting with the game during the run, and copy the bounded diagnostic details.
+Compare total/frame-reader/screen/completed-total times, fast/full/fallback counts, completed-total OCR
+and reuse counts, frame and scroll counts, final bottom proof, identified groups, unresolved intervals,
+recognition coverage, and trusted-completion coverage with the recorded Phase 7B.5 baseline. Treat any
+changed row/coverage/traversal result or repeated fallback as a safety regression requiring review;
+do not save or export achievement progress from this diagnostic.
+
 ### Later Phase 7 slices (not implemented)
 
 - Phase 7C: catalog reconciliation and hidden-set difference only after traversal completeness is

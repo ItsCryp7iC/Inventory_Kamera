@@ -57,7 +57,8 @@ namespace InventoryKamera
             int wheelDeltaPerNotch = -120,
             int wheelNotchesPerBatch = 21,
             int stabilizationPollMilliseconds = 75,
-            int maximumStabilizationCaptures = 4)
+            int maximumStabilizationCaptures = 4,
+            int completedTotalCheckpointInterval = 5)
         {
             MaximumCapturedFrames = Positive(maximumCapturedFrames, nameof(maximumCapturedFrames));
             MaximumScrollActions = Positive(maximumScrollActions, nameof(maximumScrollActions));
@@ -79,6 +80,8 @@ namespace InventoryKamera
             if (maximumStabilizationCaptures < 1 || maximumStabilizationCaptures > 8)
                 throw new ArgumentOutOfRangeException(nameof(maximumStabilizationCaptures));
             MaximumStabilizationCaptures = maximumStabilizationCaptures;
+            CompletedTotalCheckpointInterval = Positive(completedTotalCheckpointInterval,
+                nameof(completedTotalCheckpointInterval));
         }
 
         internal int MaximumCapturedFrames { get; }
@@ -90,6 +93,7 @@ namespace InventoryKamera
         internal int WheelNotchesPerBatch { get; }
         internal int StabilizationPollMilliseconds { get; }
         internal int MaximumStabilizationCaptures { get; }
+        internal int CompletedTotalCheckpointInterval { get; }
         internal AchievementListScrollRequest ScrollRequest => new(
             WheelDeltaPerNotch,
             WheelNotchesPerBatch,
@@ -108,13 +112,17 @@ namespace InventoryKamera
             bool bottomAtExtent,
             string categorySignature,
             bool categorySignatureVerified,
-            string diagnostics)
+            string diagnostics,
+            Size captureSize = default,
+            bool scrollbarResolved = false)
         {
             TopAtExtent = topAtExtent;
             BottomAtExtent = bottomAtExtent;
             CategorySignature = categorySignature ?? string.Empty;
             CategorySignatureVerified = categorySignatureVerified;
             Diagnostics = diagnostics ?? string.Empty;
+            CaptureSize = captureSize;
+            ScrollbarResolved = scrollbarResolved;
         }
 
         internal bool TopAtExtent { get; }
@@ -122,6 +130,8 @@ namespace InventoryKamera
         internal string CategorySignature { get; }
         internal bool CategorySignatureVerified { get; }
         internal string Diagnostics { get; }
+        internal Size CaptureSize { get; }
+        internal bool ScrollbarResolved { get; }
     }
 
     internal interface IAchievementCategoryFrameEvidenceDetector
@@ -517,7 +527,11 @@ namespace InventoryKamera
         internal AchievementCategoryFrameObservation(int frameIndex,
             AchievementScreenState screenState, int detectedRows,
             AchievementCategoryFrameEvidence evidence,
-            AchievementCategoryFrameTiming timing = null)
+            AchievementCategoryFrameTiming timing = null,
+            AchievementCompletedTotalFrameEvidence completedTotalEvidence = null,
+            AchievementBulkScreenValidationPath screenValidationPath =
+                AchievementBulkScreenValidationPath.Full,
+            string screenValidationFallbackReason = null)
         {
             FrameIndex = frameIndex;
             ScreenState = screenState;
@@ -528,6 +542,10 @@ namespace InventoryKamera
             BottomAtExtent = evidence?.BottomAtExtent == true;
             EvidenceDiagnostics = evidence?.Diagnostics ?? string.Empty;
             Timing = timing ?? AchievementCategoryFrameTiming.Empty;
+            CompletedTotalEvidence = completedTotalEvidence ??
+                AchievementCompletedTotalFrameEvidence.Empty;
+            ScreenValidationPath = screenValidationPath;
+            ScreenValidationFallbackReason = screenValidationFallbackReason ?? string.Empty;
         }
 
         internal int FrameIndex { get; }
@@ -539,6 +557,9 @@ namespace InventoryKamera
         internal bool BottomAtExtent { get; }
         internal string EvidenceDiagnostics { get; }
         internal AchievementCategoryFrameTiming Timing { get; }
+        internal AchievementCompletedTotalFrameEvidence CompletedTotalEvidence { get; }
+        internal AchievementBulkScreenValidationPath ScreenValidationPath { get; }
+        internal string ScreenValidationFallbackReason { get; }
     }
 
     internal sealed class AchievementCategoryFrameTiming
@@ -598,7 +619,14 @@ namespace InventoryKamera
             TimeSpan ocrCropResize = default,
             TimeSpan ocrPreprocessing = default,
             TimeSpan ocrEngine = default,
-            TimeSpan frameReaderOther = default)
+            TimeSpan frameReaderOther = default,
+            TimeSpan fastScreenValidation = default,
+            TimeSpan fullScreenValidation = default,
+            int fastScreenValidationCount = 0,
+            int fullScreenValidationCount = 0,
+            int fullScreenFallbackCount = 0,
+            int completedTotalOcrExecutions = 0,
+            int completedTotalReuseCount = 0)
         {
             Capture = capture;
             FrameProcessing = frameProcessing;
@@ -625,6 +653,13 @@ namespace InventoryKamera
             OcrPreprocessing = ocrPreprocessing;
             OcrEngine = ocrEngine;
             FrameReaderOther = frameReaderOther;
+            FastScreenValidation = fastScreenValidation;
+            FullScreenValidation = fullScreenValidation;
+            FastScreenValidationCount = fastScreenValidationCount;
+            FullScreenValidationCount = fullScreenValidationCount;
+            FullScreenFallbackCount = fullScreenFallbackCount;
+            CompletedTotalOcrExecutions = completedTotalOcrExecutions;
+            CompletedTotalReuseCount = completedTotalReuseCount;
         }
 
         internal TimeSpan Capture { get; }
@@ -652,6 +687,13 @@ namespace InventoryKamera
         internal TimeSpan OcrPreprocessing { get; }
         internal TimeSpan OcrEngine { get; }
         internal TimeSpan FrameReaderOther { get; }
+        internal TimeSpan FastScreenValidation { get; }
+        internal TimeSpan FullScreenValidation { get; }
+        internal int FastScreenValidationCount { get; }
+        internal int FullScreenValidationCount { get; }
+        internal int FullScreenFallbackCount { get; }
+        internal int CompletedTotalOcrExecutions { get; }
+        internal int CompletedTotalReuseCount { get; }
         internal TimeSpan OtherFrameProcessing => NonNegative(FrameProcessing -
             FrameEvidenceDetection - ViewportFingerprinting - FrameReader -
             LayoutProcessing - ObservationCollection);
@@ -741,6 +783,18 @@ namespace InventoryKamera
                 (scrollObservations ?? Array.Empty<AchievementScrollObservation>()).ToArray());
             FrameObservations = new ReadOnlyCollection<AchievementCategoryFrameObservation>(
                 (frameObservations ?? Array.Empty<AchievementCategoryFrameObservation>()).ToArray());
+            CompletedTotalObservations = new ReadOnlyCollection<AchievementCategoryFrameObservation>(
+                FrameObservations.Where(value =>
+                    value.CompletedTotalEvidence.PositivelyObserved &&
+                    value.CompletedTotalEvidence.Value.HasValue).ToArray());
+            int[] completedTotals = CompletedTotalObservations
+                .Select(value => value.CompletedTotalEvidence.Value.Value)
+                .Distinct().ToArray();
+            CompletedTotalInconsistent = completedTotals.Length > 1;
+            AchievementCategoryFrameObservation lastCompletedTotal =
+                CompletedTotalObservations.LastOrDefault();
+            LastObservedCompletedTotal = lastCompletedTotal?.CompletedTotalEvidence.Value;
+            LastObservedCompletedTotalFrame = lastCompletedTotal?.FrameIndex;
             IdentifiedRows = new ReadOnlyCollection<AchievementObservedRow>(ObservedRows
                 .Where(row => row.Resolved).ToArray());
             UnresolvedRows = new ReadOnlyCollection<AchievementObservedRow>(ObservedRows
@@ -823,6 +877,10 @@ namespace InventoryKamera
         internal IReadOnlyList<AchievementObservedRow> ObservedRows { get; }
         internal IReadOnlyList<AchievementScrollObservation> ScrollObservations { get; }
         internal IReadOnlyList<AchievementCategoryFrameObservation> FrameObservations { get; }
+        internal IReadOnlyList<AchievementCategoryFrameObservation> CompletedTotalObservations { get; }
+        internal bool CompletedTotalInconsistent { get; }
+        internal int? LastObservedCompletedTotal { get; }
+        internal int? LastObservedCompletedTotalFrame { get; }
         internal IReadOnlyList<AchievementObservedRow> IdentifiedRows { get; }
         internal IReadOnlyList<AchievementObservedRow> UnresolvedRows { get; }
         internal IReadOnlyList<AchievementObservedRow> ConflictingRows { get; }
@@ -934,6 +992,9 @@ namespace InventoryKamera
             int scrolls = 0;
             int uncertainFrames = 0;
             int noMovementAttempts = 0;
+            int? contextualCompletedTotal = null;
+            int? contextualCompletedTotalFrame = null;
+            Size traversalCaptureSize = startingFrame.Size;
             string stableCategorySignature = context.ExpectedCategorySignature;
             AchievementScrollProgressState scrollState = AchievementScrollProgressState.NoMovementUnknown;
 
@@ -941,6 +1002,8 @@ namespace InventoryKamera
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 FrameSnapshot previous = ProcessFrame(startingFrame, 0, startingCaptureDuration ?? TimeSpan.Zero,
+                    traversalCaptureSize, context.ExpectedCategorySignature,
+                    ref contextualCompletedTotal, ref contextualCompletedTotalFrame,
                     aggregate, ref processingTime, ref deduplicationTime,
                     ref rowDetectionTime, ref titleOcrTime,
                     ref completionOcrTime, ref rewardOcrTime);
@@ -1028,6 +1091,8 @@ namespace InventoryKamera
                                 "stabilization=unresolved");
 
                         FrameSnapshot current = ProcessFrame(captured, frames, stabilized.FinalCaptureDuration,
+                            traversalCaptureSize, stableCategorySignature,
+                            ref contextualCompletedTotal, ref contextualCompletedTotalFrame,
                             aggregate, ref processingTime, ref deduplicationTime,
                             ref rowDetectionTime, ref titleOcrTime,
                             ref completionOcrTime, ref rewardOcrTime);
@@ -1150,6 +1215,13 @@ namespace InventoryKamera
                 TimeSpan preprocessingTime = SumReaderTiming(value => value.OcrPreprocessing);
                 TimeSpan ocrEngineTime = SumReaderTiming(value => value.OcrEngine);
                 TimeSpan frameReaderOtherTime = SumReaderTiming(value => value.FrameReaderOther);
+                TimeSpan fastScreenValidationTime = SumReaderTiming(value => value.FastScreenValidation);
+                TimeSpan fullScreenValidationTime = SumReaderTiming(value => value.FullScreenValidation);
+                int fastScreenValidationCount = SumReaderCount(value => value.FastScreenValidationCount);
+                int fullScreenValidationCount = SumReaderCount(value => value.FullScreenValidationCount);
+                int fullScreenFallbackCount = SumReaderCount(value => value.FullScreenFallbackCount);
+                int completedTotalOcrExecutions = SumReaderCount(value => value.CompletedTotalOcrExecutions);
+                int completedTotalReuseCount = SumReaderCount(value => value.CompletedTotalReuseCount);
                 var timing = new AchievementCategoryCrawlTiming(captureTime, processingTime,
                     scrollingTime, settlingTime, deduplicationTime, total.Elapsed,
                     rowDetectionTime, titleOcrTime, completionOcrTime, rewardOcrTime,
@@ -1157,7 +1229,10 @@ namespace InventoryKamera
                     frameReaderTime, layoutTime, observationTime, motionAnalysisTime,
                     reconciliationTime, progressReportingTime, screenDetectionTime,
                     completedTotalTime, cropResizeTime, preprocessingTime, ocrEngineTime,
-                    frameReaderOtherTime);
+                    frameReaderOtherTime, fastScreenValidationTime, fullScreenValidationTime,
+                    fastScreenValidationCount, fullScreenValidationCount,
+                    fullScreenFallbackCount, completedTotalOcrExecutions,
+                    completedTotalReuseCount);
                 diagnostics.Add($"state={state}; frames={frames}; scrolls={scrolls}; uniqueIdentified={rows.Count(row => row.Resolved)}; " +
                     $"unresolved={rows.Count(row => !row.Resolved)}; repeated={rows.Where(row => row.Canonical).Sum(row => Math.Max(0, row.Observations.Count(value => value.Row.Fingerprint.SuitableForDeduplication) - 1))}; " +
                     $"ambiguous={rows.Count(row => row.Observations.Any(value => value.Row.IdentityState == AchievementIdentityState.Ambiguous))}; " +
@@ -1175,6 +1250,11 @@ namespace InventoryKamera
                     $"observationMs={observationTime.TotalMilliseconds:0.00}; stabilizationAnalysisMs={stabilizationAnalysisTime.TotalMilliseconds:0.00}; " +
                     $"motionAnalysisMs={motionAnalysisTime.TotalMilliseconds:0.00}; reconciliationMs={reconciliationTime.TotalMilliseconds:0.00}; " +
                     $"progressReportingMs={progressReportingTime.TotalMilliseconds:0.00}; ocrEngineMs={ocrEngineTime.TotalMilliseconds:0.00}; " +
+                    $"fastScreenValidationMs={fastScreenValidationTime.TotalMilliseconds:0.00}; fullScreenValidationMs={fullScreenValidationTime.TotalMilliseconds:0.00}; " +
+                    $"fastScreenValidations={fastScreenValidationCount}; fullScreenValidations={fullScreenValidationCount}; " +
+                    $"screenValidationFallbacks={fullScreenFallbackCount}; completedTotalOcrExecutions={completedTotalOcrExecutions}; " +
+                    $"completedTotalReuses={completedTotalReuseCount}; completedTotalPositiveObservations={frameObservations.Count(value => value.CompletedTotalEvidence.PositivelyObserved)}; " +
+                    $"completedTotalInconsistent={frameObservations.Where(value => value.CompletedTotalEvidence.PositivelyObserved && value.CompletedTotalEvidence.Value.HasValue).Select(value => value.CompletedTotalEvidence.Value.Value).Distinct().Skip(1).Any()}; " +
                     $"dedupMs={deduplicationTime.TotalMilliseconds:0.00}; accountedExclusiveMs={timing.AccountedExclusive.TotalMilliseconds:0.00}; " +
                     $"unattributedMs={timing.Unattributed.TotalMilliseconds:0.00}; totalMs={total.Elapsed.TotalMilliseconds:0.00}");
                 return new AchievementCategoryCrawlResult(context, state, completenessEvidence,
@@ -1209,6 +1289,10 @@ namespace InventoryKamera
             TimeSpan SumReaderTiming(Func<AchievementBulkFrameTiming, TimeSpan> selector) =>
                 TimeSpan.FromTicks(frameObservations.Sum(value =>
                     value.Timing.ReaderTiming == null ? 0 : selector(value.Timing.ReaderTiming).Ticks));
+
+            int SumReaderCount(Func<AchievementBulkFrameTiming, int> selector) =>
+                frameObservations.Sum(value =>
+                    value.Timing.ReaderTiming == null ? 0 : selector(value.Timing.ReaderTiming));
         }
 
         private StabilizedCapture CaptureStabilizedFrame(
@@ -1282,6 +1366,8 @@ namespace InventoryKamera
         }
 
         private FrameSnapshot ProcessFrame(Bitmap screenshot, int frameIndex, TimeSpan captureDuration,
+            Size traversalCaptureSize, string expectedCategorySignature,
+            ref int? contextualCompletedTotal, ref int? contextualCompletedTotalFrame,
             ObservationAccumulator aggregate, ref TimeSpan processingTime, ref TimeSpan deduplicationTime,
             ref TimeSpan rowDetectionTime, ref TimeSpan titleOcrTime,
             ref TimeSpan completionOcrTime, ref TimeSpan rewardOcrTime)
@@ -1296,9 +1382,36 @@ namespace InventoryKamera
             part.Stop();
             TimeSpan fingerprintTime = part.Elapsed;
             part.Restart();
-            AchievementBulkFrameResult result = frameReader.Read(screenshot, captureDuration);
+            bool observeCompletedTotal = frameIndex == 0 ||
+                frameIndex % options.CompletedTotalCheckpointInterval == 0 ||
+                frameIndex == options.MaximumCapturedFrames - 1 ||
+                evidence.BottomAtExtent;
+            AchievementBulkFrameResult result;
+            if (frameReader is IContextualAchievementListFrameReader contextualReader)
+            {
+                var readContext = new AchievementBulkFrameReadContext(
+                    frameIndex,
+                    traversalCaptureSize,
+                    evidence,
+                    expectedCategorySignature,
+                    forceFullScreenValidation: frameIndex == 0,
+                    observeCompletedTotal,
+                    contextualCompletedTotal,
+                    contextualCompletedTotalFrame);
+                result = contextualReader.Read(screenshot, readContext, captureDuration);
+            }
+            else
+            {
+                result = frameReader.Read(screenshot, captureDuration);
+            }
             part.Stop();
             TimeSpan readerTime = part.Elapsed;
+            if (result.CompletedTotalEvidence.PositivelyObserved &&
+                result.CompletedTotalEvidence.Value.HasValue)
+            {
+                contextualCompletedTotal = result.CompletedTotalEvidence.Value;
+                contextualCompletedTotalFrame = frameIndex;
+            }
             rowDetectionTime += result.Timing.RowDetection;
             titleOcrTime += result.Timing.TitleOcr;
             completionOcrTime += result.Timing.CompletionOcr;
@@ -1315,7 +1428,10 @@ namespace InventoryKamera
             deduplicationTime += observationTime;
             string diagnostics = $"frame={frameIndex}; screen={result.ScreenState}; rows={result.VisibleRows.Count}; " +
                 $"fingerprint={fingerprint}; layout={layout}; categorySignature={evidence.CategorySignature}; " +
-                $"categoryVerified={evidence.CategorySignatureVerified}; top={evidence.TopAtExtent}; bottom={evidence.BottomAtExtent}; {evidence.Diagnostics}";
+                $"categoryVerified={evidence.CategorySignatureVerified}; top={evidence.TopAtExtent}; bottom={evidence.BottomAtExtent}; " +
+                $"screenValidation={result.ScreenValidationPath}; screenFallback={result.ScreenValidationFallbackReason}; " +
+                $"completedTotalSource={result.CompletedTotalEvidence.Source}; completedTotalObserved={result.CompletedTotalEvidence.PositivelyObserved}; " +
+                $"completedTotalReused={result.CompletedTotalEvidence.Reused}; {evidence.Diagnostics}";
             total.Stop();
             processingTime += total.Elapsed;
             var timing = new AchievementCategoryFrameTiming(captureDuration,
@@ -1388,7 +1504,8 @@ namespace InventoryKamera
 
         private static AchievementCategoryFrameObservation Observe(FrameSnapshot frame, int frameIndex) =>
             new(frameIndex, frame.Result.ScreenState, frame.Result.VisibleRows.Count,
-                frame.Evidence, frame.Timing);
+                frame.Evidence, frame.Timing, frame.Result.CompletedTotalEvidence,
+                frame.Result.ScreenValidationPath, frame.Result.ScreenValidationFallbackReason);
 
         private static AchievementCategoryCrawlProgress Progress(AchievementObservedRow[] rows,
             int frames, int scrolls, AchievementScrollProgressState state,
